@@ -422,7 +422,11 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (this.sourceInvalid || this.bufferInvalid) return { kind: "invalid" };
       return {
         kind: "missing",
-        reason: snapshot?.metadata.mode === "viewing" ? cleaningUnavailableReason(snapshot.metadata) : undefined
+        reason:
+          snapshot &&
+          (snapshot.metadata.mode === "viewing" || snapshot.metadata.capabilities.supportedOperations?.length === 0)
+            ? cleaningUnavailableReason(snapshot.metadata)
+            : undefined
       };
     }
     const view = this.view;
@@ -1376,7 +1380,11 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   if (!metadata) return [new ViewNode("No active dataframe", "Open a source from Data sources", "info")];
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
-  return supportedOperationCatalog(metadata.capabilities).map(
+  const operations = supportedOperationCatalog(metadata.capabilities);
+  if (operations.length === 0) {
+    return [new ViewNode("Cleaning unavailable", cleaningUnavailableReason(metadata), "info")];
+  }
+  return operations.map(
     (operation) =>
       new ViewNode(
         operation.title,
@@ -1723,7 +1731,7 @@ function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
   if (snapshot.metadata.source.kind === "notebookOutput") {
     return `# ${label}\n# Read-only saved notebook snapshot. Executable cleaning lineage is not embedded in notebook output.`;
   }
-  if (snapshot.metadata.mode === "viewing") {
+  if (snapshot.metadata.mode === "viewing" || snapshot.metadata.capabilities.supportedOperations?.length === 0) {
     return `# ${label}\n# ${cleaningUnavailableReason(snapshot.metadata)}`;
   }
   return `# ${label}\n# Add or select a cleaning step to preview generated code.`;

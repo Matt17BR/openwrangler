@@ -327,7 +327,7 @@ named_rows <- dispatch(
   list(sessionId = second_session_id, variableName = "named_rows", page = page_window())
 )
 assert_identical(named_rows$kind, "page", "a dataframe with explicit row names could not be opened")
-assert_identical(named_rows$page$contractVersion, 6L, "the R kernel agent emitted the wrong frame contract")
+assert_identical(named_rows$page$contractVersion, 7L, "the R kernel agent emitted the wrong frame contract")
 assert_identical(named_rows$page$frameSemantics$rowNames, "explicit", "explicit R row names were hidden")
 assert_identical(named_rows$page$page$rows[[1L]]$rowLabel, "named-row", "the explicit R row label changed")
 named_rows_closed <- dispatch("closeSession", list(sessionId = second_session_id))

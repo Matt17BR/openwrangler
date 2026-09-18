@@ -32,6 +32,8 @@ export const LOCK_ROOTS = Object.freeze({
     "data.table",
     "bit64",
     "rlang",
+    "arrow",
+    "clock",
     "nanoparquet",
     "readxl",
     "collapse"

@@ -289,7 +289,7 @@ describe("R kernel data export", () => {
     ).resolves.toMatchObject({
       kind: "error",
       code: "unsupported_operation",
-      message: expect.stringContaining("nanoparquet 0.5.1")
+      message: expect.stringContaining("Arrow 23.0.1.1")
     });
     await expect(
       notebookBridge.request({

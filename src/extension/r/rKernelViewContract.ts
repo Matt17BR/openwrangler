@@ -1,4 +1,4 @@
-import { supportsViewPredicate } from "../../shared/filterModel";
+import { reconcileViewFilterModel, supportsViewPredicate } from "../../shared/filterModel";
 import type {
   ColumnSchema,
   ColumnSummary,
@@ -7,7 +7,7 @@ import type {
   SortRowsTransformStep,
   ValueCount
 } from "../../shared/protocol";
-import { R_FRAME_CONTRACT_LIMITS, type RColumnType } from "./rFrameContract";
+import { isRClockDatetimeRawType, R_FRAME_CONTRACT_LIMITS, type RColumnType } from "./rFrameContract";
 import type {
   RKernelColumnFilter,
   RKernelColumnReference,
@@ -23,6 +23,30 @@ type RViewContractSession = Readonly<{
   schema: readonly ColumnSchema[];
   rows: number;
 }>;
+
+export function reconcileRViewFilterModel(
+  model: FilterModel,
+  previousSchema: readonly ColumnSchema[],
+  nextSchema: readonly ColumnSchema[]
+): FilterModel {
+  const reconciled = reconcileViewFilterModel(model, previousSchema, nextSchema, "id");
+  const previousById = new Map(previousSchema.map((column) => [column.id, column]));
+  const changedClockNames = new Set(
+    nextSchema
+      .filter((column) => {
+        const previous = previousById.get(column.id);
+        return (
+          previous &&
+          previous.rawType !== column.rawType &&
+          (isRClockDatetimeRawType(previous.rawType) || isRClockDatetimeRawType(column.rawType))
+        );
+      })
+      .map((column) => column.name)
+  );
+  // Clock selection tokens carry ticks; their unit and civil/instant meaning
+  // belong to the captured column type and cannot survive its replacement.
+  return { ...reconciled, filters: reconciled.filters.filter((filter) => !changedClockNames.has(filter.column)) };
+}
 
 export function resolveRViewQuery(filterModel: FilterModel, schema: readonly ColumnSchema[]): RKernelViewQuery {
   const filters = Object.freeze(

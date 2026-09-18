@@ -16,7 +16,7 @@ import type {
   TextLengthTransformStep,
   UpperTextTransformStep
 } from "../../shared/protocol";
-import { R_FRAME_CONTRACT_LIMITS } from "./rFrameContract";
+import { isRClockDatetimeRawType, R_FRAME_CONTRACT_LIMITS } from "./rFrameContract";
 import { requireRTransformColumn, resolveRTransformSortRules } from "./rKernelViewContract";
 
 const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
@@ -127,6 +127,9 @@ export function schemaAfterFillMissing(
     throw new TypeError("The fill-missing column reference no longer matches the active R dataframe.");
   }
   const source = matches[0] as ColumnSchema;
+  if (isRClockDatetimeRawType(source.rawType)) {
+    throw new TypeError("Fill Missing Values does not support clock datetime columns.");
+  }
   if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
     throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
   }
@@ -148,7 +151,11 @@ export function schemaAfterFillMissing(
     if (coordinate.id === source.id) {
       throw new TypeError("The fill target cannot also be the interpolation coordinate.");
     }
-    if (coordinate.rawType === "integer64" || !new Set(["integer", "float", "date", "datetime"]).has(coordinate.type)) {
+    if (
+      coordinate.rawType === "integer64" ||
+      isRClockDatetimeRawType(coordinate.rawType) ||
+      !new Set(["integer", "float", "date", "datetime"]).has(coordinate.type)
+    ) {
       throw new TypeError(`R ${coordinate.rawType} columns cannot be used as interpolation coordinates.`);
     }
     return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
@@ -170,7 +177,7 @@ export function schemaAfterFillMissing(
       const key = requireRTransformColumn(reference, inputSchema, "Grouped fill");
       if (key.id === source.id) throw new TypeError("The fill target cannot also be a grouping column.");
       if (seen.has(key.id)) throw new TypeError("Grouped fill repeats the same R column identity.");
-      if (!supportedKeyTypes.has(key.type)) {
+      if (!supportedKeyTypes.has(key.type) || isRClockDatetimeRawType(key.rawType)) {
         throw new TypeError(`R ${key.rawType} columns cannot be used as grouped-fill keys.`);
       }
       seen.add(key.id);
@@ -218,6 +225,9 @@ export function schemaAfterFillMissing(
         throw new TypeError("A fallback column reference no longer matches the active R dataframe.");
       }
       const fallback = fallbackMatches[0] as ColumnSchema;
+      if (isRClockDatetimeRawType(fallback.rawType)) {
+        throw new TypeError("Fill Missing Values does not support clock datetime fallback columns.");
+      }
       if (fallback.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
         throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
       }

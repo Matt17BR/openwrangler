@@ -472,8 +472,9 @@ local({
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   load_file <- openwrangler_r_kernel_agent$load_file_source
   maximum_columns <- openwrangler_r_frame_contract$limits$columns
-  stopifnot(is.function(load_file), requireNamespace("readxl", quietly = TRUE), requireNamespace("nanoparquet", quietly = TRUE))
-  check_file <- function(descriptor, expected) {
+  stopifnot(is.function(load_file), requireNamespace("readxl", quietly = TRUE), requireNamespace("nanoparquet", quietly = TRUE),
+    requireNamespace("arrow", quietly = TRUE), requireNamespace("clock", quietly = TRUE))
+  check_file <- function(descriptor, expected, library = "base", text_sibling = FALSE) {
     bytes <- readBin(descriptor$path, "raw", file.size(descriptor$path))
     connections <- getAllConnections()
     loaded <- load_file(descriptor, maximum_columns = maximum_columns)
@@ -482,7 +483,7 @@ local({
     environment$.ow_csv_source <- loaded
     file_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment, file_source = descriptor)
     on.exit(file_agent$dispose(), add = TRUE)
-    opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
+    opened <- dispatch_with(file_agent, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window(), library = library))
     assert_identical(opened$kind, "page", "Native file session failed to open")
     sheets <- dispatch_with(file_agent, "listExcelSheets", list(sessionId = session_id))
     if (identical(descriptor$format, "excel")) {
@@ -502,6 +503,15 @@ local({
     applied <- dispatch_with(file_agent, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
     assert_identical(applied$action, "apply", "Native file cleaning failed to apply")
     expected$copied <- expected[[1L]]
+    if (text_sibling) {
+      preview <- dispatch_with(file_agent, "previewStep", list(
+        sessionId = session_id, revision = applied$revision, page = page_window(),
+        step = list(id = "file-sibling", kind = "textLength", params = list(column = list(id = "r:c:3", name = "text"), newColumn = "text_length"))
+      ))
+      assert_identical(preview$kind, "stepPreview", "An ordinary sibling operation rejected precise timestamps")
+      applied <- dispatch_with(file_agent, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+      expected$text_length <- nchar(expected$text)
+    }
     generated <- new.env(parent = baseenv())
     eval(parse(text = applied$code), envir = generated)
     assert_identical(generated$open_wrangler_result, expected, "Generated file load/cleaning differs from expected native output")
@@ -534,8 +544,174 @@ local({
   check_file(list(path = parquet_path, format = "parquet"), data.frame(
     id = bit64::as.integer64(c("1", NA, "9007199254740991")), text = c("  é  ", "", NA), flag = c(TRUE, FALSE, NA), amount = c(2.5, NaN, NA),
     at = structure(c(1789569600.123456, (2^51 - 1) / 1e6, NA), class = c("POSIXct", "POSIXt"), tzone = "UTC"), date = as.Date(c("2026-09-16", NA, "2000-01-01")),
-    unsigned32 = c(0L, .Machine$integer.max, NA_integer_), unsigned64 = bit64::as.integer64(c("0", "9223372036854775807", NA))
+    unsigned32 = c(0L, .Machine$integer.max, NA_integer_), unsigned64 = bit64::as.integer64(c("0", "9223372036854775807", NA)),
+    # PyArrow timestamp("ns") arrays from int64 ticks 1774751400000000000, +1, null.
+    civil_ns = clock::naive_time_parse(c("2026-03-29 02:30:00.000000000", "2026-03-29 02:30:00.000000001", NA_character_), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond"),
+    utc_ns = clock::as_sys_time(clock::naive_time_parse(c("2026-03-29 02:30:00.000000000", "2026-03-29 02:30:00.000000001", NA_character_), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond"))
   ))
+  local({
+    clock_capture <- NULL
+    clock_contract <- openwrangler_r_frame_contract
+    clock_contract$capture_frame <- function(value, ...) {
+      clock_capture <<- openwrangler_r_frame_contract$capture_frame(value, ...)
+      clock_capture
+    }
+    previous_tz <- Sys.getenv("TZ", unset = NA_character_)
+    on.exit(if (is.na(previous_tz)) Sys.unsetenv("TZ") else Sys.setenv(TZ = previous_tz), add = TRUE)
+    Sys.setenv(TZ = "America/New_York")
+    ticks <- c("-9223372036854775808", "-1", "1774751400000000000", "1774751400000000001", NA_character_, "1792895400123456789", "9223372036854775807")
+    text <- c("1677-09-21 00:12:43.145224192", "1969-12-31 23:59:59.999999999", "2026-03-29 02:30:00.000000000",
+      "2026-03-29 02:30:00.000000001", NA_character_, "2026-10-25 02:30:00.123456789", "2262-04-11 23:47:16.854775807")
+    local <- clock::naive_time_parse(text, format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond")
+    stopifnot(identical(format(clock::as_duration(local)), ticks), !is.na(local[[1L]]))
+    precise_path <- file.path(root, "precise.parquet")
+    array <- arrow::Array$create(ticks)$cast(arrow::int64())
+    arrow::write_parquet(arrow::Table$create(
+      local = array$cast(arrow::timestamp("ns")), utc = array$cast(arrow::timestamp("ns", "UTC")),
+      amount = seq_along(ticks), text = c("alpha", "beta", "gamma", "delta", NA_character_, "x", "y")
+    ), precise_path, use_dictionary = TRUE, chunk_size = 2L)
+    expected <- data.frame(local = local, utc = clock::as_sys_time(local), amount = seq_along(ticks), text = c("alpha", "beta", "gamma", "delta", NA_character_, "x", "y"))
+    for (library in c("base", "dplyr")) {
+      code <- check_file(list(path = precise_path, format = "parquet"), expected, library = library, text_sibling = TRUE)
+      exported <- arrow::read_parquet(file.path(root, "export.parquet"), as_data_frame = FALSE)
+      for (name in c("local", "utc", "copied")) assert_identical(exported[[name]]$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks,
+        "Precise Parquet export changed a tick or null")
+      assert_identical(exported$local$type$ToString(), "timestamp[ns]", "Parquet civil timestamp acquired a timezone")
+      assert_identical(exported$utc$type$ToString(), "timestamp[ns, tz=UTC]", "Parquet instant lost UTC semantics")
+      bytes <- readBin(precise_path, "raw", file.size(precise_path))
+      for (changed in list(array$cast(arrow::timestamp("ns", "UTC")),
+          arrow::Array$create(c(0:3, NA_integer_, 5:6))$cast(arrow::int64())$cast(arrow::timestamp("us")))) {
+        arrow::write_parquet(arrow::Table$create(local = changed, utc = array$cast(arrow::timestamp("ns", "UTC")),
+          amount = expected$amount, text = expected$text), precise_path)
+        generated <- new.env(parent = baseenv())
+        error <- tryCatch(eval(parse(text = code), generated), error = identity)
+        stopifnot(inherits(error, "error"), grepl("precision or timezone meaning is stale", conditionMessage(error), fixed = TRUE),
+          !exists("open_wrangler_result", envir = generated, inherits = FALSE))
+      }
+      writeBin(bytes, precise_path)
+      reference <- list(id = "r:c:0", name = "local")
+      for (case in list(
+        list(
+          step = list(id = "precise-sort", kind = "sortRows", params = list(
+            rules = I(list(list(column = reference, direction = "desc", nulls = "last")))
+          )),
+          rows = c(7L, 6L, 4L, 3L, 2L, 1L, 5L)
+        ),
+        list(
+          step = list(id = "precise-filter", kind = "filterRows", params = list(filterModel = list(
+            filters = I(list(list(column = reference, type = "datetime", predicates = I(list(
+              list(kind = "predicate", operator = "gte", value = "2026-03-29T02:30:00.000000001")
+            ))))),
+            sort = I(list())
+          ))),
+          rows = c(4L, 6L, 7L)
+        ),
+        list(
+          step = list(id = "precise-missing", kind = "dropMissingRows", params = list(
+            columns = I(list(reference)), how = "any"
+          )),
+          rows = c(1L, 2L, 3L, 4L, 6L, 7L)
+        ),
+        list(
+          step = list(id = "precise-duplicates", kind = "dropDuplicates", params = list(
+            columns = I(list(reference)), keep = "first"
+          )),
+          sourceRows = c(1:7, 3L), rows = 1:7
+        )
+      )) {
+        source <- if (is.null(case$sourceRows)) expected else expected[case$sourceRows, , drop = FALSE]
+        environment <- new.env(parent = baseenv()); environment$frame <- source
+        row_agent <- openwrangler_r_kernel_agent$new_agent(clock_contract, environment)
+        opened <- dispatch_with(row_agent, "openSession", list(sessionId = session_id, variableName = "frame", page = page_window(), library = library))
+        assert_identical(opened$kind, "page", "Precise row workflow failed to open")
+        refused <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(),
+          step = list(id = "precise-format", kind = "formatDatetime", params = list(column = reference, format = "%Y-%m-%d", newColumn = "formatted"))))
+        assert_identical(refused$code, "invalid_request", "Format Datetime unexpectedly admitted a precise timestamp")
+        current <- dispatch_with(row_agent, "getPage", list(sessionId = session_id, page = page_window()))
+        assert_identical(current$page, opened$page, "Unsupported precise temporal operation changed the published frame")
+        preview <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(), step = case$step))
+        assert_identical(preview$kind, "stepPreview", "Precise row operation failed to preview")
+        result <- get("snapshot", envir = clock_capture, inherits = FALSE)
+        assert_identical(result$amount, expected$amount[case$rows], "Precise row operation selected or ordered the wrong values")
+        applied <- dispatch_with(row_agent, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+        generated <- new.env(parent = baseenv()); generated$frame <- source
+        eval(parse(text = applied$code), generated)
+        assert_identical(generated$open_wrangler_result, result, "Generated precise row operation differs from live output")
+        assert_identical(environment$frame, source, "Precise row operation changed its source")
+        assert_identical(generated$frame, source, "Generated precise row operation changed its source")
+        row_agent$dispose()
+      }
+    }
+    for (unit in c("ms", "us")) {
+      scale <- if (unit == "ms") 1000 else 1000000
+      raw <- c(-1, 1774751400 * scale, NA_real_)
+      typed <- arrow::Array$create(bit64::as.integer64(raw))$cast(arrow::timestamp(unit))
+      path <- file.path(root, paste0("civil-", unit, ".parquet"))
+      arrow::write_parquet(arrow::Table$create(local = typed), path)
+      loaded <- load_file(list(path = path, format = "parquet"), maximum_columns = maximum_columns)
+      assert_identical(format(clock::as_duration(loaded$local)), as.character(bit64::as.integer64(raw)), "Civil Parquet unit or pre-epoch tick changed")
+      assert_identical(clock::time_point_precision(loaded$local), if (unit == "ms") "millisecond" else "microsecond", "Civil Parquet precision changed")
+    }
+    wide_path <- file.path(root, "wide-utc-microseconds.parquet")
+    arrow::write_parquet(arrow::Table$create(at = arrow::Array$create(c("16725225600000000", "16725225600000001", NA_character_))$cast(arrow::int64())$cast(arrow::timestamp("us", "UTC"))), wide_path)
+    check_file(list(path = wide_path, format = "parquet"), data.frame(at = clock::as_sys_time(clock::naive_time_parse(
+      c("2500-01-01 00:00:00.000000", "2500-01-01 00:00:00.000001", NA_character_), format = "%Y-%m-%d %H:%M:%S", precision = "microsecond"))))
+    for (library in c("data.table", "collapse")) {
+      environment <- new.env(parent = baseenv()); environment$.ow_csv_source <- load_file(list(path = precise_path, format = "parquet"), maximum_columns = maximum_columns)
+      viewer <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment, file_source = list(path = precise_path, format = "parquet"))
+      opened <- dispatch_with(viewer, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window(), library = library))
+      assert_identical(opened$kind, "page", "A viewing library could not open exact timestamps")
+      assert_identical(opened$library, library, "Opening exact timestamps changed the selected library")
+      reference <- list(id = "r:c:0", name = "local")
+      page <- page_window(
+        sorts = list(list(column = reference, direction = "desc", nulls = "last")),
+        filters = list(list(column = reference, type = "datetime", predicates = I(list(list(
+          kind = "predicate", operator = "gte", value = "2026-03-29T02:30:00.000000001"
+        )))))
+      )
+      viewed <- dispatch_with(viewer, "getPage", list(sessionId = session_id, page = page))
+      assert_identical(viewed$kind, "page", "A viewing library rejected exact timestamp filters or sorting")
+      assert_identical(vapply(viewed$page$page$rows, `[[`, character(1L), "id"), c("r:r:6", "r:r:5", "r:r:3"), "Viewing rounded timestamp comparisons")
+      profile <- dispatch_with(viewer, "getSummary", list(sessionId = session_id, columns = I(list(reference)), view = page$view))
+      assert_identical(profile$kind, "summary", "A viewing library could not profile exact timestamps")
+      assert_identical(profile$summaries[[1L]]$totalCount, 3L, "Exact timestamp profile ignored the view filter")
+      for (step in list(
+        list(id = "blocked-rename", kind = "renameColumn", params = list(column = reference, newName = "renamed")),
+        formula_step("blocked-formula", "add", "sum", left_position = 3L, left_name = "amount", value = 1),
+        list(id = "blocked-custom", kind = "customCode", params = list(code = "result <- df"))
+      )) {
+        refused <- dispatch_with(viewer, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(), step = step))
+        assert_identical(refused$code, "unsupported_library", "A viewing library silently cleaned an exact timestamp frame")
+        current <- dispatch_with(viewer, "getPage", list(sessionId = session_id, page = page_window()))
+        assert_identical(current$page, opened$page, "Refused cleaning changed the viewing frame")
+        clone <- dispatch_with(viewer, "openSession", list(sessionId = second_session_id, variableName = ".ow_csv_source", page = page_window(),
+          library = "base", cloneFromSessionId = session_id, cloneFromRevision = 0L))
+        assert_identical(clone$kind, "page", "Refused cleaning advanced the confirmed revision or prevented a safe copy")
+        dispatch_with(viewer, "closeSession", list(sessionId = second_session_id))
+      }
+      exported <- dispatch_with(viewer, "exportData", list(sessionId = session_id, revision = 0L, exportId = export_id, options = parquet_export_options))
+      assert_identical(exported$kind, "dataExported", "A viewing library could not export exact timestamps")
+      chunk <- dispatch_with(viewer, "readDataExport", list(sessionId = session_id, revision = 0L, exportId = export_id, offset = 0L, limit = 65536L))
+      output <- file.path(root, "view-only-export.parquet"); writeBin(jsonlite::base64_dec(chunk$data), output)
+      exported <- arrow::read_parquet(output, as_data_frame = FALSE)
+      assert_identical(exported$local$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks, "Viewing export changed exact civil timestamp ticks")
+      assert_identical(exported$utc$type$ToString(), "timestamp[ns, tz=UTC]", "Viewing export changed timestamp meaning")
+      for (target in c("base", "dplyr")) {
+        cloned <- dispatch_with(viewer, "openSession", list(sessionId = second_session_id, variableName = ".ow_csv_source", page = page_window(),
+          library = target, cloneFromSessionId = session_id, cloneFromRevision = 0L))
+        assert_identical(cloned$kind, "page", "Opening an editable timestamp copy failed")
+        preview <- dispatch_with(viewer, "previewStep", list(sessionId = second_session_id, revision = 0L, page = page_window(),
+          step = list(id = "copy-clone", kind = "cloneColumn", params = list(column = reference, newName = "copied"))))
+        assert_identical(preview$kind, "stepPreview", "An editable timestamp copy could not preview cleaning")
+        generated <- new.env(parent = baseenv())
+        eval(parse(text = preview$code), generated)
+        assert_identical(generated$open_wrangler_result$copied, expected$local, "Generated copy cleaning changed precise timestamps")
+        dispatch_with(viewer, "closeSession", list(sessionId = second_session_id))
+      }
+      assert_identical(environment$.ow_csv_source, expected, "Viewing, export or copy cleaning changed the original source")
+      viewer$dispose()
+    }
+  })
   # DuckDB 1.5.5 fixtures use COPY (<query>) TO '<fixture>' (FORMAT PARQUET).
   # r-file-legacy-integers.parquet:
   # SELECT signed8::TINYINT AS signed8,signed16::SMALLINT AS signed16,
@@ -561,6 +737,10 @@ local({
     unsigned32 = c(0L, 2147483647L, NA_integer_),
     unsigned64 = bit64::as.integer64(c("0", "9007199254740991", NA))
   ))
+  check_file(list(path = normalizePath("fixtures/r-file-legacy-local-timestamp.parquet"), format = "parquet"),
+    data.frame(first_column = clock::naive_time_parse(c("2026-09-17 10:00:00", NA_character_), format = "%Y-%m-%d %H:%M:%S", precision = "microsecond")))
+  check_file(list(path = normalizePath("fixtures/r-file-legacy-uint64-inexact.parquet"), format = "parquet"),
+    data.frame(first_column = bit64::as.integer64(c("9007199254740993", NA_character_))))
   check_parquet_refusal <- function(expected) {
     bytes <- readBin(legacy_path, "raw", file.size(legacy_path))
     connections <- getAllConnections()
@@ -580,21 +760,28 @@ local({
     assert_identical(getAllConnections(), connections, "Refused Parquet retained a connection")
   }
   # Refusal queries, with first_column as the selected field:
-  # local-timestamp: SELECT value::TIMESTAMP AS first_column FROM (VALUES ('2026-09-17 12:00:00'), (NULL)) t(value)
   # uint32-overflow: SELECT value::UINTEGER AS first_column FROM (VALUES (4294967295), (NULL)) t(value)
-  # uint64-inexact: SELECT value::UBIGINT AS first_column FROM (VALUES (9007199254740993), (NULL)) t(value)
   # int64-sentinel: SELECT value::BIGINT AS first_column FROM (VALUES (-9223372036854775808), (NULL)) t(value)
   for (fixture in list(
-    list(name = "local-timestamp", physical = "INT64", converted = "TIMESTAMP_MICROS", reason = "timestamps must be adjusted to UTC"),
-    list(name = "uint32-overflow", physical = "INT32", converted = "UINT_32", reason = "unsigned values exceed the native signed integer range"),
-    list(name = "uint64-inexact", physical = "INT64", converted = "UINT_64", reason = "INT64 values exceed the reader's exact integer range"),
-    list(name = "int64-sentinel", physical = "INT64", converted = "INT_64", reason = "cannot distinguish native integer/date missing sentinels")
+    list(name = "uint32-overflow", physical = "INT32", converted = "UINT_32", reason = "integer values exceed the native signed integer range"),
+    list(name = "int64-sentinel", physical = "INT64", converted = "INT_64", reason = "native integer missing sentinels are present source values")
   )) {
     file.copy(file.path("fixtures", paste0("r-file-legacy-", fixture$name, ".parquet")), legacy_path, overwrite = TRUE)
     check_parquet_refusal(c('column 1 "first_column"', paste0("physical=", fixture$physical),
       paste0("converted=", fixture$converted), fixture$reason,
-      if (fixture$name == "local-timestamp") "logical=TIMESTAMP(isAdjustedToUTC=FALSE, unit=MICROS)" else "logical=none"))
+      "logical=none"))
   }
+  # PyArrow 25.0.1 write_table(timestamp("us") values 1500-01-01, 2500-01-01,
+  # 2026-03-29 02:30, null; use_deprecated_int96_timestamps=True). Default native
+  # Arrow nanosecond decoding wraps the first two values into different centuries.
+  writeBin(memDecompress(jsonlite::base64_dec(paste0(
+    "H4sIAAAAAAAC/0VRPU8CQRB9t5B1QyQhxr3cJlcQAxdJ+BANjcFiDhEUjUhCbL0gAQsFD5T4I0ysLPkF9v4GC/+Rhbt3F33FzOzM",
+    "e282u30a1GVadmXzXHKJLaAAZC3xs97JZo6Bz/ou8Pb9UhPA12sREnJbOmUpZE7zuQsgU2A6pjZYqgCZVuUGHL4YTcf3gWSQvMgc",
+    "FixhC+Uq14MruWqA55TpSmYLe23Z75Z344lSWd8ERgTtztAsceUxrs0NR3hC86BcZ5MGg8vrw3iH82HVDA4mpHFFMXpEK/IndEI0",
+    "oVY0It8nujBFi+g0avxnjbYJw6QaGp3Wd41P5OsnztTuRUx/9SeKYaz86W186CT6TjJsJfkITn4ehI9P42VlNJ9XgjCcrfLP43Bx",
+    "N3vI7zeqe9W6cs2rnllAX3/OL2LL5wehAQAA"
+  )), type = "gzip"), legacy_path)
+  check_parquet_refusal(c('column 1 "at"', "physical=INT96", "unannotated physical type is not supported"))
   # Metadata admission must reject mismatched carriers and invalid widths before native reading.
   file.copy("fixtures/r-file-legacy-integers.parquet", legacy_path, overwrite = TRUE)
   local({
@@ -653,7 +840,12 @@ local({
     error <- tryCatch(load_file(c(list(path = excel_path, format = "excel"), sheet), maximum_columns = maximum_columns), error = identity)
     stopifnot(inherits(error, "error"))
   }
-  for (name in c("r-file-int64-boundary.parquet", "r-file-int32-sentinel.parquet", "r-file-timestamp-boundary.parquet", "r-file-uint32-overflow.parquet", "r-file-uint64-overflow.parquet")) {
+  check_file(list(path = normalizePath("fixtures/r-file-int64-boundary.parquet"), format = "parquet"),
+    data.frame(id = bit64::as.integer64(c("9007199254740992", "9007199254740993", NA_character_))))
+  check_file(list(path = normalizePath("fixtures/r-file-timestamp-boundary.parquet"), format = "parquet"),
+    data.frame(at = clock::as_sys_time(clock::naive_time_parse(c("2041-05-10 11:56:53.685248", "2041-05-10 11:56:53.685249", "1898-08-23 12:03:06.314752"),
+      format = "%Y-%m-%d %H:%M:%S", precision = "microsecond"))))
+  for (name in c("r-file-int32-sentinel.parquet", "r-file-uint32-overflow.parquet", "r-file-uint64-overflow.parquet")) {
     path <- normalizePath(file.path("fixtures", name))
     bytes <- readBin(path, "raw", file.size(path))
     error <- tryCatch(load_file(list(path = path, format = "parquet"), maximum_columns = maximum_columns), error = identity)

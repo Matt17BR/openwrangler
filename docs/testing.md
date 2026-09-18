@@ -196,6 +196,11 @@ Use the existing owners to choose a focused source check:
   and export/reopen. Refusals retain logical timestamp precedence, physical/bit-width compatibility, unsigned range
   and missing-sentinel checks, field diagnostics and unchanged source bytes. Their SQL is recorded in the existing
   kernel owner; tests do not require DuckDB. The native dependency locks include readxl for this owner.
+  The same lifecycle owner checks exact civil/UTC Parquet timestamps, nulls, signed nanosecond endpoints and adjacent
+  ticks through base/dplyr cleaning, generated R and export/reopen. Frame controls own clock storage, query and export
+  behavior; host controls own exact strings and filters after precision/meaning changes. The Windows installed file journey
+  adds two timestamp columns to its existing three-row Parquet fixture and checks one rendered timestamp via End
+  navigation, without adding another session or operation sequence.
   The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
   cloning, export, close and fresh reopen, including native temporary-file containment and removal on forced disposal.
   Existing R-document/factory tests check the shared process boundary and
@@ -704,7 +709,7 @@ for the unchanged setup and qualification requirements.
 The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
 `languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey disables
 `r.lsp.enabled` in its private profile and omits `languageserver` and `knitr`. It retains the official R extension's
-session watcher and nanoparquet for real Parquet export. It also omits rmarkdown, IRkernel, collapse and Rcpp because
+session watcher and Arrow for real Parquet export. It also omits rmarkdown, IRkernel, collapse and Rcpp because
 the plain-R terminal fixtures do not render documents, start a Jupyter kernel or use collapse. This terminal sequence
 does not exercise incidental language-server coexistence during discovery, replacement, editing and export; other
 profiles retain the default LSP setting. The `value-operations`, `categorical-operations` and `pivot-wider` notebook
@@ -725,6 +730,10 @@ require the exact private IRkernel readiness probe; terminal preparation creates
 All editor purposes retain the exact native R executable and private library environment. Notebook setup, restart
 and replacement checks compare the reported collapse version with the version selected by preparation. The remote
 container retains its separate pinned package version.
+Editor libraries include Arrow 23.0.1.1 and clock 0.7.4 from the existing primary snapshot, plus nanoparquet 0.5.1
+from the existing supplemental snapshot for file metadata and zero-column export. Linux source locks use Arrow 25.0.0
+and clock 0.7.4 from their existing snapshot. These packages are installed in the selected private R library, not bundled
+in the VSIX. CSV-only product use does not require Arrow or clock.
 
 On Ubuntu 24.04 and 26.04, preparation selects the matching Noble or Resolute snapshot and sends the selected R
 version and architecture in its HTTP user agent. This lets the package server supply compatible binaries while
@@ -757,9 +766,9 @@ The two focused cases run serially in separate R processes through the warning-s
 limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
 execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
 private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
-export case requires nanoparquet; source preparation skips the empty supplemental package install. Any preparation
+export case requires Arrow; source preparation skips the empty supplemental package install. Any preparation
 or test failure retains the private root; successful preparation and both child exits permit its removal.
-The subsequent installed-editor journey keeps its separate environment, nanoparquet dependency and lifetime.
+The subsequent installed-editor journey keeps its separate environment, Parquet dependencies and lifetime.
 The separate R 4.4 qualification remains unchanged.
 
 The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact

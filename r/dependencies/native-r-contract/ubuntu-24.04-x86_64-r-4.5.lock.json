@@ -3,7 +3,7 @@
   "purpose": "native-r-contract",
   "qualification": {
     "rMinor": "4.5",
-    "generatedWithRVersion": "4.5.3",
+    "generatedWithRVersion": "4.5.2",
     "os": "linux",
     "distribution": "ubuntu",
     "distributionVersion": "24.04",
@@ -25,6 +25,8 @@
       "data.table",
       "bit64",
       "rlang",
+      "arrow",
+      "clock",
       "nanoparquet",
       "readxl",
       "collapse"
@@ -68,6 +70,55 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/Rcpp_1.1.2.tar.gz",
         "bytes": 2222737,
         "sha256": "474262ff312d06764eb9535ddc8197e0e0a210edcb5caaefcd9e33a3a6bf78fc"
+      }
+    },
+    {
+      "name": "arrow",
+      "version": "25.0.0",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "Apache License (>= 2.0)",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "R6",
+          "assertthat",
+          "bit64",
+          "glue",
+          "purrr",
+          "rlang",
+          "tidyselect",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cpp11"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/arrow_25.0.0.tar.gz",
+        "bytes": 22318757,
+        "sha256": "f439c97d8ec140ac6bf9f41b4bead628d8e7b7f9f7758a9dfc1e407ea4bc2ffa"
+      }
+    },
+    {
+      "name": "assertthat",
+      "version": "0.2.1",
+      "direct": false,
+      "needsCompilation": false,
+      "license": "GPL-3",
+      "dependencies": {
+        "depends": [],
+        "imports": [],
+        "linkingTo": []
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/assertthat_0.2.1.tar.gz",
+        "bytes": 53265,
+        "sha256": "6620785af5e62f2e6e5e47b5ad85f8b33fb8c17db295d9799ded3378a57f0147"
       }
     },
     {
@@ -168,6 +219,34 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/clipr_0.8.1.tar.gz",
         "bytes": 53298,
         "sha256": "935f320f24c418f62f9099d1b8f3fb7ec3f30736d93580d04694412ef395199f"
+      }
+    },
+    {
+      "name": "clock",
+      "version": "0.7.4",
+      "direct": true,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "rlang",
+          "tzdb",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cpp11",
+          "tzdb"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/clock_0.7.4.tar.gz",
+        "bytes": 1927724,
+        "sha256": "5621a013c65ca5b3c00b4f8a5141efa4ccb34b7198ac376c0ad9fad5c871ea20"
       }
     },
     {
@@ -509,6 +588,33 @@
         "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/progress_1.2.3.tar.gz",
         "bytes": 86958,
         "sha256": "6a9df760a5aee1da167e4410af452807b275dd02b96286fb9d68926f55018079"
+      }
+    },
+    {
+      "name": "purrr",
+      "version": "1.2.2",
+      "direct": false,
+      "needsCompilation": true,
+      "license": "MIT + file LICENSE",
+      "dependencies": {
+        "depends": [],
+        "imports": [
+          "cli",
+          "lifecycle",
+          "magrittr",
+          "rlang",
+          "vctrs"
+        ],
+        "linkingTo": [
+          "cli"
+        ]
+      },
+      "source": {
+        "kind": "binary",
+        "repositorySnapshotUrl": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib",
+        "url": "https://packagemanager.posit.co/cran/2026-08-14/bin/linux/noble-x86_64/4.5/src/contrib/purrr_1.2.2.tar.gz",
+        "bytes": 553527,
+        "sha256": "b216e5b932b1b90c4b8c77b67a1006cdb62bdf1bad4d3ea5eede776f59b53dfd"
       }
     },
     {

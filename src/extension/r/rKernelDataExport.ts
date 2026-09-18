@@ -76,7 +76,7 @@ export class RKernelDataExport {
       return errorResponse(
         "unsupported_operation",
         format === "parquet"
-          ? "Parquet export requires nanoparquet 0.5.1 or newer in the selected local R runtime."
+          ? "Parquet export requires Arrow 23.0.1.1 or newer in the selected local R runtime."
           : "Cleaned-data export is available for local R notebook and document sessions opened in Editing mode.",
         true,
         request.sessionId

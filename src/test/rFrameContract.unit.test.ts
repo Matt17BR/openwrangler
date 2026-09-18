@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { metadataFor, sessionFromContract } from "../extension/r/rKernelBridgeContract";
-import { gridPageFromRContract } from "../extension/r/rKernelFrameMapping";
+import { gridPageFromRContract, sameRSchema, schemaFromRContract } from "../extension/r/rKernelFrameMapping";
+import { resolveRViewQuery } from "../extension/r/rKernelViewContract";
+import { canStartOperation } from "../shared/operations";
 import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import { decodeRFramePageJson, R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
 
@@ -10,7 +12,7 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 6,
+    contractVersion: 7,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -56,7 +58,245 @@ function dateContract(raw: string): Record<string, unknown> {
   return candidate;
 }
 
+function clockContract(clock = "naive", precision = "nanosecond", unit = "ns"): Record<string, unknown> {
+  const candidate = minimalContract();
+  const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;
+  column.rawType = `clock_${clock}_time[${unit}]`;
+  column.type = "datetime";
+  column.nullable = true;
+  column.semantics = {
+    kind: "clock_datetime",
+    storageMode: "list",
+    classes: [`clock_${clock}_time`, "clock_time_point", "clock_rcrd", "vctrs_rcrd", "vctrs_vctr"],
+    clock,
+    precision
+  };
+  const row = ((candidate.page as Record<string, unknown>).rows as Array<Record<string, unknown>>)[0]!;
+  row.values = [
+    {
+      kind: "datetime",
+      raw: "1",
+      display: `1970-01-01T00:00:00.${unit === "ms" ? "001" : unit === "us" ? "000001" : "000000001"}${clock === "sys" ? "Z" : ""}`,
+      isNull: false,
+      isNaN: false
+    }
+  ];
+  return candidate;
+}
+
 describe("native R frame contract decoder", () => {
+  it.each(["naive", "sys"])("preserves the %s clock timestamp unit and meaning in public column identity", (clock) => {
+    for (const [precision, unit] of [
+      ["millisecond", "ms"],
+      ["microsecond", "us"],
+      ["nanosecond", "ns"]
+    ]) {
+      const contract = decodeCandidate(clockContract(clock, precision, unit));
+      const schema = schemaFromRContract(contract);
+      expect(schema[0]).toMatchObject({ type: "datetime", rawType: `clock_${clock}_time[${unit}]` });
+      expect(contract.schema[0]!.semantics).toMatchObject({ clock, precision });
+      expect(gridPageFromRContract(contract).rows[0]!.values[0]).toMatchObject({ kind: "datetime", raw: "1" });
+      expect(
+        sameRSchema(schema, [
+          { ...contract.schema[0]!, rawType: `clock_${clock === "sys" ? "naive" : "sys"}_time[${unit}]` }
+        ])
+      ).toBe(false);
+      expect(
+        sameRSchema(schema, [
+          { ...contract.schema[0]!, rawType: `clock_${clock}_time[${unit === "ns" ? "us" : "ns"}]` }
+        ])
+      ).toBe(false);
+    }
+  });
+
+  it("keeps adjacent nanoseconds, the present minimum tick and null distinct through public pages and selections", () => {
+    const candidate = clockContract();
+    const values = [
+      { raw: "1700000000000000000", display: "2023-11-14T22:13:20.000000000" },
+      { raw: "1700000000000000001", display: "2023-11-14T22:13:20.000000001" },
+      { raw: "-9223372036854775808", display: "1677-09-21T00:12:43.145224192" },
+      { raw: "9223372036854775807", display: "2262-04-11T23:47:16.854775807" },
+      { raw: "-1", display: "1969-12-31T23:59:59.999999999" }
+    ];
+    const cells = [
+      ...values.map((value) => ({ kind: "datetime", ...value, isNull: false, isNaN: false })),
+      { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+    ];
+    candidate.shape = { rows: cells.length, columns: 1 };
+    Object.assign(candidate.page as object, {
+      limit: cells.length,
+      totalRows: cells.length,
+      rows: cells.map((cell, index) => ({ id: `r:r:${index}`, rowNumber: index, values: [cell] }))
+    });
+    const contract = decodeCandidate(candidate);
+    const page = gridPageFromRContract(contract);
+    expect(page.rows.map((row) => row.values[0]!.raw)).toEqual([...values.map((value) => value.raw), null]);
+    expect(page.rows.map((row) => row.values[0]!.display)).toEqual([...values.map((value) => value.display), "NA"]);
+    for (const library of ["base", "dplyr", "data.table", "collapse"] as const) {
+      const metadata = metadataFor(
+        sessionFromContract(
+          "clock",
+          {
+            kind: "file",
+            label: "time.parquet",
+            path: "/workspace/time.parquet",
+            uri: "file:///workspace/time.parquet"
+          },
+          "viewing",
+          contract,
+          ["csv", "parquet"],
+          library
+        )
+      );
+      expect(isOpenWranglerResponse({ kind: "page", revision: 0, viewRequestId: "clock-page", metadata, page })).toBe(
+        true
+      );
+    }
+    const selection = {
+      kind: "typedSelection" as const,
+      version: 1 as const,
+      columnType: "datetime" as const,
+      cell: page.rows[1]!.values[0]!
+    };
+    const query = resolveRViewQuery(
+      {
+        filters: [
+          {
+            column: "value",
+            type: "datetime",
+            predicates: [],
+            valueFilter: { kind: "values", selectedValues: [selection], includeNulls: false, includeNaN: false }
+          }
+        ],
+        sort: []
+      },
+      schemaFromRContract(contract)
+    );
+    expect(query.filters[0]!.valueFilter!.selectedValues[0]).toEqual(selection);
+    expect(
+      isOpenWranglerResponse({
+        kind: "columnValues",
+        revision: 0,
+        viewRequestId: "clock-values",
+        column: "value",
+        values: [{ value: selection.cell.display, count: 1, selectionValue: selection }],
+        hasMore: false
+      })
+    ).toBe(true);
+  });
+
+  it.each([
+    ["storage", { storageMode: "double" }],
+    ["class", { classes: ["clock_naive_time", "vctrs_vctr"] }],
+    ["clock", { clock: "local" }],
+    ["meaning", { clock: "sys" }],
+    ["precision", { precision: "second" }],
+    ["extra metadata", { timezone: "UTC" }]
+  ])("rejects malformed clock %s metadata", (_name, change) => {
+    const candidate = clockContract();
+    const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;
+    Object.assign(column.semantics as object, change);
+    expect(() => decodeCandidate(candidate)).toThrow(TypeError);
+  });
+
+  it.each(["9223372036854775808", "-9223372036854775809", "1.0", "1e9", "01", "-0", "NaN", 1, null])(
+    "rejects the invalid clock tick payload %s",
+    (raw) => {
+      const candidate = clockContract();
+      const row = ((candidate.page as Record<string, unknown>).rows as Array<Record<string, unknown>>)[0]!;
+      (row.values as Array<Record<string, unknown>>)[0]!.raw = raw;
+      expect(() => decodeCandidate(candidate)).toThrow(TypeError);
+    }
+  );
+
+  it.each([
+    ["millisecond", "ms", "-62167219200000", "253402300799999"],
+    ["microsecond", "us", "-62167219200000000", "253402300799999999"]
+  ] as const)("admits only ISO years 0000 through 9999 at %s precision", (precision, unit, minimum, maximum) => {
+    for (const clock of ["naive", "sys"]) {
+      const candidate = clockContract(clock, precision, unit);
+      const row = ((candidate.page as Record<string, unknown>).rows as Array<Record<string, unknown>>)[0]!;
+      const cell = (row.values as Array<Record<string, unknown>>)[0]!;
+      const suffix = clock === "sys" ? "Z" : "";
+      const digits = unit === "ms" ? 3 : 6;
+      for (const [raw, display] of [
+        [minimum, `0000-01-01T00:00:00.${"0".repeat(digits)}${suffix}`],
+        [maximum, `9999-12-31T23:59:59.${"9".repeat(digits)}${suffix}`]
+      ]) {
+        cell.raw = raw;
+        cell.display = display;
+        expect(decodeCandidate(candidate).page.rows[0]!.values[0]!.raw).toBe(raw);
+      }
+      for (const raw of [String(BigInt(minimum) - 1n), String(BigInt(maximum) + 1n)]) {
+        cell.raw = raw;
+        expect(() => decodeCandidate(candidate)).toThrow("ISO calendar years");
+      }
+    }
+  });
+
+  it("retains viewing and export while restricting incompatible cleaning libraries", () => {
+    const contract = decodeCandidate(clockContract());
+    for (const library of ["base", "dplyr", "data.table", "collapse"] as const) {
+      const session = sessionFromContract(
+        "clock",
+        {
+          kind: "file",
+          label: "time.parquet",
+          path: "/workspace/time.parquet",
+          uri: "file:///workspace/time.parquet"
+        },
+        "editing",
+        contract,
+        ["csv", "parquet"],
+        library
+      );
+      const metadata = metadataFor(session);
+      expect(metadata.rLibrary).toBe(library);
+      expect(metadata.capabilities).toMatchObject({
+        editable: true,
+        filter: true,
+        sort: true,
+        profile: true,
+        columnValues: true,
+        exportCsv: true,
+        exportParquet: true
+      });
+      const cleaningSupported = library === "base" || library === "dplyr";
+      expect(canStartOperation(metadata)).toBe(cleaningSupported);
+      if (!cleaningSupported) expect(metadata.capabilities.supportedOperations).toEqual([]);
+      session.mode = "viewing";
+      expect(metadataFor(session).capabilities).toMatchObject({
+        editable: true,
+        exportCsv: false,
+        exportParquet: false
+      });
+      const ordinary = sessionFromContract(
+        "ordinary",
+        session.source,
+        "editing",
+        decodeCandidate(minimalContract()),
+        [],
+        library
+      );
+      expect(canStartOperation(metadataFor(ordinary))).toBe(true);
+    }
+  });
+
+  it("refuses clock columns in unsupported native frames and nested prototypes", () => {
+    expect(() => decodeCandidate(clockContract("naive", "millisecond", "ns"))).toThrow("type metadata");
+    expect(() => decodeCandidate(clockContract("naive", "nanosecond", "ps"))).toThrow("type metadata");
+    const candidate = clockContract();
+    candidate.dataframeFlavor = "r.data.table";
+    (candidate.frameSemantics as Record<string, unknown>).classes = ["data.table", "data.frame"];
+    expect(() => decodeCandidate(candidate)).toThrow("base data.frame or tibble");
+    const nested = clockContract();
+    const column = (nested.schema as Array<Record<string, unknown>>)[0]!;
+    column.semantics = { kind: "list", storageMode: "list", classes: ["list"], element: column.semantics };
+    column.type = "list";
+    column.rawType = "list";
+    expect(() => decodeCandidate(nested)).toThrow("top-level");
+  });
+
   it("decodes bounded native list prototypes, names, typed children and present empties", () => {
     const candidate = minimalContract();
     const column = (candidate.schema as Array<Record<string, unknown>>)[0]!;

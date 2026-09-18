@@ -442,9 +442,13 @@ export function createReleasedRDocumentJourney({
       const parquet = await open(source("r-file-input.parquet"));
       assert.deepEqual(
         parquet.metadata.schema.map((column) => column.name),
-        ["id", "text", "flag", "amount", "at", "date", "unsigned32", "unsigned64"]
+        ["id", "text", "flag", "amount", "at", "date", "unsigned32", "unsigned64", "civil_ns", "utc_ns"]
       );
-      assert.deepEqual(parquet.metadata.shape, { rows: 3, columns: 8 });
+      assert.deepEqual(parquet.metadata.shape, { rows: 3, columns: 10 });
+      assert.deepEqual(
+        parquet.metadata.schema.slice(8).map((column) => column.rawType),
+        ["clock_naive_time[ns]", "clock_sys_time[ns]"]
+      );
       const parquetPage = await assertReleasedSessionPage(testing, parquet, "1", "jupyter-r-file-parquet");
       assert.deepEqual(
         parquetPage.page.rows.map((row) => row.values.slice(0, 4).map((cell) => cell.display)),
@@ -458,11 +462,24 @@ export function createReleasedRDocumentJourney({
         parquetPage.page.rows.slice(0, 2).map((row) => row.values[7]?.display),
         ["0", "9223372036854775807"]
       );
+      assert.deepEqual(
+        parquetPage.page.rows.map((row) => row.values.slice(8).map((cell) => cell.display)),
+        [
+          ["2026-03-29T02:30:00.000000000", "2026-03-29T02:30:00.000000000Z"],
+          ["2026-03-29T02:30:00.000000001", "2026-03-29T02:30:00.000000001Z"],
+          ["NA", "NA"]
+        ]
+      );
       app = await releasedRSessionApp(workbench, testing, parquet.sessionId, "the native Parquet grid");
       assert.equal(
         await app.locator('td[data-grid-row="0"][data-grid-column="1"] .gridCellText').textContent(),
         "  é  "
       );
+      await app.locator('td[data-grid-row="0"][data-grid-column="1"]').focus();
+      await workbench.keyboard.press("End");
+      const preciseCell = app.locator('td[data-grid-row="0"][data-grid-column="9"] .gridCellText');
+      await preciseCell.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await preciseCell.textContent(), "2026-03-29T02:30:00.000000000Z");
       await closeSessions();
 
       const excelUri = source("r-file-input.xlsx");

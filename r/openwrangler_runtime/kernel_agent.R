@@ -755,7 +755,9 @@ openwrangler_r_kernel_agent <- local({
       !is.null(prior) &&
         !is.null(next_column) &&
         identical(.subset2(prior, "type"), filter$type) &&
-        identical(.subset2(next_column, "type"), filter$type)
+        identical(.subset2(next_column, "type"), filter$type) &&
+        (!(prior$semantics$kind == "clock_datetime" || next_column$semantics$kind == "clock_datetime") ||
+          identical(prior$rawType, next_column$rawType))
     }, view$filters)
     sorts <- Filter(function(rule) {
       prior <- unique_column(before_schema, rule$column)
@@ -4572,6 +4574,8 @@ openwrangler_r_kernel_agent <- local({
       position = as.integer(rule$position),
       name = column$name,
       semanticsKind = column$semantics$kind,
+      clock = column$semantics$clock,
+      precision = column$semantics$precision,
       direction = rule$direction,
       nulls = rule$nulls
     )
@@ -4600,6 +4604,8 @@ openwrangler_r_kernel_agent <- local({
       type = column$type,
       semanticsKind = column$semantics$kind,
       units = column$semantics$units,
+      clock = column$semantics$clock,
+      precision = column$semantics$precision,
       logic = filter$logic,
       predicates = predicates,
       valueFilter = value_filter
@@ -5151,15 +5157,18 @@ openwrangler_r_kernel_agent <- local({
   }
 
   apply_step <- function(frame_contract, capture, step, source_environment, variable_name, library) {
+    if (library %in% c("data.table", "collapse") && any(vapply(capture$descriptor$schema,
+        function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))) {
+      abort("unsupported_library", "Precise native R timestamps can be viewed with this library. Open a copy with base or dplyr to clean this dataframe.", TRUE)
+    }
     source <- get("snapshot", envir = capture, inherits = FALSE)
     if (identical(step$kind, "customCode")) {
-      return(evaluate_custom_code(
-        frame_contract,
-        capture,
-        step,
-        source_environment,
-        variable_name
-      ))
+      result <- evaluate_custom_code(frame_contract, capture, step, source_environment, variable_name)
+      if (library %in% c("data.table", "collapse") && any(vapply(result$capture$descriptor$schema,
+          function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))) {
+        abort("unsupported_library", "Precise native R timestamps require base or dplyr cleaning. Reopen this dataframe with base or dplyr.", TRUE)
+      }
+      return(result)
     }
     if (step$kind %in% c("sortRows", "filterRows")) {
       view <- if (identical(step$kind, "sortRows")) {
@@ -5911,6 +5920,7 @@ openwrangler_r_kernel_agent <- local({
       factor = sprintf("is.factor(%s)", variable),
       integer64 = sprintf("inherits(%s, \"integer64\")", variable),
       datetime = sprintf("inherits(%s, \"POSIXct\")", variable),
+      clock_datetime = sprintf(".ow_clock_helpers$clock_is_column(%s)", variable),
       date = sprintf("inherits(%s, \"Date\")", variable),
       difftime = sprintf("inherits(%s, \"difftime\")", variable),
       logical = sprintf("is.logical(%s)", variable),
@@ -5990,6 +6000,13 @@ openwrangler_r_kernel_agent <- local({
         )
       )
     }
+    if (identical(specification$semanticsKind, "clock_datetime") && !is.null(specification$precision)) {
+      lines <- c(lines, sprintf(
+        "  if (!identical(attr(%s, \"clock\", exact = TRUE), %dL) || !identical(attr(%s, \"precision\", exact = TRUE), %dL)) stop(\"Open Wrangler precise timestamp type, precision or timezone meaning is stale\", call. = FALSE)",
+        variable, if (identical(specification$clock, "naive")) 1L else 0L, variable,
+        switch(specification$precision, millisecond = 8L, microsecond = 9L, nanosecond = 10L)
+      ))
+    }
     lines
   }
 
@@ -6004,6 +6021,7 @@ openwrangler_r_kernel_agent <- local({
       factor = sprintf("as.character(%s)", variable),
       date = sprintf("as.double(%s)", variable),
       datetime = sprintf("as.double(%s)", variable),
+      clock_datetime = sprintf(".ow_clock_helpers$clock_ticks(%s)", variable),
       difftime = sprintf("as.double(%s, units = %s)", variable, r_string(specification$units)),
       abort("runtime_error", "Generated R code received an unsupported row comparison")
     )
@@ -6016,6 +6034,7 @@ openwrangler_r_kernel_agent <- local({
       integer = sprintf("as.double(%s)", r_string(value_key)),
       integer64 = sprintf("bit64::as.integer64(%s)", r_string(value_key)),
       datetime =, difftime = r_number(value_key),
+      clock_datetime = r_string(value_key),
       double = if (is.finite(value_key)) r_number(value_key) else if (value_key < 0) "-Inf" else "Inf",
       character = r_string(value_key),
       factor = r_string(value_key),
@@ -6037,6 +6056,7 @@ openwrangler_r_kernel_agent <- local({
       double =, datetime =, difftime = sprintf("c(%s)", paste(vapply(value_keys, row_target, character(1L), specification = specification), collapse = ", ")),
       date = sprintf("as.double(%s)", r_character_vector(value_keys)),
       character = r_character_vector(value_keys),
+      clock_datetime = r_character_vector(value_keys),
       factor = r_character_vector(value_keys),
       abort("runtime_error", "Generated R code received unsupported selected row values")
     )
@@ -6050,6 +6070,14 @@ openwrangler_r_kernel_agent <- local({
     if (identical(operator, "isNotNaN")) return(sprintf("!%s", nan_mask))
     present <- sprintf("(!%s & !%s)", null_mask, nan_mask)
     values <- row_comparable(variable, specification)
+    if (identical(specification$semanticsKind, "clock_datetime")) {
+      compare <- function(key, operation) sprintf(
+        "%s & .ow_clock_helpers$compare_integer_keys(ifelse(%s, %s, \"0\"), %s, %s)",
+        present, present, values, r_string(key), r_string(operation)
+      )
+      if (identical(operator, "between")) return(sprintf("(%s) & (%s)", compare(predicate$valueKey, "gte"), compare(predicate$secondValueKey, "lte")))
+      return(compare(predicate$valueKey, operator))
+    }
     if (identical(operator, "contains")) {
       folded <- chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", predicate$valueKey)
       return(sprintf(
@@ -6288,7 +6316,7 @@ openwrangler_r_kernel_agent <- local({
       reducer <- if (identical(step$mode, "all")) "`|`" else "`&`"
       lines <- c(
         lines,
-        "  .ow_present <- lapply(.ow_row_columns, function(.ow_position) { .ow_column <- base::.subset2(.ow_result, .ow_position); if (base::is.list(.ow_column)) !base::vapply(base::unclass(.ow_column), base::is.null, base::logical(1L)) else !is.na(.ow_column) })",
+        "  .ow_present <- lapply(.ow_row_columns, function(.ow_position) { .ow_column <- base::.subset2(.ow_result, .ow_position); if (base::is.list(.ow_column) && !base::inherits(.ow_column, \"clock_time_point\")) !base::vapply(base::unclass(.ow_column), base::is.null, base::logical(1L)) else !is.na(.ow_column) })",
         sprintf("  .ow_keep <- Reduce(%s, .ow_present)", reducer),
         "  .ow_rows <- which(.ow_keep)"
       )
@@ -7765,7 +7793,17 @@ openwrangler_r_kernel_agent <- local({
       "      for (.ow_key_name in .ow_key) { .ow_key_position <- base::match(.ow_key_name, .ow_names); .ow_spend_metadata(.ow_metadata_json_bytes(base::sprintf(\"r:c:%d\", .ow_key_position - 1L)) + 1) }",
       "    }",
       "    for (.ow_position in base::seq_len(.ow_column_count)) {",
-      "      .ow_column <- base::.subset2(.ow_columns, .ow_position); if (base::length(base::unclass(.ow_column)) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
+      "      .ow_column <- base::.subset2(.ow_columns, .ow_position)",
+      "      if (.ow_clock_helpers$clock_is_column(.ow_column)) {",
+      "        if (.ow_clock_helpers$clock_validate(.ow_column, \"Custom Code precise timestamp\", FALSE) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
+      "        if (base::identical(.ow_flavor, \"r.data.table\") || .ow_library %in% c(\"data.table\", \"collapse\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble with base or dplyr cleaning\", call. = FALSE)",
+      "        .ow_clock_budget <- .ow_nested_helpers$budget(.ow_operation_bytes)",
+      "        .ow_nested_helpers$charge(.ow_column, base::list(kind = \"clock_datetime\"), .ow_position, .ow_clock_budget)",
+      "        .ow_operation_bytes <- .ow_clock_budget$used",
+      "        for (.ow_class in base::class(.ow_column)) .ow_spend_metadata(.ow_metadata_json_bytes(.ow_class) + 1L)",
+      "        next",
+      "      }",
+      "      if (base::length(base::unclass(.ow_column)) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
       "      if (base::is.list(.ow_column) && !base::is.matrix(.ow_column) && !base::is.array(.ow_column)) {",
       "        .ow_nested_metadata <- .ow_nested_helpers$budget(.ow_metadata_bytes)",
       "        .ow_nested_semantics <- .ow_nested_helpers$semantics(.ow_column, \"Custom Code list column\", .ow_nested_metadata)",
@@ -8001,10 +8039,11 @@ openwrangler_r_kernel_agent <- local({
     }, warning = function(warning) fail()), error = function(error) fail())
   }
 
-  load_parquet_source <- function(path) {
-    if (!base::requireNamespace("nanoparquet", quietly = TRUE) || utils::packageVersion("nanoparquet") < "0.5.1") {
-      base::stop("R Parquet input requires nanoparquet 0.5.1 or newer. Run install.packages('nanoparquet') in the selected R runtime, then reopen the file.", call. = FALSE)
-    }
+  load_parquet_source <- function(path, require_arrow = openwrangler_r_frame_contract$require_arrow,
+      require_clock = openwrangler_r_frame_contract$clock_helpers$clock_require,
+      require_nanoparquet = openwrangler_r_frame_contract$require_nanoparquet) {
+    require_arrow()
+    require_nanoparquet()
     metadata <- nanoparquet::read_parquet_metadata(path)
     schema <- metadata$schema
     if (base::nrow(schema) < 1L || base::is.na(schema$num_children[[1L]]) ||
@@ -8043,8 +8082,7 @@ openwrangler_r_kernel_agent <- local({
         refuse_field(index, "DATE requires physical INT32")
       } else if (base::identical(annotation, "TIMESTAMP")) {
         if (physical != "INT64") refuse_field(index, "TIMESTAMP requires physical INT64")
-        if (!base::isTRUE(logical$is_adjusted_to_utc)) refuse_field(index, "timestamps must be adjusted to UTC")
-        if (!logical$unit %in% c("MILLIS", "MICROS")) refuse_field(index, "timestamp unit must be MILLIS or MICROS")
+        if (!logical$unit %in% c("MILLIS", "MICROS", "NANOS")) refuse_field(index, "timestamp unit must be MILLIS, MICROS or NANOS")
         return(base::paste0("timestamp-", logical$unit))
       } else if (base::identical(annotation, "INT") || legacy_integer) {
         width <- if (legacy_integer) base::as.integer(base::sub("^U?INT_", "", converted)) else logical$bit_width
@@ -8062,58 +8100,89 @@ openwrangler_r_kernel_agent <- local({
       }
       refuse_field(index, "annotation is not supported by the native reader")
     }, character(1L), USE.NAMES = FALSE)
-    needs_integer64 <- base::any(kinds %in% c("int64", "uint64"))
-    if (needs_integer64 && !base::requireNamespace("bit64", quietly = TRUE)) base::stop("R Parquet integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.", call. = FALSE)
-    result <- nanoparquet::read_parquet(path, options = nanoparquet::parquet_options(
-      class = "data.frame", read_int64_type = if (needs_integer64) "integer64" else "double", use_arrow_metadata = TRUE
-    ))
-    if (!base::identical(base::names(result), fields$name) || base::nrow(result) != metadata$file_meta_data$num_rows[[1L]]) {
+    table <- base::tryCatch(arrow::read_parquet(path, as_data_frame = FALSE), error = function(error) {
+      base::stop("R Parquet input could not be decoded by Arrow. Check that the file is a valid Parquet file.", call. = FALSE)
+    })
+    if (!base::identical(base::names(table), fields$name) || table$num_rows != metadata$file_meta_data$num_rows[[1L]]) {
       base::stop("R Parquet reader changed the source schema or row count", call. = FALSE)
     }
-    durations <- base::which(base::vapply(result, base::inherits, logical(1L), "difftime"))
-    # nanoparquet 0.5.1 column selection can misalign nullable duration values; read complete rows before retaining these columns.
-    raw_durations <- if (base::length(durations)) nanoparquet::read_parquet(path,
-      options = nanoparquet::parquet_options(class = "data.frame", read_int64_type = "double", use_arrow_metadata = FALSE))[durations] else NULL
+    if (table$num_rows > .Machine$integer.max) base::stop("R Parquet input exceeds the native row limit", call. = FALSE)
+    result <- base::vector("list", table$num_columns)
+    base::names(result) <- base::names(table)
     for (index in base::seq_along(result)) {
-      value <- result[[index]]
-      kind <- kinds[[index]]
-      if (kind %in% c("int32", "int64", "uint32", "uint64", "date")) {
-        # R integer minima are missing sentinels. Require evidence that missing values are actual Parquet nulls.
-        missing <- base::sum(base::is.na(value))
-        if (missing > 0) {
-          counts <- metadata$column_chunks$null_count[metadata$column_chunks$column == index - 1L]
-          expected <- if (fields$repetition_type[[index]] == "REQUIRED") 0 else if (base::length(counts) && !base::anyNA(counts)) base::sum(counts) else NA_real_
-          if (base::is.na(expected) || missing != expected) refuse_field(index, "cannot distinguish native integer/date missing sentinels from source values")
+      column <- table[[index]]
+      type <- column$type
+      kind <- type$ToString()
+      refuse <- function(reason) refuse_field(index, reason)
+      nulls <- arrow::call_function("is_null", column)$as_vector()
+      value <- if (base::inherits(type, "Timestamp")) {
+        unit <- c("s", "ms", "us", "ns")[[type$unit() + 1L]]
+        if (!unit %in% c("ms", "us", "ns")) refuse("timestamp unit must be milliseconds, microseconds or nanoseconds")
+        if (!base::startsWith(kinds[[index]], "timestamp-")) refuse("Arrow timestamp metadata disagrees with the Parquet annotation")
+        adjusted <- base::isTRUE(fields$logical_type[[index]]$is_adjusted_to_utc)
+        ticks <- column$cast(arrow::int64())
+        # Keep existing exactly representable UTC timestamps as POSIXct. Other
+        # timestamps need a native clock type before any conversion to double.
+        seconds <- NULL
+        if (adjusted && unit %in% c("ms", "us")) {
+          # This lossy cast only probes the conservative POSIXct bound. Values
+          # outside it are constructed from the original exact ticks below.
+          raw <- ticks$cast(arrow::float64(), safe = FALSE)$as_vector()
+          scale <- if (unit == "ms") 1000 else 1000000
+          candidate <- raw / scale
+          if (base::all(base::is.na(raw) | (base::abs(raw) < 2251799813685248 & base::round(candidate * scale) == raw))) seconds <- candidate
         }
-      }
-      if (kind %in% c("uint32", "uint64") && base::any(value < 0, na.rm = TRUE)) refuse_field(index, "unsigned values exceed the native signed integer range")
-      if (kind %in% c("int64", "uint64")) {
-        if (base::inherits(value, "difftime")) {
-          # Check the raw duration ticks without decoding Arrow metadata ourselves.
-          ticks <- raw_durations[[base::match(index, durations)]]
-          seconds <- base::as.double(value, units = "secs")
-          scales <- c(1, 1000, 1000000, 1000000000)
-          matches <- base::vapply(scales, function(scale) base::all(base::round(seconds * scale) == ticks & ticks / scale == seconds, na.rm = TRUE), logical(1L))
-          if (!base::identical(base::is.na(ticks), base::is.na(seconds)) ||
-              base::any(!base::is.na(ticks) & (!base::is.finite(ticks) | base::abs(ticks) >= 2251799813685248 | ticks != base::trunc(ticks))) ||
-              !base::any(matches) || (base::any(ticks != 0, na.rm = TRUE) && base::sum(matches) != 1L)) refuse_field(index, "duration ticks exceed the exact native reader range")
-        } else if (!base::inherits(value, "integer64")) {
-          # nanoparquet can return unannotated or unsigned INT64 as double even with its integer64 option.
-          if (base::any(!base::is.na(value) & (!base::is.finite(value) | base::abs(value) >= 9007199254740992 | value != base::trunc(value)))) refuse_field(index, "INT64 values exceed the reader's exact integer range")
-          result[[index]] <- bit64::as.integer64(value)
+        if (!base::is.null(seconds)) {
+          base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+        } else {
+          require_clock()
+          precision <- c(ms = "millisecond", us = "microsecond", ns = "nanosecond")[[unit]]
+          text <- column$cast(arrow::timestamp(unit))$cast(arrow::utf8())$as_vector()
+          parsed <- base::withCallingHandlers(
+            clock::naive_time_parse(text, format = "%Y-%m-%d %H:%M:%S", precision = precision),
+            warning = function(warning) refuse("timestamps exceed the supported native calendar range"))
+          if (!base::identical(base::is.na(parsed), nulls) ||
+              !base::identical(base::format(clock::as_duration(parsed)), ticks$cast(arrow::utf8())$as_vector())) {
+            refuse("timestamps cannot be represented exactly by the native clock type")
+          }
+          if (adjusted) clock::as_sys_time(parsed) else parsed
         }
-      } else if (kind == "date") {
-        result[[index]] <- base::structure(base::as.double(value), class = "Date")
-      } else if (base::startsWith(kind, "timestamp-")) {
-        scale <- if (kind == "timestamp-MILLIS") 1000 else 1000000
-        seconds <- base::as.double(value)
-        ticks <- seconds * scale
-        # The strict tick bound leaves enough double precision to recover the original integer ticks.
-        if (base::any(!base::is.na(seconds) & (!base::is.finite(seconds) | base::abs(ticks) >= 2251799813685248 | base::round(ticks) / scale != seconds))) refuse_field(index, "timestamps exceed the exact millisecond/microsecond reader range")
-        result[[index]] <- base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+      } else if (base::inherits(type, "DurationType")) {
+        unit <- c("s", "ms", "us", "ns")[[type$unit() + 1L]]
+        scale <- c(s = 1, ms = 1000, us = 1000000, ns = 1000000000)[[unit]]
+        ticks <- column$cast(arrow::int64())$cast(arrow::float64(), safe = FALSE)$as_vector()
+        seconds <- ticks / scale
+        if (base::any(!nulls & (base::abs(ticks) >= 2251799813685248 | base::round(seconds * scale) != ticks))) {
+          refuse("duration ticks exceed the exact native reader range")
+        }
+        base::structure(seconds, class = "difftime", units = "secs")
+      } else if (kind %in% c("int64", "uint64")) {
+        native <- base::tryCatch(column$cast(arrow::int64())$as_vector(),
+          error = function(error) refuse("unsigned values exceed the native signed integer range"))
+        if (!base::inherits(native, "integer64")) native <- bit64::as.integer64(native)
+        if (!base::identical(base::is.na(native), nulls)) refuse("native integer missing sentinels are present source values")
+        native
+      } else if (kind %in% c("int8", "int16", "int32", "uint8", "uint16", "uint32")) {
+        native <- column$as_vector()
+        if (!base::identical(base::is.na(native), nulls)) refuse("native integer missing sentinels are present source values")
+        if (base::any(!nulls & (native < -.Machine$integer.max | native > .Machine$integer.max))) refuse("integer values exceed the native signed integer range")
+        base::as.integer(native)
+      } else if (kind %in% c("date32[day]", "date64[ms]")) {
+        native <- column$as_vector()
+        if (!base::inherits(native, "Date") || !base::identical(base::is.na(native), nulls)) refuse("dates cannot be represented exactly by the native reader")
+        base::structure(base::as.double(native), class = "Date")
+      } else if (base::inherits(type, "DictionaryType") && type$value_type$ToString() == "string") {
+        native <- column$as_vector()
+        if (!base::is.factor(native)) refuse("dictionary values are not a supported native factor")
+        native
+      } else if (kind %in% c("bool", "float", "double", "string")) {
+        column$as_vector()
+      } else {
+        refuse("only supported flat scalar columns can be opened in native R")
       }
+      result[[index]] <- value
     }
-    result
+    base::structure(result, class = "data.frame", row.names = base::.set_row_names(table$num_rows))
   }
 
   load_jsonl_source <- function(path) {
@@ -8359,10 +8428,25 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  clock_code_helper_lines <- function(frame_contract) {
+    helpers <- frame_contract$clock_helpers[setdiff(names(frame_contract$clock_helpers), c("clock_display", "clock_parse"))]
+    lines <- "  .ow_clock_helpers <- base::evalq({"
+    for (name in names(helpers)) {
+      lines <- c(lines, sprintf("    `%s` <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
+    }
+    c(lines,
+      sprintf("    base::list(%s)", paste(sprintf("`%s` = `%s`", names(helpers), names(helpers)), collapse = ", ")),
+      "  }, base::new.env(parent = base::baseenv()))"
+    )
+  }
+
   compile_plan <- function(variable_name, bound_plan, frame_contract, file_source = NULL, source_schema = NULL, library) {
     if (length(bound_plan) == 0L) return("")
     source_schema <- unclass(source_schema)
     attributes(source_schema) <- NULL
+    clock_positions <- which(vapply(source_schema, function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))
+    needs_clock_helpers <- length(clock_positions) > 0L || (!is.null(file_source) && identical(file_source$format, "parquet")) ||
+      any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
     needs_nested_operations <- any(vapply(bound_plan, function(step) step$kind %in% c("extractStructFields", "explodeList"), logical(1L)))
     needs_nested_helpers <- needs_nested_operations || any(vapply(seq_along(source_schema), function(position) .subset2(source_schema, position)$semantics$kind %in% c("list", "struct"), logical(1L))) ||
       any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
@@ -8386,9 +8470,13 @@ openwrangler_r_kernel_agent <- local({
       } else if (identical(file_source$format, "excel")) {
         sheet <- if ("sheetName" %in% names(file_source)) r_string(file_source$sheetName) else sprintf("%.0f", file_source$sheetIndex + 1)
         arguments <- sprintf("%s, sheet = %s", arguments, sheet)
+      } else if (identical(file_source$format, "parquet")) {
+        arguments <- paste0(arguments, ", require_arrow = .ow_require_arrow, require_clock = .ow_clock_helpers$clock_require, require_nanoparquet = .ow_require_nanoparquet")
       }
       c(
         if (identical(file_source$format, "excel")) paste0("  excel_sheet_names <- ", paste(deparse(excel_sheet_names, width.cutoff = 100L), collapse = "\n")),
+        if (identical(file_source$format, "parquet")) paste0("  .ow_require_arrow <- ", paste(deparse(frame_contract$require_arrow, width.cutoff = 100L), collapse = "\n")),
+        if (identical(file_source$format, "parquet")) paste0("  .ow_require_nanoparquet <- ", paste(deparse(frame_contract$require_nanoparquet, width.cutoff = 100L), collapse = "\n")),
         paste0("  ", reader_name, " <- ", paste(deparse(reader, width.cutoff = 100L), collapse = "\n")),
         sprintf("  .ow_source <- %s(%s)", reader_name, arguments),
         sprintf("  base::rm(%s)", reader_name),
@@ -8400,6 +8488,7 @@ openwrangler_r_kernel_agent <- local({
       sprintf("  .ow_publication_name <- %s", r_string(result_name)),
       "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
       "  .ow_generated_result <- base::evalq({",
+      if (needs_clock_helpers) clock_code_helper_lines(frame_contract),
       library_code_helper_lines(frame_contract, library, bound_plan),
       if (needs_nested_helpers) nested_column_code_helper_lines(frame_contract, needs_nested_operations),
       if (is.null(file_source)) c(
@@ -8422,7 +8511,7 @@ openwrangler_r_kernel_agent <- local({
       ),
       "  base::rm(.ow_source_environment)",
       "  if (!base::is.data.frame(.ow_source)) base::stop(\"Open Wrangler expected an R dataframe\", call. = FALSE)",
-      "  .ow_storage_length <- function(.ow_value) base::length(base::unclass(.ow_value))",
+      if (needs_clock_helpers) "  .ow_storage_length <- function(.ow_value) { if (.ow_clock_helpers$clock_is_column(.ow_value)) return(.ow_clock_helpers$clock_validate(.ow_value, \"column\", FALSE)); base::length(base::unclass(.ow_value)) }" else "  .ow_storage_length <- function(.ow_value) base::length(base::unclass(.ow_value))",
       "  .ow_source_classes <- base::class(.ow_source)",
       "  .ow_source_is_readr <- base::identical(.ow_source_classes, c(\"spec_tbl_df\", \"tbl_df\", \"tbl\", \"data.frame\"))",
       "  .ow_source_flavor <- if (base::identical(.ow_source_classes, \"data.frame\")) {",
@@ -8496,6 +8585,14 @@ openwrangler_r_kernel_agent <- local({
       "  for (.ow_source_name in .ow_source_names) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_source_name), \"source column-name metadata\")",
       "  .ow_validate_source_column <- function(.ow_column, .ow_column_index) {",
       "    .ow_column_label <- base::sprintf(\"source column %d\", .ow_column_index)",
+      if (needs_clock_helpers) c(
+        "    if (.ow_clock_helpers$clock_is_column(.ow_column)) {",
+        "      if (.ow_clock_helpers$clock_validate(.ow_column, .ow_column_label) != .ow_source_row_count) base::stop(\"Open Wrangler precise timestamp length does not match the source rows\", call. = FALSE)",
+        "      if (base::identical(.ow_source_flavor, \"r.data.table\") || .ow_library %in% c(\"data.table\", \"collapse\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble with base or dplyr cleaning\", call. = FALSE)",
+        "      for (.ow_class in base::class(.ow_column)) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_class) + 1L, \"source clock-class metadata\")",
+        "      return(base::invisible(NULL))",
+        "    }"
+      ),
       "    .ow_column_length <- .ow_storage_length(.ow_column)",
       "    if (.ow_column_length != .ow_source_row_count) base::stop(base::sprintf(\"Open Wrangler generated R received a source column whose length does not match its row count: %s\", .ow_column_label), call. = FALSE)",
       "    .ow_column_attributes <- base::attributes(.ow_column)",
@@ -8596,6 +8693,12 @@ openwrangler_r_kernel_agent <- local({
       "    base::invisible(NULL)",
       "  }",
       "  for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) .ow_validate_source_column(base::.subset2(.ow_source_columns, .ow_source_column_index), .ow_source_column_index)",
+      unlist(lapply(clock_positions, function(position) {
+        semantics <- source_schema[[position]]$semantics
+        sprintf("  if (.ow_source_column_count < %dL || !base::identical(base::class(base::.subset2(.ow_source_columns, %dL)), %s) || !base::identical(base::attr(base::.subset2(.ow_source_columns, %dL), \"precision\", exact = TRUE), %dL)) base::stop(\"Open Wrangler precise timestamp type, precision or timezone meaning is stale\", call. = FALSE)",
+          position, position, r_character_vector(unclass(semantics$classes)), position,
+          switch(semantics$precision, millisecond = 8L, microsecond = 9L, nanosecond = 10L))
+      }), use.names = FALSE),
       "  .ow_source_element_names <- base::lapply(base::seq_len(.ow_source_column_count), function(.ow_source_column_index) base::attr(base::.subset2(.ow_source_columns, .ow_source_column_index), \"names\", exact = TRUE))",
       "  .ow_source_metadata_classes <- if (.ow_source_is_readr) c(\"tbl_df\", \"tbl\", \"data.frame\") else .ow_source_classes",
       "  for (.ow_source_frame_class in .ow_source_metadata_classes) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_source_frame_class) + 1L, \"source dataframe-class metadata\")",
@@ -8858,6 +8961,8 @@ openwrangler_r_kernel_agent <- local({
       duplicate_lines <- deparse(frame_contract$duplicate_row_mask, width.cutoff = 500L)
       duplicate_lines[[1L]] <- paste0(".ow_duplicate_row_mask <- ", duplicate_lines[[1L]])
       lines <- c(lines, paste0("  ", duplicate_lines))
+      if (needs_clock_helpers) lines <- c(lines,
+        "  base::environment(.ow_duplicate_row_mask) <- base::list2env(.ow_clock_helpers, parent = base::environment(.ow_duplicate_row_mask))")
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "denseRank"), logical(1L)))) {
       rank_lines <- deparse(frame_contract$dense_rank_values, width.cutoff = 500L)

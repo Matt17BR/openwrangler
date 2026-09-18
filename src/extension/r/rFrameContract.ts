@@ -1,4 +1,4 @@
-export const R_FRAME_CONTRACT_VERSION = 6 as const;
+export const R_FRAME_CONTRACT_VERSION = 7 as const;
 
 export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   rows: 2_147_483_647,
@@ -38,6 +38,7 @@ export type RColumnKind =
   | "factor"
   | "date"
   | "datetime"
+  | "clock_datetime"
   | "difftime"
   | "integer64"
   | "list"
@@ -71,8 +72,20 @@ export interface RDurationColumnSemantics {
   readonly units: "secs" | "mins" | "hours" | "days" | "weeks";
 }
 
+export interface RClockDatetimeColumnSemantics {
+  readonly kind: "clock_datetime";
+  readonly storageMode: "list";
+  readonly classes: readonly string[];
+  readonly clock: "naive" | "sys";
+  readonly precision: "millisecond" | "microsecond" | "nanosecond";
+}
+
 export type RScalarColumnSemantics =
-  RSimpleColumnSemantics | RFactorColumnSemantics | RDatetimeColumnSemantics | RDurationColumnSemantics;
+  | RSimpleColumnSemantics
+  | RFactorColumnSemantics
+  | RDatetimeColumnSemantics
+  | RDurationColumnSemantics
+  | RClockDatetimeColumnSemantics;
 
 export interface RListColumnSemantics {
   readonly kind: "list";
@@ -189,6 +202,7 @@ const signedInteger64Minimum = -(1n << 63n);
 const signedInteger64Maximum = (1n << 63n) - 1n;
 const posixClasses = Object.freeze(["POSIXct", "POSIXt"] as const);
 const difftimeClasses = Object.freeze(["difftime"] as const);
+const clockPrecisionUnits = Object.freeze({ millisecond: "ms", microsecond: "us", nanosecond: "ns" } as const);
 
 const flavorClasses: Readonly<Record<RDataframeFlavor, readonly string[]>> = Object.freeze({
   "r.data.frame": Object.freeze(["data.frame"]),
@@ -270,6 +284,9 @@ export function decodeRFramePage(value: unknown): RFramePageContract {
     fail("R frame schema width does not match shape.columns.");
   }
   const schema = Object.freeze(record.schema.map((column, position) => decodeColumn(column, position)));
+  if (dataframeFlavor === "r.data.table" && schema.some((column) => column.semantics.kind === "clock_datetime")) {
+    fail("Clock datetime columns require a base data.frame or tibble.");
+  }
   const ids = new Set(schema.map((column) => column.id));
   if (ids.size !== schema.length) fail("R frame column IDs must be unique.");
 
@@ -418,6 +435,29 @@ function decodeColumnSemantics(value: unknown, label: string, allowNested = true
         : boundedString(record.timezone, `${label}.timezone`, R_FRAME_CONTRACT_LIMITS.nameBytes);
     return Object.freeze({ kind, storageMode: "double", classes: posixClasses, timezone });
   }
+  if (kind === "clock_datetime") {
+    if (!allowNested) fail(`${label} supports clock datetimes only as top-level columns.`);
+    const record = exactRecord(value, ["kind", "storageMode", "classes", "clock", "precision"]);
+    if (record.storageMode !== "list" || (record.clock !== "naive" && record.clock !== "sys")) {
+      fail(`${label} has invalid clock datetime metadata.`);
+    }
+    if (record.precision !== "millisecond" && record.precision !== "microsecond" && record.precision !== "nanosecond") {
+      fail(`${label}.precision is unsupported.`);
+    }
+    const classes = decodeStringArray(record.classes, `${label}.classes`, R_FRAME_CONTRACT_LIMITS.nameBytes);
+    if (
+      !arraysEqual(classes, [
+        `clock_${record.clock}_time`,
+        "clock_time_point",
+        "clock_rcrd",
+        "vctrs_rcrd",
+        "vctrs_vctr"
+      ])
+    ) {
+      fail(`${label}.classes do not match the clock datetime type.`);
+    }
+    return Object.freeze({ kind, storageMode: "list", classes, clock: record.clock, precision: record.precision });
+  }
   if (kind === "difftime") {
     const record = exactRecord(value, ["kind", "storageMode", "classes", "units"]);
     if (record.storageMode !== "double") fail(`${label}.storageMode does not match difftime.`);
@@ -439,7 +479,14 @@ export function expectedColumnIdentity(semantics: RColumnSemantics): { rawType: 
     return { rawType: semantics.ordered ? "ordered factor" : "factor", type: "string" };
   }
   if (semantics.kind === "datetime") return { rawType: "POSIXct", type: "datetime" };
+  if (semantics.kind === "clock_datetime") {
+    return { rawType: `clock_${semantics.clock}_time[${clockPrecisionUnits[semantics.precision]}]`, type: "datetime" };
+  }
   return { rawType: "difftime", type: "duration" };
+}
+
+export function isRClockDatetimeRawType(rawType: string): boolean {
+  return /^clock_(?:naive|sys)_time\[(?:ms|us|ns)\]$/u.test(rawType);
 }
 
 function decodePage(
@@ -664,6 +711,7 @@ function expectedCellKind(
     case "date":
       return "date";
     case "datetime":
+    case "clock_datetime":
       return "datetime";
     case "difftime":
       return "duration";
@@ -671,6 +719,21 @@ function expectedCellKind(
 }
 
 function validateRawValue(raw: string, semantics: RColumnSemantics, label: string): void {
+  if (semantics.kind === "clock_datetime") {
+    if (!exactIntegerPattern.test(raw) || raw === "-0")
+      fail(`${label}.raw is not an exact clock timestamp tick count.`);
+    const value = BigInt(raw);
+    if (value < signedInteger64Minimum || value > signedInteger64Maximum) {
+      fail(`${label}.raw is outside the signed clock timestamp range.`);
+    }
+    if (semantics.precision !== "nanosecond") {
+      const ticksPerSecond = semantics.precision === "millisecond" ? 1_000n : 1_000_000n;
+      if (value < -62_167_219_200n * ticksPerSecond || value >= 253_402_300_800n * ticksPerSecond) {
+        fail(`${label}.raw is outside supported ISO calendar years 0000 through 9999.`);
+      }
+    }
+    return;
+  }
   if (semantics.kind === "integer") {
     if (!exactIntegerPattern.test(raw)) fail(`${label}.raw is not an exact R integer.`);
     const value = Number(raw);

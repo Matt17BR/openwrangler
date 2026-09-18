@@ -647,8 +647,9 @@ malformed records and strict decoding failures are refused. Empty and `NA` field
 missing; dates and integers that would lose precision stay text. R loads the full file into memory before returning
 bounded pages, and editing can require additional copies. It needs Rscript, not Python. Parquet and JSONL/NDJSON
 also admit flat scalar data; Excel opens the selected worksheet. Parquet accepts modern and legacy integer annotations,
-including those written by DuckDB, within the native precision and range limits. Parquet requires `nanoparquet`, Excel
-requires `readxl`, and large integer input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
+including those written by DuckDB, within the native precision and range limits. Parquet requires `arrow` 23.0.1.1+
+and `nanoparquet` 0.5.1+; exact timestamp columns also require `clock` 0.7.4+. Excel requires `readxl`, and large integer
+input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
 describes type and precision limits, spreadsheet missing-value rules and eager loading.
 Installed CSV workflows have been verified in desktop VS Code on Linux, macOS and Windows. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
@@ -719,6 +720,21 @@ are refused. IRkernel works across the supported desktop platforms; direct `.R`,
 limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
 semantics. An active R terminal has no source document for generated-code insertion.
 
+In **2.6**, base data.frame and tibble columns can retain exact `clock_naive_time` and `clock_sys_time` values at
+millisecond, microsecond or nanosecond precision. Parquet local timestamps keep their timezone-free meaning;
+nanosecond timestamps preserve adjacent ticks, nulls and the full signed 64-bit range. UTC-adjusted values display
+with `Z`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. These columns
+support base R and dplyr cleaning, including Rename, Select/Drop/Clone Columns, Filter/Sort
+Rows, Drop Missing Rows and duplicate handling, with matching generated R. CSV keeps exact ISO text and Parquet
+keeps timestamp precision and civil/instant meaning. Existing POSIXct columns retain their previous behavior.
+
+Selecting data.table or collapse still opens these Parquet files with exact viewing, filters, sorts, profiles and
+export. Cleaning is unavailable while they contain clock columns; use the engine picker to create an editing copy
+with base R or dplyr. Actual data.table frames and nested values containing clock records remain unsupported.
+
+Format Datetime, Convert Type, Fill, Group By, pivots and By Example do not support clock columns. In base/dplyr,
+other operations remain available when clock columns are not inputs or grouping/identifier keys.
+
 In **2.6**, ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
 Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records
 with the same scalar fields appear as Struct columns, even when field order differs. Missing fields, `NULL` field
@@ -763,12 +779,16 @@ Dates, timestamps and integer64 values are quoted when using custom delimiters. 
 non-missing values refuse delimiters their native text could contain, even when the current values do not contain
 them. Comma, tab, semicolon and pipe remain available; empty and all-missing columns do not impose this restriction.
 Timestamp rounding carries invalid `:60` seconds into the correct date and local time, including DST transitions.
-Timestamp text can still lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
+POSIXct timestamp text can still lose precision and omits time-zone information. Review the [export rules](architecture.md#native-r)
 before using CSV to transfer timestamps.
 
-Parquet export requires `nanoparquet` 0.5.1 or newer in the selected R environment. Timestamps must be exactly
+Parquet export requires `arrow` 23.0.1.1 or newer in the selected R environment. POSIXct timestamps must be exactly
 representable in microseconds; sub-microsecond values and some values reconstructed by differently rounding readers
-are refused. Missing timestamps remain supported. A refused export preserves the source and cleaning plan.
+are refused. Durations must convert exactly from their R units to signed 64-bit nanoseconds; sub-nanosecond
+precision, NaN, infinity and overflow are refused before writing. Clock timestamps retain their original precision,
+including nanoseconds. Missing timestamps and durations remain supported. Zero-column export also requires
+`nanoparquet` to retain its row count.
+A refused export preserves the source and cleaning plan.
 Notebook export is available only from the current local extension host.
 
 ## DuckDB experimental file support

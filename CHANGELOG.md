@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Added
+
+- R opens timezone-free and nanosecond Parquet timestamps without rounding or assigning a timezone. Base R and dplyr support cleaning and matching generated R; data.table and collapse retain viewing and export. These columns require Arrow and clock and have explicit operation limits.
+
 ### Changed
 
 - The engine picker identifies Python and R choices consistently and shows whether a choice switches the current tab, opens a new tab or creates an editing copy.

@@ -558,6 +558,14 @@ function snapshot(
       backend: "pandas",
       rowAxis: { kind: "positional", levelNames: [] },
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
+      capabilities: {
+        editable: true,
+        lazy: false,
+        cancel: true,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
       ...plan
     } as unknown as SessionMetadata,
     viewState: {

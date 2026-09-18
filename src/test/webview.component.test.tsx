@@ -5030,6 +5030,50 @@ describe("App file import options", () => {
     expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
   });
 
+  it.each(["data.table", "collapse"] as const)(
+    "keeps exact R timestamp viewing and recovery available with %s",
+    async (rLibrary) => {
+      const preciseMetadata: SessionMetadata = {
+        ...metadata,
+        backend: "r",
+        rLibrary,
+        rDataframeFlavor: "r.data.frame",
+        source: { kind: "file", label: "time.parquet", path: "/workspace/time.parquet" },
+        capabilities: { ...metadata.capabilities, supportedOperations: [] },
+        schema: [metadata.schema[0]!, { ...metadata.schema[1]!, type: "datetime", rawType: "clock_naive_time[ns]" }]
+      };
+      const precisePage: GridPage = {
+        ...page,
+        rows: [
+          {
+            ...page.rows[0]!,
+            values: [
+              page.rows[0]!.values[0]!,
+              { kind: "datetime", raw: "1", display: "1970-01-01T00:00:00.000000001", isNull: false, isNaN: false }
+            ]
+          },
+          page.rows[1]!
+        ]
+      };
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata: preciseMetadata, page: precisePage, summaries: [] });
+      await screen.findByRole("cell", { name: "1970-01-01T00:00:00.000000001" });
+      expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Add step" })).toHaveAttribute(
+        "title",
+        expect.stringContaining("Choose Base R or dplyr in the engine picker")
+      );
+      expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+      const picker = screen.getByRole("button", { name: /Change dataframe engine. Current engine: R/u });
+      expect(picker).toBeEnabled();
+      webviewPostMessage.mockClear();
+      fireEvent.click(picker);
+      expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "changeBackend" });
+      dispatchAppMessage({ kind: "editorAction", action: "openOperation" });
+      expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+    }
+  );
+
   it("opens native R Custom code with R syntax and forwards the exact edited source", async () => {
     const rMetadata: SessionMetadata = {
       ...metadata,
