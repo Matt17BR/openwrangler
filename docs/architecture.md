@@ -1729,7 +1729,10 @@ Their filters support `isNull` and `isNotNull`; value selection and nested sorti
 retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavailable while any nested column remains.
 These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
-Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
+Column and missing-value statistics scan in bounded chunks. Large column summaries and dataset missing-value scans
+verify bit64 registrations once per uninterrupted calculation and retain those native handles across chunks. Each
+chunk still undergoes type, attribute and value checks; a later calculation verifies the registrations again.
+Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
 Integer64 extrema use the package's native range reduction without sorting every value. Exact integer64 sums reduce
 bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation
@@ -1816,6 +1819,8 @@ stays inside the correlated request error boundary: oversized ASCII string expan
 the escaped response, with a separate 17 MiB cap on the complete encoded response. These are payload bounds, not
 an exact allocation ceiling.
 Opening and editing still preflight the complete encoded reply before publishing session state.
+Replies contain primitive JSON values, protocol records and arrays. Unsupported R classes or attributes and malformed
+record keys are refused before publication; user column and nested-field names remain string values.
 
 The host reads private R response and export files through bounded, single-link identity checks. Cleanup moves the
 identified file into a private directory and verifies the same file before and after truncating it to zero bytes.

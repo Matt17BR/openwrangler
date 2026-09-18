@@ -7029,6 +7029,84 @@ table_profile <- openwrangler_r_frame_contract$materialize_summaries(
 assert_identical(table_profile[[1L]]$distinctCount, 2L, "data.table profiling changed distinct values")
 assert_true(identical(table_frame, table_before), "profiling mutated the source data.table")
 
+
+# Native binding validation is request-owned, not repeated for every scan chunk.
+local({
+  native_audit <- get("integer64_formula_bindings", contract_environment, inherits = FALSE)
+  audit_count <- 0L
+  assign("integer64_formula_bindings", function() {
+    audit_count <<- audit_count + 1L
+    native_audit()
+  }, envir = contract_environment)
+  on.exit(assign("integer64_formula_bindings", native_audit, envir = contract_environment), add = TRUE)
+  measure <- function(rows) {
+    frame <- data.frame(value = bit64::as.integer64(rep.int(11L, rows)))
+    missing <- seq.int(1L, rows, by = openwrangler_r_frame_contract$limits$profileChunkRows)
+    frame$value[missing] <- bit64::NA_integer64_
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    audit_count <<- 0L
+    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+    summary_audits <- audit_count
+    audit_count <<- 0L
+    stats <- openwrangler_r_frame_contract$materialize_dataset_stats(capture)$stats
+    stats_audits <- audit_count
+    assert_identical(summary$nullCount, length(missing), "request-owned bindings changed profile null counts")
+    assert_identical(summary$numeric$exactSum$display, as.character((rows - length(missing)) * 11), "request-owned bindings changed the exact sum")
+    assert_identical(stats$missingRows, length(missing), "request-owned bindings changed dataset missing rows")
+    assert_identical(stats$missingCells, as.double(length(missing)), "request-owned bindings changed dataset missing cells")
+    c(summary = summary_audits, stats = stats_audits)
+  }
+  chunk_rows <- openwrangler_r_frame_contract$limits$profileChunkRows
+  short <- measure(2L * chunk_rows + 1L)
+  longer <- measure(8L * chunk_rows + 1L)
+  assert_true(all(short > 0L), "profiles skipped native binding validation")
+  assert_identical(longer, short, "native binding audits grew with additional profile scan chunks")
+
+  ordinary <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(1, NA_real_)))
+  audit_count <- 0L
+  invisible(openwrangler_r_frame_contract$materialize_dataset_stats(ordinary))
+  invisible(openwrangler_r_frame_contract$materialize_summaries(ordinary, list(profile_reference(ordinary, 1L))))
+  assert_identical(audit_count, 0L, "ordinary profiles acquired unrelated bit64 bindings")
+
+  frame <- data.frame(value = bit64::as.integer64(c(1L, NA_integer_, 1L)))
+  capture <- openwrangler_r_frame_contract$capture_frame(frame)
+  expected <- openwrangler_r_frame_contract$materialize_dataset_stats(capture)
+  namespace <- asNamespace("bit64")
+  original <- get("C_isna_integer64", envir = namespace, inherits = FALSE)
+  restore <- function() {
+    unlockBinding("C_isna_integer64", namespace)
+    assign("C_isna_integer64", original, envir = namespace)
+    lockBinding("C_isna_integer64", namespace)
+  }
+  on.exit(restore(), add = TRUE)
+  unlockBinding("C_isna_integer64", namespace)
+  assign("C_isna_integer64", get("C_as_double_integer64", envir = namespace, inherits = FALSE), envir = namespace)
+  lockBinding("C_isna_integer64", namespace)
+  assert_error(openwrangler_r_frame_contract$materialize_dataset_stats(capture), "runtime-error")
+  assert_error(openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L))), "runtime-error")
+  restore()
+  assert_identical(openwrangler_r_frame_contract$materialize_dataset_stats(capture), expected, "a failed native binding check poisoned the next request")
+})
+
+
+# The retained native handles must not depend on caller integer64 methods.
+local({
+  frame <- data.frame(value = bit64::as.integer64(rep(c(1L, NA_integer_, 3L), length.out = 131073L)))
+  capture <- openwrangler_r_frame_contract$capture_frame(frame)
+  references <- list(profile_reference(capture, 1L))
+  expected <- openwrangler_r_frame_contract$materialize_summaries(capture, references)
+  generics <- c("[", "is.na", "as.double", "as.character")
+  original <- lapply(generics, getS3method, class = "integer64")
+  on.exit(for (i in seq_along(generics)) {
+    registerS3method(generics[[i]], "integer64", original[[i]], envir = .GlobalEnv)
+  }, add = TRUE)
+  poison <- function(...) stop("caller integer64 profile method dispatched", call. = FALSE)
+  for (generic in generics) registerS3method(generic, "integer64", poison, envir = .GlobalEnv)
+  assert_error(frame$value[1L], "caller integer64 profile method dispatched")
+  assert_identical(openwrangler_r_frame_contract$materialize_summaries(capture, references), expected,
+    "integer64 profile dispatched caller methods while retaining native handles")
+})
+
 empty_profile_frame <- data.frame(
   text = character(),
   amount = double(),
