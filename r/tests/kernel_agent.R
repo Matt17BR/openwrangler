@@ -416,8 +416,8 @@ local({
   assert_identical(sources$replays, replay_count + 1L, "the replay control did not execute after read cleanup")
   assert_identical(send("beginSummary", summary_payload(disposed_id))$kind, "summaryPending", "completed work did not release capacity")
   file_agent$dispose()
-  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = disposed_id, revision = 0L))$kind,
-    "error", "disposed agent retained usable profile state")
+  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = disposed_id, revision = 0L))$code,
+    "runtime_error", "disposed agent accepted dispatch after disposal")
 
   # Constructor provenance, not the caller's request shape, controls eligibility.
   live <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
