@@ -1724,7 +1724,10 @@ retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavai
 These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
 Cheap column/missing statistics scan in bounded chunks. Numeric histograms count every finite value into at most
-20 bins; integer64 chart positions retain their double projection while typed extrema remain exact. Character and
+20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
+Integer64 extrema use the package's native range reduction without sorting every value. Exact integer64 sums reduce
+bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation
+and sums beyond the integer64 range without per-row decimal arithmetic. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
 Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
@@ -1868,8 +1871,9 @@ Generated R Group By retains zero groups for empty inputs and preserves the live
 It loads bit64 before grouping when a selected key or aggregation uses integer64, so missing detection,
 key comparison and subsetting retain native values even in a fresh R session.
 Integer sums and integer64 sum, mean and median share the live exact-sum arithmetic. Generated plans include these
-functions once when needed, reusing unsigned addition if coarse Round also needs it. Ordinary integer sums retain
-bounded native batches; integer64 accumulation and existing result-range refusals remain unchanged.
+functions once when needed, reusing unsigned addition if coarse Round also needs it. Ordinary integer and integer64
+sums use bounded native batches; integer64 batches split exact values at 2^32 before decimal combination. Existing
+result-range refusals remain unchanged.
 
 Finite Mean Fill, ordinary integer/double Group By means, and numeric profile means share one exact binary64
 sum/count owner. It accumulates at most 65,536 values per chunk into two fixed 134-word arrays, using the existing

@@ -876,6 +876,16 @@ local({
       expected = data.frame(group = "a", count = 2L), loads_bit64 = FALSE
     )
   )
+  # Totals cross the integer64 range and both native reduction batches before
+  # cancellation. The fresh generated process must load its own bit64 helpers.
+  batch_values <- bit64::as.integer64(c(rep("9223372036854775807", 65536L),
+    rep("-9223372036854775807", 65536L), "7", NA))
+  cases$wide_batch_sum <- list(
+    source = data.frame(group = c(rep("sum", 131073L), "missing"), value = batch_values),
+    keys = "group", columns = c("value", "value"), operations = c("sum", "mean"), aliases = c("total", "average"),
+    expected = data.frame(group = c("sum", "missing"), total = bit64::as.integer64(c("7", "0")),
+      average = c(7 / 131073, NA_real_)), loads_bit64 = TRUE
+  )
   for (flavor in c("data.frame", "tibble", "data.table")) {
     source <- empty_source
     expected <- empty_expected
