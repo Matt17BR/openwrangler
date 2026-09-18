@@ -2072,12 +2072,19 @@ frame <- data.frame(value = 1L)
       const responseCallsPath = resolve(temporaryParent, "response-calls.txt");
       const candidateSessionId = randomUUID();
       const otherSessionId = randomUUID();
+      const controlledRuntime = await openCleanupRuntime(
+        temporaryParent,
+        responseCallsPath,
+        candidateSessionId,
+        otherSessionId,
+        failure
+      );
       const transport = new RProcessSessionTransport({
-        runtimeRoot,
+        runtimeRoot: controlledRuntime,
         rscriptPath,
         temporaryParent,
         workingDirectory: temporaryParent,
-        documentText: openCleanupDocument(responseCallsPath, candidateSessionId, otherSessionId, failure)
+        documentText: "frame <- data.frame(value = 1:3)"
       });
       try {
         await transport.discoverVariables({ timeoutMs: 15_000 });
@@ -2090,11 +2097,29 @@ frame <- data.frame(value = 1L)
 
         expect(transport.isSessionMapped(candidateSessionId)).toBe(false);
         await expect(transport.close(candidateSessionId, { timeoutMs: 15_000 })).resolves.toBeUndefined();
-        const responseCalls = (await readFile(responseCallsPath, "utf8")).trim().split(/\s+/u).map(Number);
-        expect(responseCalls).toEqual(failure === "diagnostic" ? [1, 2, 3] : [1, 2, 3, 4, 5]);
+        const responseCalls = (await readFile(responseCallsPath, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as unknown);
+        expect(responseCalls).toEqual([
+          {
+            requestKind: "openSession",
+            requestSessionId: candidateSessionId,
+            responseKind: failure === "diagnostic" ? "error" : "page",
+            responseSessionId: failure === "diagnostic" ? null : candidateSessionId,
+            responseCode: failure === "diagnostic" ? "unknown_variable" : null
+          },
+          {
+            requestKind: "closeSession",
+            requestSessionId: candidateSessionId,
+            responseKind: failure === "diagnostic" ? "error" : "closed",
+            responseSessionId: failure === "diagnostic" ? null : candidateSessionId,
+            responseCode: failure === "diagnostic" ? "unknown_session" : null
+          }
+        ]);
       } finally {
         await transport.dispose();
-        expect(await readdir(temporaryParent)).toEqual(["response-calls.txt"]);
+        expect((await readdir(temporaryParent)).sort()).toEqual(["response-calls.txt", "runtime"]);
         await rm(temporaryParent, { recursive: true, force: true });
       }
     },
@@ -2102,35 +2127,46 @@ frame <- data.frame(value = 1L)
   );
 });
 
-function openCleanupDocument(
+async function openCleanupRuntime(
+  temporaryParent: string,
   responseCallsPath: string,
   candidateSessionId: string,
   otherSessionId: string,
   failure: "diagnostic" | "malformed" | "mis-correlated"
-): string {
-  return `
-jsonlite_namespace <- asNamespace("jsonlite")
-original_to_json <- get("toJSON", envir = jsonlite_namespace, inherits = FALSE)
-response_calls <- 0L
-cleanup_failure <- ${rString(failure)}
-candidate_session_id <- ${rString(candidateSessionId)}
-other_session_id <- ${rString(otherSessionId)}
-unlockBinding("toJSON", jsonlite_namespace)
-assign("toJSON", function(...) {
-  response_calls <<- response_calls + 1L
-  cat(response_calls, "\\n", file = ${rString(responseCallsPath)}, append = TRUE)
-  encoded <- original_to_json(...)
-  if (response_calls == 3L && identical(cleanup_failure, "malformed")) {
-    return("{")
+): Promise<string> {
+  const controlledRuntime = resolve(temporaryParent, "runtime");
+  await cp(runtimeRoot, controlledRuntime, { recursive: true });
+  const processAgentPath = resolve(controlledRuntime, "process_agent.R");
+  const processAgent = await readFile(processAgentPath, "utf8");
+  const dispatch = "  response <- initialized$agent$dispatch_json(payload)";
+  expect(processAgent.split(dispatch)).toHaveLength(2);
+  await writeFile(
+    processAgentPath,
+    processAgent.replace(
+      dispatch,
+      `${dispatch}
+cleanup_request <- jsonlite::fromJSON(payload, simplifyVector = FALSE)
+cleanup_response <- jsonlite::fromJSON(response, simplifyVector = FALSE)
+cat(as.character(jsonlite::toJSON(list(
+  requestKind = cleanup_request$kind,
+  requestSessionId = cleanup_request$payload$sessionId,
+  responseKind = cleanup_response$kind,
+  responseSessionId = cleanup_response$sessionId,
+  responseCode = cleanup_response$code
+), auto_unbox = TRUE, null = "null")), "\\n", file = ${rString(responseCallsPath)}, append = TRUE)
+if (identical(cleanup_request$kind, "openSession") &&
+    identical(cleanup_request$payload$sessionId, ${rString(candidateSessionId)}) &&
+    identical(cleanup_response$kind, "page") &&
+    identical(cleanup_response$sessionId, ${rString(candidateSessionId)})) {
+  if (identical(${rString(failure)}, "malformed")) response <- "{"
+  if (identical(${rString(failure)}, "mis-correlated")) {
+    response <- sub(${rString(candidateSessionId)}, ${rString(otherSessionId)}, response, fixed = TRUE)
   }
-  if (response_calls == 3L && identical(cleanup_failure, "mis-correlated")) {
-    return(sub(candidate_session_id, other_session_id, as.character(encoded), fixed = TRUE))
-  }
-  encoded
-}, envir = jsonlite_namespace)
-lockBinding("toJSON", jsonlite_namespace)
-frame <- data.frame(value = 1:3)
-`;
+}
+`
+    )
+  );
+  return controlledRuntime;
 }
 
 function pageWindow(): RKernelPageWindow {
