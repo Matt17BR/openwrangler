@@ -361,6 +361,10 @@ The catalog independently checks live/generated agreement.
 Custom Code checks generated helper dependencies and hostile off-page attributes before copying or publication.
 Host codec and mutation tests pass named nested cells through the public response validator and reject mismatched
 metadata or row domains. Installed rendering and entry-path checks remain separate from these native/source controls.
+The [kernel transport owner](../src/test/rKernelTransport.cross.test.ts) checks actual R responses through the
+TypeScript decoder, including session revisions, projected identities, inspection and Undo. The native catalog and
+kernel owners verify operation results and generated-code agreement. Generated programs in the transport suite cover
+row-name modes, by-example null replay, categorical Unicode outputs, and Drop/Select/Clone followed by Rename.
 Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
 values belong to the encoder and native numeric-portability owners.
 Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code
