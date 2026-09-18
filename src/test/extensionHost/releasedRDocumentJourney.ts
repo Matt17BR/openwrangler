@@ -171,10 +171,9 @@ export function createReleasedRDocumentJourney({
     testing: TestApi,
     workbench: Page,
     source: vscode.Uri,
-    rscript: string,
-    directory: string
+    rscript: string
   ): Promise<void> {
-    const library = mkdtempSync(path.join(directory, "missing-package-"));
+    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-r-dependency-"));
     const unavailablePackage = path.join(library, "jsonlite");
     mkdirSync(unavailablePackage);
     const descriptor = Buffer.from(
@@ -186,6 +185,8 @@ export function createReleasedRDocumentJourney({
     const originalLibraries = process.env.R_LIBS;
     let fileTab: vscode.Tab | undefined;
     let recovered = false;
+    let operationError: unknown;
+    const cleanupErrors: unknown[] = [];
     const opened: vscode.Terminal[] = [];
     const closed = new Map<vscode.Terminal, vscode.TerminalExitStatus | undefined>();
     const openSubscription = vscode.window.onDidOpenTerminal((terminal) => {
@@ -279,6 +280,8 @@ export function createReleasedRDocumentJourney({
       assertExactBytes(readFileSync(source.fsPath), sourceBytes, "Dependency recovery must preserve the CSV source.");
       recordAcceptanceProgress("jupyter-r:file:dependency:recovered");
       recovered = true;
+    } catch (error) {
+      operationError = error;
     } finally {
       if (originalLibraries === undefined) delete process.env.R_LIBS;
       else process.env.R_LIBS = originalLibraries;
@@ -291,14 +294,31 @@ export function createReleasedRDocumentJourney({
             vscode.window.tabGroups.close(fileTab, true),
             WORKBENCH_OPERATION_TIMEOUT_MS,
             "closing the failed R dependency-recovery panel"
-          ).catch(() => {
+          ).catch((error: unknown) => {
+            cleanupErrors.push(error);
             recordAcceptanceProgress("jupyter-r:file:dependency:failed-cleanup:unsettled");
           });
         }
       } finally {
-        cleanupAcceptanceTemporaryDirectory(library);
+        try {
+          cleanupAcceptanceTemporaryDirectory(library);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
       }
     }
+    if (operationError !== undefined && cleanupErrors.length > 0) {
+      const detail = (operationError instanceof Error ? operationError.message : String(operationError))
+        .replace(/\s+/gu, " ")
+        .slice(0, 1_000);
+      throw new AggregateError(
+        [operationError, ...cleanupErrors],
+        `R dependency recovery failed: ${detail}. Cleanup also failed.`
+      );
+    }
+    if (operationError !== undefined) throw operationError;
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "R dependency recovery cleanup failed.");
   }
 
   async function exerciseFileRecovery(
@@ -1056,7 +1076,7 @@ export function createReleasedRDocumentJourney({
         const csvExportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-export-"));
         try {
           await csvConfiguration.update("defaultBackend", "r", vscode.ConfigurationTarget.Workspace);
-          await openFileAfterDependencyRecovery(testing, workbench, csvUri, exactRscript, csvExportDirectory);
+          await openFileAfterDependencyRecovery(testing, workbench, csvUri, exactRscript);
           const csv = testing.activeSession();
           assert.ok(csv);
           csvSessionId = csv.sessionId;
