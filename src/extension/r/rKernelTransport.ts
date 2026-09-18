@@ -50,6 +50,7 @@ const MAX_PENDING_CLEANUP_ATTEMPTS = 64;
 
 export interface RKernelRequestOptions {
   readonly library?: RLibrary;
+  readonly isCurrentRead?: () => boolean;
   readonly cancellation?: KernelCancellationLike;
   readonly timeoutMs?: number;
   /** Host-owned candidate identity used for exact cleanup after an ambiguous open. */

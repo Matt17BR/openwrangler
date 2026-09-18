@@ -58,6 +58,85 @@ afterEach(() => {
 });
 
 describe("native R kernel runtime bundle", () => {
+  it.each(["Summary", "DatasetStats"] as const)("validates exact managed %s continuation receipts", (operation) => {
+    const idKey = operation === "Summary" ? "summaryId" : "statsId";
+    const resultKind = operation === "Summary" ? "summary" : "datasetStats";
+    const identity = { sessionId, [idKey]: exportId };
+    const begin: RKernelRequest = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: summaryRequestId,
+      ...(operation === "Summary"
+        ? {
+            kind: "beginSummary",
+            payload: {
+              sessionId,
+              summaryId: exportId,
+              columns: [{ id: "r:c:0", name: "value" }],
+              view: pageWindow().view
+            }
+          }
+        : { kind: "beginDatasetStats", payload: { sessionId, statsId: exportId, view: pageWindow().view } })
+    };
+    expect(JSON.parse(encodeRKernelRequest(begin))).toEqual(begin);
+    if (operation === "Summary") {
+      expect(() =>
+        encodeRKernelRequest({
+          ...begin,
+          payload: {
+            ...begin.payload,
+            columns: [
+              { id: "r:c:0", name: "value" },
+              { id: "r:c:1", name: "other" }
+            ]
+          }
+        } as RKernelRequest)
+      ).toThrow("summary columns exceed");
+    }
+
+    for (const verb of ["continue", "close"] as const) {
+      const request = {
+        ...begin,
+        kind: `${verb}${operation}`,
+        payload: { ...identity, ...(verb === "continue" ? { revision: 3 } : {}) }
+      } as RKernelRequest;
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, unexpected: true }
+        } as unknown as RKernelRequest)
+      ).toThrow("invalid fields");
+    }
+    const base = { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: summaryRequestId, ...identity };
+    const completePayload =
+      operation === "Summary"
+        ? { summaries: [minimalSummary()] }
+        : {
+            totalRows: 1,
+            stats: { missingCells: 0, missingRows: 0, duplicateRows: 0, missingValuesByColumn: [] }
+          };
+    for (const suffix of ["Pending", "Complete", "Closed"] as const) {
+      const receipt = {
+        ...base,
+        kind: `${resultKind}${suffix}`,
+        ...(suffix === "Closed" ? {} : { revision: 3 }),
+        ...(suffix === "Complete" ? completePayload : {})
+      };
+      expect(decodeRKernelResponseJson(JSON.stringify(receipt), summaryRequestId)).toEqual(receipt);
+      expect(() => decodeRKernelResponseJson(JSON.stringify(receipt), pageRequestId)).toThrow("mis-correlated");
+      expect(() =>
+        decodeRKernelResponseJson(JSON.stringify({ ...receipt, [idKey]: "wrong" }), summaryRequestId)
+      ).toThrow();
+      expect(() => decodeRKernelResponseJson(JSON.stringify({ ...receipt, extra: 1 }), summaryRequestId)).toThrow(
+        "invalid fields"
+      );
+      if (suffix !== "Closed")
+        expect(() =>
+          decodeRKernelResponseJson(JSON.stringify({ ...receipt, revision: -1 }), summaryRequestId)
+        ).toThrow();
+    }
+  });
+
   it("correlates bounded Excel worksheet metadata without accepting a caller-supplied path", () => {
     const request = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

@@ -2,13 +2,13 @@
 
 for (invalid_library in list(NULL, "pandas", 1L, list(), "")) {
   payload <- list(sessionId = session_id, variableName = "frame", page = page_window(), library = invalid_library)
-  request <- list(transportVersion = 17L, requestId = request_id, kind = "openSession", payload = payload)
+  request <- list(transportVersion = 18L, requestId = request_id, kind = "openSession", payload = payload)
   invalid <- jsonlite::fromJSON(agent$dispatch_json(as.character(jsonlite::toJSON(
     request, auto_unbox = TRUE, null = "null", na = "null"
   ))), simplifyVector = FALSE)
   assert_identical(invalid$code, "invalid_request", "an invalid native library choice was accepted")
 }
-missing_library_request <- list(transportVersion = 17L, requestId = request_id, kind = "openSession",
+missing_library_request <- list(transportVersion = 18L, requestId = request_id, kind = "openSession",
   payload = list(sessionId = session_id, variableName = "frame", page = page_window()))
 missing_library <- jsonlite::fromJSON(agent$dispatch_json(as.character(jsonlite::toJSON(
   missing_library_request, auto_unbox = TRUE, null = "null", na = "null"
@@ -362,7 +362,7 @@ local({
   id <- "92929292-9292-4292-8292-929292929292"
   send <- function(kind, payload) {
     if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
-    request <- list(transportVersion = 17L, requestId = request_id, kind = kind, payload = payload)
+    request <- list(transportVersion = 18L, requestId = request_id, kind = kind, payload = payload)
     jsonlite::fromJSON(boundary_agent$dispatch_json(as.character(jsonlite::toJSON(
       request, auto_unbox = TRUE, digits = 17L, null = "null", na = "null"
     ))), simplifyVector = FALSE)

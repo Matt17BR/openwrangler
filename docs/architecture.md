@@ -24,7 +24,7 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 - `protocol/openwrangler.v4.schema.json` is the canonical coordinator-facing request and response schema. Its
   generator emits five checked-in artifacts: TypeScript protocol types, TypeScript operation catalog, TypeScript
   limits, Python operation catalog, and Python limits. It does not generate the full Python runtime protocol. Native R
-  has a separate private transport v17 and frame contract v7, which `RKernelBridge` adapts to and from coordinator
+  has a separate private transport v18 and frame contract v7, which `RKernelBridge` adapts to and from coordinator
   protocol v4.
 
 Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
@@ -241,8 +241,8 @@ Runtime work has three relevant classes:
 
 The host admits at most one background profile, one interactive profile and one ordinary foreground request per
 session. Interactive requests retain FIFO order, so reads cannot skip a queued mutation. Mutations, exports and close
-wait for every active owner to settle, including cancelled profiles. This admission does not make a synchronous
-native R request yield; its transport still serializes execution.
+wait for every active owner to settle, including cancelled profiles. Native R still executes one request at a time;
+managed file profiles can yield between requests as described under [Viewing and profiling](#viewing-and-profiling).
 
 Each logical view has an opaque context, and each request within it has a `viewRequestId`. Session revision or filter
 equality is not enough to establish freshness. Pages, summaries, statistics, values, errors, and profiles update the
@@ -1626,7 +1626,7 @@ The existing worksheet picker obtains exact sheet names from the managed session
 its request queue. It keeps the existing 15-second deadline, 4096-name and 65536-byte limits, with source, revision,
 trust and owner checks before and after discovery. Choosing a sheet opens a separate source-bound session. Only a
 current recoverable native runtime or missing-package error permits manual sheet entry; stale or malformed metadata
-is refused. The private native transport is version 17. The public protocol remains version 4 and adds the explicit
+is refused. The private native transport is version 18. The public protocol remains version 4 and adds the explicit
 R cleaning-library selection and confirmation fields.
 
 All formats load the complete native frame before serving bounded pages. Recovery and generated code reread the
@@ -1724,14 +1724,33 @@ Optional value-filter search must be text when present. Invalid viewing requests
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
 
+Managed file processes can advance large single-column summaries and Dataset statistics between page requests.
+Eligibility comes from the process's retained file descriptor. Live notebooks, R terminals and managed documents
+keep their synchronous execution path. The file runtime retains the exact frame, selected column and fixed filter
+membership; it does not copy the whole frame or reuse a mutable page cache. Synchronous and yielding requests use
+the same calculation owners. Small summaries, multi-column requests, filter setup and bounded result finalization
+can still execute without yielding.
+
+Each native session can retain two pending summary/statistics calculations. Their private begin, continue and close
+messages carry a fresh calculation ID and session identity; continuation also checks the captured revision.
+Completion, admitted-work failure, close and disposal release retained state. Invalid or duplicate requests cannot
+remove another calculation. All sessions in the same process share mutation exclusion, including Custom Code
+replay through Undo, Redo and step inspection. Host admission waits before queueing these exclusive requests, so
+earlier profiles can finish and later profiles cannot starve a waiting edit. A profile keeps its original deadline and
+checks the originating logical view before each advance and publication. Abandoned dispatched work retains its
+settlement and exact-process cleanup owner; an unverified close retires that process.
+Cleanup reserves its native queue position immediately. Its close-response deadline begins at dispatch, so it cannot
+expire while an earlier valid page or export is running. Waiting for that predecessor retains the existing
+authoritative-settlement rule; caller timeout alone does not prove that native work has ended.
+
 List and Struct profiles report outer `NULL` counts only, with no distinct count, value distribution or chart.
 Their filters support `isNull` and `isNotNull`; value selection and nested sorting are unavailable. Scalar siblings
 retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavailable while any nested column remains.
 These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
 Column and missing-value statistics scan in bounded chunks. Large column summaries and dataset missing-value scans
-verify bit64 registrations once per uninterrupted calculation and retain those native handles across chunks. Each
-chunk still undergoes type, attribute and value checks; a later calculation verifies the registrations again.
+verify bit64 registrations once per uninterrupted advance and retain those native handles only within that advance.
+Each chunk still undergoes type, attribute and value checks; a later advance verifies the registrations again.
 Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
 Integer64 extrema use the package's native range reduction without sorting every value. Exact integer64 sums reduce

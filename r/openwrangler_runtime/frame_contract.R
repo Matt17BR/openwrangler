@@ -3250,268 +3250,309 @@ openwrangler_r_frame_contract <- local({
     if (is.null(row_positions)) logical_positions else row_positions[logical_positions]
   }
 
-  chunked_column_summary <- function(capture, frame, resolved, row_positions, row_count, budget) {
-    position <- resolved$position
-    descriptor <- capture$descriptor$schema[[position]]
-    column <- .subset2(frame, position)
-    semantics <- descriptor$semantics
-    kind <- semantics$kind
-    # This uninterrupted scan retains verified native handles across its chunks.
-    integer64_bindings <- if (kind == "integer64") ensure_integer64_bindings() else NULL
-    label <- sprintf("column %d profile", position)
-    spend_payload_budget(budget, summary_fixed_bytes, label)
-    spend_json_string(budget, descriptor$id, paste0(label, " ID"))
-    spend_json_string(budget, descriptor$name, paste0(label, " name"))
-    spend_json_string(budget, descriptor$rawType, paste0(label, " type"))
+  new_column_summary <- function(capture, frame, resolved, row_positions, row_count, budget) {
+    state <- new.env(parent = emptyenv())
+    state$row_positions <- row_positions
+    state$row_count <- row_count
+    state$budget <- budget
+    state$position <- resolved$position
+    state$descriptor <- capture$descriptor$schema[[state$position]]
+    state$column <- .subset2(frame, state$position)
+    state$semantics <- state$descriptor$semantics
+    state$kind <- state$semantics$kind
+    state$label <- sprintf("column %d profile", state$position)
 
-    null_count <- 0
-    nan_count <- 0
-    present_count <- 0
-    true_count <- 0
-    false_count <- 0
-    first_true <- NULL
-    first_false <- NULL
-    text_empty_count <- 0
-    text_min_length <- Inf
-    text_max_length <- -Inf
-    text_total_length <- 0
-    text_counts <- if (kind %in% c("character", "factor")) new.env(hash = TRUE, parent = emptyenv()) else NULL
-    text_keys <- character()
-    text_first_sources <- integer()
-    text_key_bytes <- 0
-    numeric_minimum <- NULL
-    numeric_maximum <- NULL
-    numeric_finite_minimum <- Inf
-    numeric_finite_maximum <- -Inf
-    numeric_bin_values <- NULL
-    numeric_distinct_values <- numeric()
-    numeric_distinct_zero_signs <- numeric()
-    numeric_finite_count <- 0
-    numeric_mean <- 0
-    numeric_exact_mean <- if (kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
-    numeric_m2 <- 0
-    numeric_sum <- 0
-    numeric_has_nonfinite <- FALSE
-    exact_sum <- "0"
-    exact_minimum <- NULL
-    exact_maximum <- NULL
-    datetime_minimum <- NULL
-    datetime_maximum <- NULL
-    datetime_minimum_source <- NULL
-    datetime_maximum_source <- NULL
+    state$null_count <- 0
+    state$nan_count <- 0
+    state$present_count <- 0
+    state$true_count <- 0
+    state$false_count <- 0
+    state$first_true <- NULL
+    state$first_false <- NULL
+    state$text_empty_count <- 0
+    state$text_min_length <- Inf
+    state$text_max_length <- -Inf
+    state$text_total_length <- 0
+    state$text_counts <- if (state$kind %in% c("character", "factor")) new.env(hash = TRUE, parent = emptyenv()) else NULL
+    state$text_keys <- character()
+    state$text_first_sources <- integer()
+    state$text_key_bytes <- 0
+    state$numeric_minimum <- NULL
+    state$numeric_maximum <- NULL
+    state$numeric_finite_minimum <- Inf
+    state$numeric_finite_maximum <- -Inf
+    state$numeric_bin_values <- NULL
+    state$numeric_distinct_values <- numeric()
+    state$numeric_distinct_zero_signs <- numeric()
+    state$numeric_finite_count <- 0
+    state$numeric_mean <- 0
+    state$numeric_exact_mean <- if (state$kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
+    state$numeric_m2 <- 0
+    state$numeric_sum <- 0
+    state$numeric_has_nonfinite <- FALSE
+    state$exact_sum <- "0"
+    state$exact_minimum <- NULL
+    state$exact_maximum <- NULL
+    state$datetime_minimum <- NULL
+    state$datetime_maximum <- NULL
+    state$datetime_minimum_source <- NULL
+    state$datetime_maximum_source <- NULL
 
-    start <- 1
-    while (start <= row_count) {
-      count <- min(maximum_profile_chunk_rows, row_count - start + 1)
-      source_positions <- profile_chunk_source_positions(row_positions, start, count)
-      chunk <- if (kind == "integer64") integer64_subset(column, source_positions) else column[source_positions]
-      validate_profile_column(chunk, semantics, label, integer64_bindings)
-      missing <- profile_missing_masks(chunk, semantics, integer64_bindings)
-      null_count <- null_count + sum(missing$null)
-      nan_count <- nan_count + sum(missing$nan)
-      present_indices <- which(!missing$null & !missing$nan)
-      chunk_present_count <- length(present_indices)
-      present_count <- present_count + chunk_present_count
+    if (!nested_kind(state$semantics) && row_count > maximum_profile_sample_rows) {
+      spend_payload_budget(state$budget, summary_fixed_bytes, state$label)
+      spend_json_string(state$budget, state$descriptor$id, paste0(state$label, " ID"))
+      spend_json_string(state$budget, state$descriptor$name, paste0(state$label, " name"))
+      spend_json_string(state$budget, state$descriptor$rawType, paste0(state$label, " type"))
+    }
+    state$start <- 1
+    state$phase <- "scan"
+    if (nested_kind(state$semantics)) {
+      state$result <- column_summary(capture, state$column[integer()], resolved, budget)
+      state$phase <- "nested"
+    } else if (row_count <= maximum_profile_sample_rows) {
+      values <- state$column
+      if (!is.null(row_positions)) values <- values[row_positions]
+      # Keep the exact existing small-profile statistics and sampling policy.
+      state$result <- column_summary(capture, values, resolved, budget)
+      state$phase <- "complete"
+    }
+    state
+  }
 
-      if (chunk_present_count != 0L) {
-        present <- if (kind == "integer64") integer64_subset(chunk, present_indices) else chunk[present_indices]
-        visible_positions <- seq.int(as.integer(start), length.out = as.integer(count))[present_indices]
-        present_sources <- source_positions[present_indices]
+  advance_column_summary <- function(state, maximum_chunks = Inf, maximum_seconds = Inf) {
+    if (identical(state$phase, "complete")) return(state$result)
+    # Handles belong to this uninterrupted advance, never to retained state.
+    integer64_bindings <- if (state$kind == "integer64") ensure_integer64_bindings() else NULL
+    deadline <- if (is.finite(maximum_seconds)) proc.time()[["elapsed"]] + maximum_seconds else Inf
+    processed <- 0L
+    if (identical(state$phase, "nested")) {
+      while (state$start <= state$row_count) {
+        count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
+        positions <- profile_chunk_source_positions(state$row_positions, state$start, count)
+        chunk <- state$column[positions]
+        validate_profile_column(chunk, state$semantics, "nested profile")
+        state$result$nullCount <- state$result$nullCount + as.integer(sum(vapply(plain_metadata_storage(chunk), is.null, logical(1L))))
+        state$start <- state$start + count
+        processed <- processed + 1L
+        if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
+      }
+      state$result$totalCount <- state$row_count
+      state$phase <- "complete"
+      return(state$result)
+    }
+    if (identical(state$phase, "scan")) {
+      while (state$start <= state$row_count) {
+        count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
+        source_positions <- profile_chunk_source_positions(state$row_positions, state$start, count)
+        chunk <- if (state$kind == "integer64") integer64_subset(state$column, source_positions) else state$column[source_positions]
+        validate_profile_column(chunk, state$semantics, state$label, integer64_bindings)
+        missing <- profile_missing_masks(chunk, state$semantics, integer64_bindings)
+        state$null_count <- state$null_count + sum(missing$null)
+        state$nan_count <- state$nan_count + sum(missing$nan)
+        present_indices <- which(!missing$null & !missing$nan)
+        chunk_present_count <- length(present_indices)
+        state$present_count <- state$present_count + chunk_present_count
 
-        if (kind == "logical") {
-          chunk_true <- sum(present)
-          chunk_false <- chunk_present_count - chunk_true
-          if (is.null(first_true) && chunk_true > 0) first_true <- visible_positions[[which(present)[[1L]]]]
-          if (is.null(first_false) && chunk_false > 0) first_false <- visible_positions[[which(!present)[[1L]]]]
-          true_count <- true_count + chunk_true
-          false_count <- false_count + chunk_false
-        } else if (kind %in% c("character", "factor")) {
-          text_values <- profile_text_values(if (kind == "factor") as.character(present) else present, visible_positions)
-          lengths <- nchar(text_values, type = "chars", allowNA = FALSE, keepNA = FALSE)
-          text_empty_count <- text_empty_count + sum(lengths == 0L)
-          text_min_length <- min(text_min_length, min(lengths))
-          text_max_length <- max(text_max_length, max(lengths))
-          text_total_length <- text_total_length + sum(as.double(lengths))
-          if (!is.null(text_counts)) {
-            first <- !duplicated(text_values)
-            keys <- text_values[first]
-            sources <- present_sources[first]
-            counts <- tabulate(match(text_values, keys), nbins = length(keys))
-            new_keys <- character(length(keys))
-            new_sources <- integer(length(keys))
-            new_count <- 0L
-            for (index in seq_along(keys)) {
-              key <- keys[[index]]
-              environment_key <- paste0(":", key)
-              if (exists(environment_key, envir = text_counts, inherits = FALSE)) {
-                assign(environment_key, get(environment_key, text_counts, inherits = FALSE) + counts[[index]], text_counts)
-              } else {
-                next_bytes <- text_key_bytes + as.double(nchar(key, type = "bytes"))
-                if (length(text_keys) + new_count >= maximum_column_value_distinct_matches ||
-                    next_bytes > maximum_column_value_distinct_key_bytes) {
-                  text_counts <- NULL
-                  text_keys <- character()
-                  text_first_sources <- integer()
-                  break
+        if (chunk_present_count != 0L) {
+          present <- if (state$kind == "integer64") integer64_subset(chunk, present_indices) else chunk[present_indices]
+          visible_positions <- seq.int(as.integer(state$start), length.out = as.integer(count))[present_indices]
+          present_sources <- source_positions[present_indices]
+
+          if (state$kind == "logical") {
+            chunk_true <- sum(present)
+            chunk_false <- chunk_present_count - chunk_true
+            if (is.null(state$first_true) && chunk_true > 0) state$first_true <- visible_positions[[which(present)[[1L]]]]
+            if (is.null(state$first_false) && chunk_false > 0) state$first_false <- visible_positions[[which(!present)[[1L]]]]
+            state$true_count <- state$true_count + chunk_true
+            state$false_count <- state$false_count + chunk_false
+          } else if (state$kind %in% c("character", "factor")) {
+            text_values <- profile_text_values(if (state$kind == "factor") as.character(present) else present, visible_positions)
+            lengths <- nchar(text_values, type = "chars", allowNA = FALSE, keepNA = FALSE)
+            state$text_empty_count <- state$text_empty_count + sum(lengths == 0L)
+            state$text_min_length <- min(state$text_min_length, min(lengths))
+            state$text_max_length <- max(state$text_max_length, max(lengths))
+            state$text_total_length <- state$text_total_length + sum(as.double(lengths))
+            if (!is.null(state$text_counts)) {
+              first <- !duplicated(text_values)
+              keys <- text_values[first]
+              sources <- present_sources[first]
+              counts <- tabulate(match(text_values, keys), nbins = length(keys))
+              new_keys <- character(length(keys))
+              new_sources <- integer(length(keys))
+              new_count <- 0L
+              for (index in seq_along(keys)) {
+                key <- keys[[index]]
+                environment_key <- paste0(":", key)
+                if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
+                  assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
+                } else {
+                  next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
+                  if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
+                      next_bytes > maximum_column_value_distinct_key_bytes) {
+                    state$text_counts <- NULL
+                    state$text_keys <- character()
+                    state$text_first_sources <- integer()
+                    break
+                  }
+                  assign(environment_key, as.double(counts[[index]]), state$text_counts)
+                  state$text_key_bytes <- next_bytes
+                  new_count <- new_count + 1L
+                  new_keys[[new_count]] <- key
+                  new_sources[[new_count]] <- sources[[index]]
                 }
-                assign(environment_key, as.double(counts[[index]]), text_counts)
-                text_key_bytes <- next_bytes
-                new_count <- new_count + 1L
-                new_keys[[new_count]] <- key
-                new_sources[[new_count]] <- sources[[index]]
+              }
+              if (!is.null(state$text_counts) && new_count != 0L) {
+                state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
+                state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
               }
             }
-            if (!is.null(text_counts) && new_count != 0L) {
-              text_keys <- c(text_keys, new_keys[seq_len(new_count)])
-              text_first_sources <- c(text_first_sources, new_sources[seq_len(new_count)])
+          } else if (state$kind == "clock_datetime") {
+            ordered <- order_present_values(present, state$semantics, FALSE)
+            first <- ordered[[1L]]
+            last <- ordered[[length(ordered)]]
+            values <- clock_ticks(present[c(first, last)])
+            if (is.null(state$datetime_minimum) || compare_integer_text(values[[1L]], state$datetime_minimum) < 0L) {
+              state$datetime_minimum <- values[[1L]]
+              state$datetime_minimum_source <- present_sources[[first]]
             }
-          }
-        } else if (kind == "clock_datetime") {
-          ordered <- order_present_values(present, semantics, FALSE)
-          first <- ordered[[1L]]
-          last <- ordered[[length(ordered)]]
-          values <- clock_ticks(present[c(first, last)])
-          if (is.null(datetime_minimum) || compare_integer_text(values[[1L]], datetime_minimum) < 0L) {
-            datetime_minimum <- values[[1L]]
-            datetime_minimum_source <- present_sources[[first]]
-          }
-          if (is.null(datetime_maximum) || compare_integer_text(values[[2L]], datetime_maximum) > 0L) {
-            datetime_maximum <- values[[2L]]
-            datetime_maximum_source <- present_sources[[last]]
-          }
-        } else if (kind %in% c("date", "datetime")) {
-          values <- as.double(present)
-          chunk_minimum <- which.min(values)
-          chunk_maximum <- which.max(values)
-          if (is.null(datetime_minimum) || values[[chunk_minimum]] < datetime_minimum) {
-            datetime_minimum <- values[[chunk_minimum]]
-            datetime_minimum_source <- present_sources[[chunk_minimum]]
-          }
-          if (is.null(datetime_maximum) || values[[chunk_maximum]] > datetime_maximum) {
-            datetime_maximum <- values[[chunk_maximum]]
-            datetime_maximum_source <- present_sources[[chunk_maximum]]
-          }
-        } else if (kind %in% c("integer", "integer64", "double", "difftime")) {
-          values <- numeric_profile_values(chunk, semantics, present_indices, integer64_bindings)
-          identity_values <- if (kind == "integer64" &&
-              (!is.null(numeric_distinct_values) || length(numeric_bin_values) < maximum_histogram_bins)) {
-            profile_value_keys(present, semantics, seq_along(present), integer64_bindings)
-          } else values
-          if (!is.null(numeric_distinct_values)) {
-            # The temporary union adds only this scan chunk to the retained bound.
-            numeric_distinct_values <- unique(c(numeric_distinct_values, identity_values))
-            # Duration keys preserve signed zero; ordinary double keys merge it.
-            if (kind == "difftime") {
-              numeric_distinct_zero_signs <- unique(c(numeric_distinct_zero_signs, 1 / values[values == 0]))
+            if (is.null(state$datetime_maximum) || compare_integer_text(values[[2L]], state$datetime_maximum) > 0L) {
+              state$datetime_maximum <- values[[2L]]
+              state$datetime_maximum_source <- present_sources[[last]]
             }
-            distinct_count <- length(numeric_distinct_values) + max(0L, length(numeric_distinct_zero_signs) - 1L)
-            if (distinct_count > maximum_column_value_distinct_matches) numeric_distinct_values <- NULL
-          }
-          chunk_minimum <- suppressWarnings(min(values))
-          chunk_maximum <- suppressWarnings(max(values))
-          if (is.null(numeric_minimum) || chunk_minimum < numeric_minimum) numeric_minimum <- chunk_minimum
-          if (is.null(numeric_maximum) || chunk_maximum > numeric_maximum) numeric_maximum <- chunk_maximum
-          finite_values <- values[is.finite(values)]
-          numeric_has_nonfinite <- numeric_has_nonfinite || length(finite_values) != length(values)
-          if (length(finite_values) != 0L) {
-            numeric_finite_minimum <- min(numeric_finite_minimum, min(finite_values))
-            numeric_finite_maximum <- max(numeric_finite_maximum, max(finite_values))
-            if (length(numeric_bin_values) < maximum_histogram_bins) {
-              bin_values <- if (kind == "integer64") identity_values else finite_values
-              numeric_bin_values <- utils::head(unique(c(numeric_bin_values, unique(bin_values))), maximum_histogram_bins)
+          } else if (state$kind %in% c("date", "datetime")) {
+            values <- as.double(present)
+            chunk_minimum <- which.min(values)
+            chunk_maximum <- which.max(values)
+            if (is.null(state$datetime_minimum) || values[[chunk_minimum]] < state$datetime_minimum) {
+              state$datetime_minimum <- values[[chunk_minimum]]
+              state$datetime_minimum_source <- present_sources[[chunk_minimum]]
             }
-            if (kind != "integer64") numeric_exact_mean <- exact_mean_add(finite_values, numeric_exact_mean)
-            numeric_sum <- numeric_sum + sum(finite_values)
-            chunk_finite_count <- length(finite_values)
-            chunk_mean <- base::mean.default(finite_values)
-            chunk_m2 <- sum((finite_values - chunk_mean)^2)
-            if (numeric_finite_count == 0) {
-              numeric_mean <- chunk_mean
-              numeric_m2 <- chunk_m2
-            } else {
-              combined_count <- numeric_finite_count + chunk_finite_count
-              delta <- chunk_mean - numeric_mean
-              numeric_mean <- numeric_mean + delta * chunk_finite_count / combined_count
-              numeric_m2 <- numeric_m2 + chunk_m2 + delta^2 * numeric_finite_count * chunk_finite_count / combined_count
+            if (is.null(state$datetime_maximum) || values[[chunk_maximum]] > state$datetime_maximum) {
+              state$datetime_maximum <- values[[chunk_maximum]]
+              state$datetime_maximum_source <- present_sources[[chunk_maximum]]
             }
-            numeric_finite_count <- numeric_finite_count + chunk_finite_count
-          }
-          if (kind %in% c("integer", "integer64")) {
-            exact_sum <- add_signed_decimal(exact_sum, exact_integer_sum_text(present, kind))
-            if (kind == "integer64") {
-              extrema <- integer64_profile_range(present, integer64_bindings)
-              candidate_minimum <- extrema[[1L]]
-              candidate_maximum <- extrema[[2L]]
-            } else {
-              candidate_minimum <- as.character(min(present))
-              candidate_maximum <- as.character(max(present))
+          } else if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
+            values <- numeric_profile_values(chunk, state$semantics, present_indices, integer64_bindings)
+            identity_values <- if (state$kind == "integer64" &&
+                (!is.null(state$numeric_distinct_values) || length(state$numeric_bin_values) < maximum_histogram_bins)) {
+              profile_value_keys(present, state$semantics, seq_along(present), integer64_bindings)
+            } else values
+            if (!is.null(state$numeric_distinct_values)) {
+              # The temporary union adds only this scan chunk to the retained bound.
+              state$numeric_distinct_values <- unique(c(state$numeric_distinct_values, identity_values))
+              # Duration keys preserve signed zero; ordinary double keys merge it.
+              if (state$kind == "difftime") {
+                state$numeric_distinct_zero_signs <- unique(c(state$numeric_distinct_zero_signs, 1 / values[values == 0]))
+              }
+              distinct_count <- length(state$numeric_distinct_values) + max(0L, length(state$numeric_distinct_zero_signs) - 1L)
+              if (distinct_count > maximum_column_value_distinct_matches) state$numeric_distinct_values <- NULL
             }
-            if (is.null(exact_minimum) || compare_integer_text(candidate_minimum, exact_minimum) < 0L) {
-              exact_minimum <- candidate_minimum
+            chunk_minimum <- suppressWarnings(min(values))
+            chunk_maximum <- suppressWarnings(max(values))
+            if (is.null(state$numeric_minimum) || chunk_minimum < state$numeric_minimum) state$numeric_minimum <- chunk_minimum
+            if (is.null(state$numeric_maximum) || chunk_maximum > state$numeric_maximum) state$numeric_maximum <- chunk_maximum
+            finite_values <- values[is.finite(values)]
+            state$numeric_has_nonfinite <- state$numeric_has_nonfinite || length(finite_values) != length(values)
+            if (length(finite_values) != 0L) {
+              state$numeric_finite_minimum <- min(state$numeric_finite_minimum, min(finite_values))
+              state$numeric_finite_maximum <- max(state$numeric_finite_maximum, max(finite_values))
+              if (length(state$numeric_bin_values) < maximum_histogram_bins) {
+                bin_values <- if (state$kind == "integer64") identity_values else finite_values
+                state$numeric_bin_values <- utils::head(unique(c(state$numeric_bin_values, unique(bin_values))), maximum_histogram_bins)
+              }
+              if (state$kind != "integer64") state$numeric_exact_mean <- exact_mean_add(finite_values, state$numeric_exact_mean)
+              state$numeric_sum <- state$numeric_sum + sum(finite_values)
+              chunk_finite_count <- length(finite_values)
+              chunk_mean <- base::mean.default(finite_values)
+              chunk_m2 <- sum((finite_values - chunk_mean)^2)
+              if (state$numeric_finite_count == 0) {
+                state$numeric_mean <- chunk_mean
+                state$numeric_m2 <- chunk_m2
+              } else {
+                combined_count <- state$numeric_finite_count + chunk_finite_count
+                delta <- chunk_mean - state$numeric_mean
+                state$numeric_mean <- state$numeric_mean + delta * chunk_finite_count / combined_count
+                state$numeric_m2 <- state$numeric_m2 + chunk_m2 + delta^2 * state$numeric_finite_count * chunk_finite_count / combined_count
+              }
+              state$numeric_finite_count <- state$numeric_finite_count + chunk_finite_count
             }
-            if (is.null(exact_maximum) || compare_integer_text(candidate_maximum, exact_maximum) > 0L) {
-              exact_maximum <- candidate_maximum
+            if (state$kind %in% c("integer", "integer64")) {
+              state$exact_sum <- add_signed_decimal(state$exact_sum, exact_integer_sum_text(present, state$kind))
+              if (state$kind == "integer64") {
+                extrema <- integer64_profile_range(present, integer64_bindings)
+                candidate_minimum <- extrema[[1L]]
+                candidate_maximum <- extrema[[2L]]
+              } else {
+                candidate_minimum <- as.character(min(present))
+                candidate_maximum <- as.character(max(present))
+              }
+              if (is.null(state$exact_minimum) || compare_integer_text(candidate_minimum, state$exact_minimum) < 0L) {
+                state$exact_minimum <- candidate_minimum
+              }
+              if (is.null(state$exact_maximum) || compare_integer_text(candidate_maximum, state$exact_maximum) > 0L) {
+                state$exact_maximum <- candidate_maximum
+              }
             }
           }
         }
+        state$start <- state$start + count
+        processed <- processed + 1L
+        if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
       }
-      start <- start + count
+      state$large_population <- state$present_count > maximum_profile_sample_rows
+      state$exact_text_counts <- state$large_population && !is.null(state$text_counts)
+      state$histogram_edges <- if (state$large_population && state$numeric_finite_count > 0) {
+        numeric_histogram_edges(state$numeric_finite_minimum, state$numeric_finite_maximum, length(state$numeric_bin_values))
+      } else NULL
+      state$histogram_counts <- numeric(max(0L, length(state$histogram_edges) - 1L))
+      state$sample_size <- if (state$kind == "logical" || state$exact_text_counts ||
+          (state$large_population && !state$kind %in% c("character", "factor"))) {
+        0L
+      } else {
+        as.integer(min(as.double(state$present_count), as.double(maximum_profile_sample_rows)))
+      }
+      state$sample_sources <- integer(state$sample_size)
+      state$sample_ranks <- if (state$sample_size != 0L) deterministic_sample_positions(state$present_count, state$sample_size) else integer()
+      state$sampled <- 0L
+      state$seen_present <- 0
+      state$start <- 1
+      state$phase <- "distribution"
     }
-
-    large_population <- present_count > maximum_profile_sample_rows
-    exact_text_counts <- large_population && !is.null(text_counts)
-    histogram_edges <- if (large_population && numeric_finite_count > 0) {
-      numeric_histogram_edges(numeric_finite_minimum, numeric_finite_maximum, length(numeric_bin_values))
-    } else NULL
-    histogram_counts <- numeric(max(0L, length(histogram_edges) - 1L))
-    sample_size <- if (kind == "logical" || exact_text_counts ||
-        (large_population && !kind %in% c("character", "factor"))) {
-      0L
-    } else {
-      as.integer(min(as.double(present_count), as.double(maximum_profile_sample_rows)))
-    }
-    sample_sources <- integer(sample_size)
-    if (sample_size != 0L || !is.null(histogram_edges)) {
-      sample_ranks <- if (sample_size != 0L) deterministic_sample_positions(present_count, sample_size) else integer()
-      sampled <- 0L
-      seen_present <- 0
-      start <- 1
-      while (start <= row_count && (!is.null(histogram_edges) || sampled < sample_size)) {
-        count <- min(maximum_profile_chunk_rows, row_count - start + 1)
-        source_positions <- profile_chunk_source_positions(row_positions, start, count)
-        chunk <- if (kind == "integer64") integer64_subset(column, source_positions) else column[source_positions]
-        missing <- profile_missing_masks(chunk, semantics, integer64_bindings)
-        present_indices <- which(!missing$null & !missing$nan)
-        if (!is.null(histogram_edges)) {
-          values <- numeric_profile_values(chunk, semantics, present_indices, integer64_bindings)
-          bin_indices <- findInterval(values[is.finite(values)], histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
-          histogram_counts <- histogram_counts + tabulate(bin_indices, nbins = length(histogram_counts))
-          start <- start + count
-          next
-        }
+    while (state$start <= state$row_count && (!is.null(state$histogram_edges) || state$sampled < state$sample_size)) {
+      count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
+      source_positions <- profile_chunk_source_positions(state$row_positions, state$start, count)
+      chunk <- if (state$kind == "integer64") integer64_subset(state$column, source_positions) else state$column[source_positions]
+      missing <- profile_missing_masks(chunk, state$semantics, integer64_bindings)
+      present_indices <- which(!missing$null & !missing$nan)
+      if (!is.null(state$histogram_edges)) {
+        values <- numeric_profile_values(chunk, state$semantics, present_indices, integer64_bindings)
+        bin_indices <- findInterval(values[is.finite(values)], state$histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
+        state$histogram_counts <- state$histogram_counts + tabulate(bin_indices, nbins = length(state$histogram_counts))
+      } else {
         present_sources <- source_positions[present_indices]
-        next_seen <- seen_present + length(present_sources)
-        first_target <- findInterval(seen_present, sample_ranks) + 1L
-        last_target <- findInterval(next_seen, sample_ranks)
+        next_seen <- state$seen_present + length(present_sources)
+        first_target <- findInterval(state$seen_present, state$sample_ranks) + 1L
+        last_target <- findInterval(next_seen, state$sample_ranks)
         if (first_target <= last_target) {
-          targets <- sample_ranks[seq.int(first_target, last_target)]
-          selected <- present_sources[as.integer(targets - seen_present)]
-          destination <- seq.int(sampled + 1L, length.out = length(selected))
-          sample_sources[destination] <- selected
-          sampled <- sampled + length(selected)
+          targets <- state$sample_ranks[seq.int(first_target, last_target)]
+          selected <- present_sources[as.integer(targets - state$seen_present)]
+          destination <- seq.int(state$sampled + 1L, length.out = length(selected))
+          state$sample_sources[destination] <- selected
+          state$sampled <- state$sampled + length(selected)
         }
-        seen_present <- next_seen
-        start <- start + count
+        state$seen_present <- next_seen
       }
-      if (sampled != sample_size) abort("internal-error", "the R profile sample is incomplete")
+      state$start <- state$start + count
+      processed <- processed + 1L
+      if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
     }
-
-    sample_column <- if (kind == "integer64") integer64_subset(column, sample_sources) else column[sample_sources]
-    sample_indices <- seq_len(sample_size)
-    if (kind == "logical") {
+    if (state$sampled != state$sample_size) abort("internal-error", "the R profile sample is incomplete")
+    sample_column <- if (state$kind == "integer64") integer64_subset(state$column, state$sample_sources) else state$column[state$sample_sources]
+    sample_indices <- seq_len(state$sample_size)
+    if (state$kind == "logical") {
       entries <- list()
-      if (true_count > 0) entries[[length(entries) + 1L]] <- list(value = "TRUE", count = true_count, first = first_true)
-      if (false_count > 0) entries[[length(entries) + 1L]] <- list(value = "FALSE", count = false_count, first = first_false)
+      if (state$true_count > 0) entries[[length(entries) + 1L]] <- list(value = "TRUE", count = state$true_count, first = state$first_true)
+      if (state$false_count > 0) entries[[length(entries) + 1L]] <- list(value = "FALSE", count = state$false_count, first = state$first_false)
       if (length(entries) != 0L) {
         priority <- base::order(
           -vapply(entries, `[[`, double(1L), "count"),
@@ -3519,122 +3560,124 @@ openwrangler_r_frame_contract <- local({
           method = "radix"
         )
         entries <- lapply(entries[priority], function(entry) {
-          spend_json_string(budget, entry$value, paste0(label, " top value"))
+          spend_json_string(state$budget, entry$value, paste0(state$label, " top value"))
           list(value = entry$value, count = as.integer(entry$count))
         })
       }
       counts <- list(
-        distinctCount = as.integer((true_count > 0) + (false_count > 0)),
+        distinctCount = as.integer((state$true_count > 0) + (state$false_count > 0)),
         topValues = json_array(entries),
         keys = character()
       )
-    } else if (exact_text_counts) {
+    } else if (state$exact_text_counts) {
       counts <- profile_count_summary(
-        column, semantics, text_first_sources,
-        vapply(paste0(":", text_keys), get, numeric(1L), envir = text_counts, inherits = FALSE, USE.NAMES = FALSE),
-        budget, label
+        state$column, state$semantics, state$text_first_sources,
+        vapply(paste0(":", state$text_keys), get, numeric(1L), envir = state$text_counts, inherits = FALSE, USE.NAMES = FALSE),
+        state$budget, state$label
       )
-    } else if (large_population && !kind %in% c("character", "factor")) {
+    } else if (state$large_population && !state$kind %in% c("character", "factor")) {
       counts <- list(distinctCount = NULL, topValues = json_array(list()), keys = character())
     } else {
-      counts <- profile_value_counts(sample_column, semantics, sample_indices, budget, label)
+      counts <- profile_value_counts(sample_column, state$semantics, sample_indices, state$budget, state$label)
     }
 
     summary <- list(
-      columnId = descriptor$id,
-      column = descriptor$name,
-      type = descriptor$type,
-      rawType = descriptor$rawType,
-      totalCount = as.double(row_count),
-      nullCount = as.integer(null_count),
-      nanCount = as.integer(nan_count),
-      topValues = if (large_population && kind %in% c("integer", "integer64", "double", "difftime")) {
+      columnId = state$descriptor$id,
+      column = state$descriptor$name,
+      type = state$descriptor$type,
+      rawType = state$descriptor$rawType,
+      totalCount = as.double(state$row_count),
+      nullCount = as.integer(state$null_count),
+      nanCount = as.integer(state$nan_count),
+      topValues = if (state$large_population && state$kind %in% c("integer", "integer64", "double", "difftime")) {
         json_array(list())
       } else {
         counts$topValues
       }
     )
-    if (!large_population || kind == "logical" || exact_text_counts) summary$distinctCount <- counts$distinctCount
-    if (large_population && kind %in% c("integer", "integer64", "double", "difftime") &&
-        !is.null(numeric_distinct_values)) {
-      summary$distinctCount <- as.integer(length(numeric_distinct_values) + max(0L, length(numeric_distinct_zero_signs) - 1L))
+    if (!state$large_population || state$kind == "logical" || state$exact_text_counts) summary$distinctCount <- counts$distinctCount
+    if (state$large_population && state$kind %in% c("integer", "integer64", "double", "difftime") &&
+        !is.null(state$numeric_distinct_values)) {
+      summary$distinctCount <- as.integer(length(state$numeric_distinct_values) + max(0L, length(state$numeric_distinct_zero_signs) - 1L))
     }
 
-    if (kind %in% c("integer", "integer64", "double", "difftime")) {
+    if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
-      if (kind %in% c("integer", "integer64")) {
-        numeric$exactSum <- exact_profile_integer_text_cell(exact_sum, budget, paste0(label, " sum"))
-        sum_value <- finite_statistic(suppressWarnings(as.double(exact_sum)))
-      } else if (!numeric_has_nonfinite) {
-        sum_value <- finite_statistic(numeric_sum)
+      if (state$kind %in% c("integer", "integer64")) {
+        numeric$exactSum <- exact_profile_integer_text_cell(state$exact_sum, state$budget, paste0(state$label, " sum"))
+        sum_value <- finite_statistic(suppressWarnings(as.double(state$exact_sum)))
+      } else if (!state$numeric_has_nonfinite) {
+        sum_value <- finite_statistic(state$numeric_sum)
       } else {
         sum_value <- NULL
       }
       if (!is.null(sum_value)) numeric$sum <- sum_value
-      minimum <- finite_statistic(numeric_minimum)
-      maximum <- finite_statistic(numeric_maximum)
+      minimum <- finite_statistic(state$numeric_minimum)
+      maximum <- finite_statistic(state$numeric_maximum)
       if (!is.null(minimum)) numeric$min <- minimum
       if (!is.null(maximum)) numeric$max <- maximum
-      if (!numeric_has_nonfinite && numeric_finite_count != 0) {
-        mean_value <- finite_statistic(if (kind == "integer64") numeric_mean else exact_mean_finish(numeric_exact_mean))
+      if (!state$numeric_has_nonfinite && state$numeric_finite_count != 0) {
+        mean_value <- finite_statistic(if (state$kind == "integer64") state$numeric_mean else exact_mean_finish(state$numeric_exact_mean))
         if (!is.null(mean_value)) numeric$mean <- mean_value
-        if (numeric_finite_count >= 2) {
-          standard_deviation <- finite_statistic(sqrt(numeric_m2 / (numeric_finite_count - 1)))
+        if (state$numeric_finite_count >= 2) {
+          standard_deviation <- finite_statistic(sqrt(state$numeric_m2 / (state$numeric_finite_count - 1)))
           if (!is.null(standard_deviation)) numeric$std <- standard_deviation
         }
       }
-      sample_values <- numeric_profile_values(sample_column, semantics, sample_indices, integer64_bindings)
-      if (!large_population && length(sample_values) != 0L) {
+      sample_values <- numeric_profile_values(sample_column, state$semantics, sample_indices, integer64_bindings)
+      if (!state$large_population && length(sample_values) != 0L) {
         median_value <- finite_statistic(suppressWarnings(numeric_profile_median(sample_values)))
         if (!is.null(median_value)) numeric$median <- median_value
       }
-      if (!is.null(exact_minimum) && !is.null(exact_maximum)) {
-        numeric$exactMin <- exact_profile_integer_text_cell(exact_minimum, budget, paste0(label, " minimum"))
-        numeric$exactMax <- exact_profile_integer_text_cell(exact_maximum, budget, paste0(label, " maximum"))
+      if (!is.null(state$exact_minimum) && !is.null(state$exact_maximum)) {
+        numeric$exactMin <- exact_profile_integer_text_cell(state$exact_minimum, state$budget, paste0(state$label, " minimum"))
+        numeric$exactMax <- exact_profile_integer_text_cell(state$exact_maximum, state$budget, paste0(state$label, " maximum"))
       }
       summary$numeric <- if (length(numeric) == 0L) structure(list(), names = character()) else numeric
       finite_keys <- counts$keys[is.finite(sample_values)]
-      visualization <- if (!is.null(histogram_edges)) numeric_histogram_from_counts(histogram_edges, histogram_counts) else
+      visualization <- if (!is.null(state$histogram_edges)) numeric_histogram_from_counts(state$histogram_edges, state$histogram_counts) else
         numeric_histogram(sample_values, length(unique(finite_keys)))
       if (!is.null(visualization)) {
         summary$visualization <- visualization
       }
-    } else if (kind == "logical") {
+    } else if (state$kind == "logical") {
       summary$visualization <- list(
         kind = "boolean",
-        trueCount = as.integer(true_count),
-        falseCount = as.integer(false_count)
+        trueCount = as.integer(state$true_count),
+        falseCount = as.integer(state$false_count)
       )
-    } else if (kind %in% c("date", "datetime", "clock_datetime")) {
-      summary$visualization <- if (present_count == 0) {
+    } else if (state$kind %in% c("date", "datetime", "clock_datetime")) {
+      summary$visualization <- if (state$present_count == 0) {
         list(kind = "datetime")
       } else {
         list(
           kind = "datetime",
-          min = encode_value(column, semantics, datetime_minimum_source, paste0(label, " minimum"), budget)$display,
-          max = encode_value(column, semantics, datetime_maximum_source, paste0(label, " maximum"), budget)$display
+          min = encode_value(state$column, state$semantics, state$datetime_minimum_source, paste0(state$label, " minimum"), state$budget)$display,
+          max = encode_value(state$column, state$semantics, state$datetime_maximum_source, paste0(state$label, " maximum"), state$budget)$display
         )
       }
-    } else if (kind %in% c("character", "factor")) {
-      summary$text <- if (present_count == 0) {
+    } else if (state$kind %in% c("character", "factor")) {
+      summary$text <- if (state$present_count == 0) {
         list(emptyCount = 0L)
       } else {
         list(
-          emptyCount = as.integer(text_empty_count),
-          minLength = as.integer(text_min_length),
-          maxLength = as.integer(text_max_length),
-          meanLength = as.double(text_total_length / present_count)
+          emptyCount = as.integer(state$text_empty_count),
+          minLength = as.integer(state$text_min_length),
+          maxLength = as.integer(state$text_max_length),
+          meanLength = as.double(state$text_total_length / state$present_count)
         )
       }
       visualization <- list(
         kind = "categorical",
         categories = counts$topValues,
-        otherCount = as.integer((if (exact_text_counts) present_count else sample_size) -
+        otherCount = as.integer((if (state$exact_text_counts) state$present_count else state$sample_size) -
           sum(vapply(counts$topValues, `[[`, integer(1L), "count")))
       )
-      if (large_population && !exact_text_counts) visualization$sampled <- TRUE
+      if (state$large_population && !state$exact_text_counts) visualization$sampled <- TRUE
       summary$visualization <- visualization
     }
+    state$result <- summary
+    state$phase <- "complete"
     summary
   }
 
@@ -11413,111 +11456,120 @@ openwrangler_r_frame_contract <- local({
     add_metric(capture$metrics, "profileColumns", length(resolved))
     budget <- new_payload_budget(capture$metadataBytes)
     summaries <- lapply(resolved, function(column) {
-      if (nested_kind(capture$descriptor$schema[[column$position]]$semantics)) {
-        values <- frame[[column$position]]
-        summary <- column_summary(capture, values[integer()], column, budget)
-        start <- 1
-        while (start <= view$totalRows) {
-          count <- min(maximum_profile_chunk_rows, view$totalRows - start + 1)
-          positions <- profile_chunk_source_positions(view$rows, start, count)
-          chunk <- values[positions]
-          validate_profile_column(chunk, capture$descriptor$schema[[column$position]]$semantics, "nested profile")
-          summary$nullCount <- summary$nullCount + as.integer(sum(vapply(plain_metadata_storage(chunk), is.null, logical(1L))))
-          start <- start + count
-        }
-        summary$totalCount <- view$totalRows
-        summary
-      } else if (view$totalRows <= maximum_profile_sample_rows) {
-        values <- frame[[column$position]]
-        if (!is.null(view$rows)) values <- values[view$rows]
-        column_summary(capture, values, column, budget)
-      } else {
-        chunked_column_summary(capture, frame, column, view$rows, view$totalRows, budget)
-      }
+      advance_column_summary(new_column_summary(capture, frame, column, view$rows, view$totalRows, budget))
     })
     json_array(summaries)
   }
 
-  materialize_dataset_stats <- function(
-    capture,
-    view_query = list(filters = list(), sorts = list())
-  ) {
+  begin_summary <- function(capture, column_references, view_query) {
     validate_capture(capture)
-    descriptor <- capture$descriptor
-    column_count <- descriptor$shape$columns
+    resolved <- resolve_profile_columns(column_references, capture$descriptor)
+    if (length(resolved) != 1L) abort("invalid-column-reference", "a continued R profile requires one column")
     frame <- read_capture_frame(capture, validated = TRUE)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
-    row_count <- view$totalRows
+    add_metric(capture$metrics, "profileColumns")
+    new_column_summary(capture, frame, resolved[[1L]], view$rows, view$totalRows, new_payload_budget(capture$metadataBytes))
+  }
+
+  begin_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list())) {
+    validate_capture(capture)
+    state <- new.env(parent = emptyenv())
+    state$descriptor <- capture$descriptor
+    state$column_count <- state$descriptor$shape$columns
+    state$frame <- read_capture_frame(capture, validated = TRUE)
+    state$view <- view_row_positions(capture, state$frame, view_query, apply_sorts = FALSE)
+    state$row_count <- state$view$totalRows
+    state$dataframe_flavor <- capture$descriptor$dataframeFlavor
     add_metric(capture$metrics, "datasetProfiles")
-    budget <- new_payload_budget(capture$metadataBytes)
-    spend_payload_budget(budget, summary_fixed_bytes, "R dataset profile")
-    # Revalidate for every request, then reuse the exact native handles within
-    # this uninterrupted calculation rather than auditing every scan chunk.
-    integer64_bindings <- if (any(vapply(descriptor$schema, function(column)
-      identical(column$semantics$kind, "integer64"), logical(1L)))) ensure_integer64_bindings() else NULL
-    missing_counts <- integer(column_count)
-    missing_rows <- 0L
-    start <- 1
-    while (start <= row_count) {
-      count <- min(maximum_profile_chunk_rows, row_count - start + 1)
-      source_positions <- profile_chunk_source_positions(view$rows, start, count)
-      row_missing <- rep(FALSE, count)
-      for (position in seq_len(column_count)) {
-        schema <- descriptor$schema[[position]]
-        values <- .subset2(frame, position)
-        column <- if (identical(schema$semantics$kind, "integer64")) {
-          integer64_subset(values, source_positions)
-        } else values[source_positions]
-        validate_profile_column(column, schema$semantics, sprintf("column %d dataset profile", position), integer64_bindings)
-        masks <- profile_missing_masks(column, schema$semantics, integer64_bindings)
-        missing <- masks$null | masks$nan
-        missing_counts[[position]] <- missing_counts[[position]] + sum(missing)
-        row_missing <- row_missing | missing
+    state$budget <- new_payload_budget(capture$metadataBytes)
+    spend_payload_budget(state$budget, summary_fixed_bytes, "R dataset profile")
+    state$has_integer64 <- any(vapply(state$descriptor$schema, function(column) identical(column$semantics$kind, "integer64"), logical(1L)))
+    state$missing_counts <- integer(state$column_count)
+    state$missing_rows <- 0L
+    state$start <- 1
+    state$position <- 1L
+    state$complete <- FALSE
+    state
+  }
+
+  advance_dataset_stats <- function(state, maximum_chunks = Inf, maximum_seconds = Inf) {
+    if (isTRUE(state$complete)) return(state$result)
+    integer64_bindings <- if (state$has_integer64) ensure_integer64_bindings() else NULL
+    deadline <- if (is.finite(maximum_seconds)) proc.time()[["elapsed"]] + maximum_seconds else Inf
+    processed <- 0L
+    while (state$start <= state$row_count && state$column_count != 0L) {
+      if (state$position == 1L) {
+        state$count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
+        state$source_positions <- profile_chunk_source_positions(state$view$rows, state$start, state$count)
+        state$row_missing <- rep(FALSE, state$count)
       }
-      missing_rows <- missing_rows + sum(row_missing)
-      start <- start + count
+      position <- state$position
+      schema <- state$descriptor$schema[[position]]
+      values <- .subset2(state$frame, position)
+      column <- if (identical(schema$semantics$kind, "integer64")) {
+        integer64_subset(values, state$source_positions)
+      } else values[state$source_positions]
+      validate_profile_column(column, schema$semantics, sprintf("column %d dataset profile", position), integer64_bindings)
+      masks <- profile_missing_masks(column, schema$semantics, integer64_bindings)
+      missing <- masks$null | masks$nan
+      state$missing_counts[[position]] <- state$missing_counts[[position]] + sum(missing)
+      state$row_missing <- state$row_missing | missing
+      if (position == state$column_count) {
+        state$missing_rows <- state$missing_rows + sum(state$row_missing)
+        state$start <- state$start + state$count
+        state$position <- 1L
+      } else state$position <- position + 1L
+      processed <- processed + 1L
+      if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
     }
-    missing_by_column <- lapply(seq_len(column_count), function(position) {
-      schema <- descriptor$schema[[position]]
-      spend_json_string(budget, schema$name, sprintf("column %d missing-value name", position))
-      spend_payload_budget(budget, 96L, sprintf("column %d missing-value count", position))
-      list(column = schema$name, count = missing_counts[[position]])
+    missing_by_column <- lapply(seq_len(state$column_count), function(position) {
+      schema <- state$descriptor$schema[[position]]
+      spend_json_string(state$budget, schema$name, sprintf("column %d missing-value name", position))
+      spend_payload_budget(state$budget, 96L, sprintf("column %d missing-value count", position))
+      list(column = schema$name, count = state$missing_counts[[position]])
     })
-    duplicate_sample_size <- row_count
-    duplicate_rows <- if (any(vapply(plain_metadata_storage(descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+    duplicate_sample_size <- state$row_count
+    duplicate_rows <- if (any(vapply(plain_metadata_storage(state$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
       NULL
-    } else if (row_count <= 1L) {
+    } else if (state$row_count <= 1L) {
       0L
-    } else if (column_count == 0L) {
-      as.integer(row_count - 1L)
+    } else if (state$column_count == 0L) {
+      as.integer(state$row_count - 1L)
     } else {
       duplicate_sample_size <- min(
-        row_count,
+        state$row_count,
         maximum_dataset_duplicate_sample_rows,
-        floor(maximum_dataset_duplicate_sample_cells / column_count)
+        floor(maximum_dataset_duplicate_sample_cells / state$column_count)
       )
-      logical_positions <- deterministic_sample_positions(row_count, duplicate_sample_size)
-      source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
-      sampled_frame <- if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
-        frame[source_positions]
+      logical_positions <- deterministic_sample_positions(state$row_count, duplicate_sample_size)
+      source_positions <- if (is.null(state$view$rows)) logical_positions else state$view$rows[logical_positions]
+      sampled_frame <- if (identical(state$dataframe_flavor, "r.data.table")) {
+        state$frame[source_positions]
       } else {
-        frame[source_positions, , drop = FALSE]
+        state$frame[source_positions, , drop = FALSE]
       }
       as.integer(sum(duplicate_row_mask(sampled_frame, "first", integer64_as_character)))
     }
     stats <- list(
-      missingCells = as.double(sum(as.double(missing_counts))),
-      missingRows = missing_rows,
+      missingCells = as.double(sum(as.double(state$missing_counts))),
+      missingRows = state$missing_rows,
       duplicateRows = duplicate_rows,
       missingValuesByColumn = json_array(missing_by_column)
     )
-    if (duplicate_sample_size < row_count) {
+    if (duplicate_sample_size < state$row_count) {
       stats$duplicateRowsSampleSize <- as.integer(duplicate_sample_size)
     }
-    list(
-      totalRows = as.double(row_count),
+    result <- list(
+      totalRows = as.double(state$row_count),
       stats = stats
     )
+    state$result <- result
+    state$complete <- TRUE
+    result
+  }
+
+  materialize_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list())) {
+    advance_dataset_stats(begin_dataset_stats(capture, view_query))
   }
 
   materialize_column_values <- function(
@@ -11881,6 +11933,10 @@ openwrangler_r_frame_contract <- local({
     materialize_view_page = materialize_view_page,
     count_missing_at = count_missing_at,
     materialize_summaries = materialize_summaries,
+    begin_summary = begin_summary,
+    advance_summary = advance_column_summary,
+    begin_dataset_stats = begin_dataset_stats,
+    advance_dataset_stats = advance_dataset_stats,
     materialize_dataset_stats = materialize_dataset_stats,
     materialize_column_values = materialize_column_values,
     encode_page = encode_page,

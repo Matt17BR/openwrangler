@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 17L
+  transport_version <- 18L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -10770,14 +10770,42 @@ openwrangler_r_kernel_agent <- local({
     export_lifecycle <- openwrangler_r_kernel_exports$new_lifecycle(frame_contract, export_root, abort)
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
+    pending_summaries <- new.env(hash = TRUE, parent = emptyenv())
+    pending_stats <- new.env(hash = TRUE, parent = emptyenv())
+    disposed <- FALSE
 
-    dispatch <- function(request) {
+    close_session_reads <- function(session_id = NULL) {
+      for (records in list(pending_summaries, pending_stats)) {
+        for (id in ls(records, all.names = TRUE)) {
+          owner <- get(id, records, inherits = FALSE)
+          if (is.null(session_id) || identical(owner$sessionId, session_id)) rm(list = id, envir = records)
+        }
+      }
+      invisible(NULL)
+    }
+
+    dispose <- function() {
+      disposed <<- TRUE
+      close_session_reads()
+      rm(list = ls(sessions, all.names = TRUE), envir = sessions)
+      export_lifecycle$dispose()
+    }
+
+    dispatch <- function(request, cleanup_receipt) {
+      if (disposed) abort("runtime_error", "The R session agent is disposed")
       request <- exact_record(request, c("transportVersion", "requestId", "kind", "payload"), "request")
       if (!identical(request$transportVersion, transport_version)) {
         abort("invalid_request", "request.transportVersion is unsupported")
       }
       request_id <- identifier(request$requestId, "request.requestId")
       kind <- bounded_text(request$kind, "request.kind", 32L)
+
+      # File library copies share this private source. Replay and inspection can
+      # execute Custom Code, so source-reaching changes wait across all sessions.
+      if (kind %in% c("previewStep", "redoStep", "undoStep", "inspectStepPage", "applyDraft", "discardDraft") &&
+          (length(ls(pending_summaries, all.names = TRUE)) != 0L || length(ls(pending_stats, all.names = TRUE)) != 0L)) {
+        abort("read_in_progress", "Finish or cancel pending R profiles before changing the source", TRUE)
+      }
 
       if (identical(kind, "openSession")) {
         payload <- exact_record(
@@ -10913,6 +10941,82 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id,
           page = materialize(frame_contract, active_capture(session), page)
         ))
+      }
+
+      if (kind %in% c("beginSummary", "continueSummary", "closeSummary", "beginDatasetStats", "continueDatasetStats", "closeDatasetStats")) {
+        if (is.null(file_source)) abort("invalid_request", "Continued R profiles require a managed file source")
+        is_summary <- kind %in% c("beginSummary", "continueSummary", "closeSummary")
+        beginning <- kind %in% c("beginSummary", "beginDatasetStats")
+        closing <- kind %in% c("closeSummary", "closeDatasetStats")
+        id_field <- if (is_summary) "summaryId" else "statsId"
+        payload <- exact_record(request$payload,
+          c("sessionId", id_field, if (beginning) c(if (is_summary) "columns", "view") else if (!closing) "revision"),
+          "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        id <- identifier(payload[[id_field]], paste0("request.payload.", id_field))
+        records <- if (is_summary) pending_summaries else pending_stats
+        owner <- if (exists(id, records, inherits = FALSE)) get(id, records, inherits = FALSE) else NULL
+        if (!is.null(owner) && !identical(owner$sessionId, session_id)) {
+          abort("invalid_request", "The pending R profile belongs to another session", TRUE)
+        }
+        response <- list(transportVersion = transport_version, requestId = request_id,
+          kind = if (is_summary) "summaryClosed" else "datasetStatsClosed", sessionId = session_id)
+        response[[id_field]] <- id
+        if (closing) {
+          if (!is.null(owner)) rm(list = id, envir = records)
+          return(response)
+        }
+        if (!exists(session_id, sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, sessions, inherits = FALSE)
+        if (beginning) {
+          if (exists(id, pending_summaries, inherits = FALSE) || exists(id, pending_stats, inherits = FALSE)) {
+            abort("invalid_request", "The requested R profile identity is already in use", TRUE)
+          }
+          active_count <- sum(vapply(c(as.list(pending_summaries), as.list(pending_stats)), function(record)
+            identical(record$sessionId, session_id), logical(1L)))
+          if (active_count >= 2L) abort("read_in_progress", "This R session already has two pending profiles", TRUE)
+          view <- decode_view(payload$view, frame_contract$limits)
+          columns <- if (is_summary) decode_column_references(payload$columns, frame_contract$limits) else NULL
+          if (is_summary && length(columns) != 1L) abort("invalid_request", "A continued R profile requires one column")
+          owner <- new.env(parent = emptyenv())
+          owner$sessionId <- session_id
+          owner$revision <- session$revision
+          owner$capture <- active_capture(session)
+          owner$calculation <- if (is_summary) frame_contract$begin_summary(owner$capture, columns, view) else
+            frame_contract$begin_dataset_stats(owner$capture, view)
+          assign(id, owner, envir = records)
+        } else {
+          revision <- whole_number(payload$revision, "request.payload.revision", maximum_revision)
+          if (is.null(owner)) abort("unknown_profile", "The requested R profile is no longer available", TRUE)
+          if (!identical(owner$revision, as.integer(revision))) {
+            abort("stale_revision", "The pending R profile revision does not match", TRUE)
+          }
+          if (!identical(session$revision, owner$revision) || !identical(active_capture(session), owner$capture)) {
+            rm(list = id, envir = records)
+            abort("stale_revision", "The R profile source changed", TRUE)
+          }
+        }
+        # Only a successfully admitted owner may be retired by dispatch/encoding
+        # failure. A rejected duplicate or mismatched receipt preserves its job.
+        cleanup_receipt$records <- records
+        cleanup_receipt$id <- id
+        cleanup_receipt$owner <- owner
+        result <- if (is_summary) frame_contract$advance_summary(owner$calculation, 64L, 0.1) else
+          frame_contract$advance_dataset_stats(owner$calculation, 64L, 0.1)
+        response$revision <- owner$revision
+        response$kind <- if (is_summary) "summaryPending" else "datasetStatsPending"
+        if (!is.null(result)) {
+          rm(list = id, envir = records)
+          response$kind <- if (is_summary) "summaryComplete" else "datasetStatsComplete"
+          if (is_summary) response$summaries <- I(list(result)) else {
+            result <- validate_dataset_stats_result(result, frame_contract$limits)
+            response$totalRows <- result$totalRows
+            response$stats <- result$stats
+          }
+        }
+        return(response)
       }
 
       if (identical(kind, "getSummary")) {
@@ -11513,6 +11617,7 @@ openwrangler_r_kernel_agent <- local({
         )
         preflight_response(response)
         export_lifecycle$close_session(session_id)
+        close_session_reads(session_id)
         rm(list = session_id, envir = sessions)
         return(response)
       }
@@ -11522,6 +11627,15 @@ openwrangler_r_kernel_agent <- local({
 
     dispatch_json <- function(payload) {
       request_id <- ""
+      cleanup_receipt <- new.env(parent = emptyenv())
+      encoded <- FALSE
+      on.exit({
+        if (!encoded && !is.null(cleanup_receipt$owner) &&
+            exists(cleanup_receipt$id, cleanup_receipt$records, inherits = FALSE) &&
+            identical(get(cleanup_receipt$id, cleanup_receipt$records, inherits = FALSE), cleanup_receipt$owner)) {
+          rm(list = cleanup_receipt$id, envir = cleanup_receipt$records)
+        }
+      }, add = TRUE)
       tryCatch(
         {
           if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -11556,8 +11670,10 @@ openwrangler_r_kernel_agent <- local({
           ) {
             abort("invalid_request", "R by-example requests cannot contain negative zero")
           }
-          response <- dispatch(request)
-          encode_response(response)
+          response <- dispatch(request, cleanup_receipt)
+          result <- encode_response(response)
+          encoded <- TRUE
+          result
         },
         openwrangler_r_kernel_error = function(error) {
           message <- diagnostic_message(error, "The R runtime request failed")
@@ -11594,7 +11710,7 @@ openwrangler_r_kernel_agent <- local({
 
     environment(dispatch_json) <- environment()
     construction_complete <- TRUE
-    list(dispatch_json = dispatch_json, dispose = export_lifecycle$dispose)
+    list(dispatch_json = dispatch_json, dispose = dispose)
   }
 
   list(new_agent = new_agent, load_csv_source = load_csv_source, load_file_source = load_file_source, validate_file_source = validate_file_source, transport_version = transport_version)

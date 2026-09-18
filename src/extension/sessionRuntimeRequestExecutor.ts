@@ -155,11 +155,28 @@ export class SessionRuntimeRequestExecutor {
         session.publicId,
         requestViewId(publicRequest)
       );
-    const runtimeOptions = (): BridgeRequestOptions | undefined =>
-      isRuntimeStateMutation(publicRequest) ||
-      (publicRequest.kind === "getPage" && session.metadata.backend === "pyspark")
+    const runtimeOptions = (): BridgeRequestOptions | undefined => {
+      if (rendererProfileRead) {
+        const delegate = session.delegate;
+        const runtimeId = session.runtimeId;
+        const runtimeRevision = session.runtimeRevision;
+        return {
+          ...options,
+          isCurrentRead: () =>
+            rendererProfileReadIsCurrent() &&
+            hooks.isCoordinatorAvailable() &&
+            !session.closing &&
+            session.delegate === delegate &&
+            session.runtimeId === runtimeId &&
+            session.runtimeRevision === runtimeRevision &&
+            session.publicRevision === publicRequest.revision
+        };
+      }
+      return isRuntimeStateMutation(publicRequest) ||
+        (publicRequest.kind === "getPage" && session.metadata.backend === "pyspark")
         ? confirmedViewOptions(session, options)
         : options;
+    };
     const runtimeRequest = (): SessionBoundRequest =>
       ({
         ...publicRequest,

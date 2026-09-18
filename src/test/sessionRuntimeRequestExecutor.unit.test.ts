@@ -31,6 +31,35 @@ const step: TransformStep = {
 };
 
 describe("SessionRuntimeRequestExecutor", () => {
+  it.each(["view", "cancel", "runtime", "delegate", "revision", "close"] as const)(
+    "passes a current-read checkpoint that rejects changed %s ownership",
+    async (change) => {
+      let checkpoint: (() => boolean) | undefined;
+      let cancelled = false;
+      const delegate = bridge(
+        requestMock(async (_request, options) => {
+          checkpoint = options?.isCurrentRead;
+          return datasetStatsResponse();
+        })
+      );
+      const session = runtimeSession(delegate, {
+        activeViewContextId: "view",
+        latestRequestedViewContextId: "view",
+        scheduler: schedulerStub(() => cancelled)
+      });
+      await runtimeExecutor().execute(session, statsRequest(0), { viewContextId: "view" }, hooks());
+      expect(checkpoint).toBeTypeOf("function");
+      expect(checkpoint!()).toBe(true);
+      if (change === "view") session.latestRequestedViewContextId = "new-view";
+      if (change === "cancel") cancelled = true;
+      if (change === "runtime") session.runtimeId = "replacement";
+      if (change === "delegate") session.delegate = bridge(vi.fn());
+      if (change === "revision") session.runtimeRevision += 1;
+      if (change === "close") session.closing = true;
+      expect(checkpoint!()).toBe(false);
+    }
+  );
+
   it.each(["settlement", "recovery", "unknown-session"] as const)(
     "refuses Redo when trust changes during %s without dispatching another mutation",
     async (phase) => {

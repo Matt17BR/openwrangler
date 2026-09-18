@@ -1189,8 +1189,8 @@ stopifnot(!is.null(get("${sessionId}", envir = inspection_sessions)$inspectionBo
 stopifnot(identical(serialize(frame, NULL, version = 3L), source_before))
 ${close.code}
 stopifnot(!exists("${sessionId}", envir = inspection_sessions, inherits = FALSE))
-inspection_agent$dispose()
 ${afterClose.code}
+inspection_agent$dispose()
 `);
     const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
       expectExportFormats: true

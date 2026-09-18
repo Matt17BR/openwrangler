@@ -525,6 +525,7 @@ export function transportOptions(
 ): RKernelRequestOptions {
   return {
     cancellation: options.cancellation,
+    ...(options.isCurrentRead === undefined ? {} : { isCurrentRead: options.isCurrentRead }),
     timeoutMs: options.timeoutMs,
     ...(requestedSessionId ? { requestedSessionId } : {}),
     ...(cloneFrom ? { cloneFrom } : {}),

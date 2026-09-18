@@ -63,6 +63,15 @@ const WINDOWS_JOB_STOP_MS = 10_250;
 const PROCESS_GROUP_POLL_MS = 25;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
+const PROFILE_CLEANUP_TIMEOUT_MS = 5_000;
+const PROFILE_EXCLUSIVE_REQUESTS = new Set<RKernelRequest["kind"]>([
+  "previewStep",
+  "redoStep",
+  "undoStep",
+  "inspectStepPage",
+  "applyDraft",
+  "discardDraft"
+]);
 
 export interface RProcessVariableDescriptor {
   readonly name: string;
@@ -139,6 +148,15 @@ interface StartedProcess {
   readonly discovery: RProcessVariableDiscovery;
 }
 
+interface ProcessRequestExecution {
+  readonly owned?: OwnedProcess;
+  readonly admission?: Promise<void>;
+  readonly beforeDispatch?: () => void;
+}
+
+type ProfileBeginRequest = Extract<RKernelRequest, { kind: "beginSummary" | "beginDatasetStats" }>;
+type ProfileCompleteResponse = Extract<RKernelResponse, { kind: "summaryComplete" | "datasetStatsComplete" }>;
+
 interface ScheduledRequest {
   readonly completion: Promise<RKernelResponse>;
   readonly state: {
@@ -164,6 +182,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
   private startPromise: Promise<StartedProcess> | undefined;
   private owned: OwnedProcess | undefined;
   private queueTail: Promise<void> = Promise.resolve();
+  private exclusiveTail: Promise<void> = Promise.resolve();
+  private readonly profileLifetimes = new Set<Promise<void>>();
   private readonly mappedSessions = new Set<string>();
   private readonly openingSessions = new Set<string>();
   private readonly abandonedOpenSessions = new Set<string>();
@@ -373,9 +393,15 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     view: RKernelViewQuery,
     options: RKernelRequestOptions = {}
   ): Promise<readonly ColumnSummary[]> {
-    const response = await this.executeMapped(this.request("getSummary", { sessionId, columns, view }), options);
+    const response =
+      this.fileSource && columns.length === 1
+        ? await this.profile(
+            this.request("beginSummary", { sessionId, summaryId: this.createId(), columns, view }),
+            options
+          )
+        : await this.executeMapped(this.request("getSummary", { sessionId, columns, view }), options);
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
-    if (response.kind !== "summary" || response.sessionId !== sessionId) {
+    if ((response.kind !== "summary" && response.kind !== "summaryComplete") || response.sessionId !== sessionId) {
       throw new Error("The R process returned mismatched column summaries.");
     }
     return response.summaries;
@@ -386,12 +412,179 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     view: RKernelViewQuery,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDatasetStatsResult> {
-    const response = await this.executeMapped(this.request("getDatasetStats", { sessionId, view }), options);
+    const response = this.fileSource
+      ? await this.profile(this.request("beginDatasetStats", { sessionId, statsId: this.createId(), view }), options)
+      : await this.executeMapped(this.request("getDatasetStats", { sessionId, view }), options);
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
-    if (response.kind !== "datasetStats" || response.sessionId !== sessionId) {
+    if (
+      (response.kind !== "datasetStats" && response.kind !== "datasetStatsComplete") ||
+      response.sessionId !== sessionId
+    ) {
       throw new Error("The R process returned mismatched dataset statistics.");
     }
     return Object.freeze({ totalRows: response.totalRows, stats: response.stats });
+  }
+
+  private async profile(begin: ProfileBeginRequest, options: RKernelRequestOptions): Promise<ProfileCompleteResponse> {
+    this.assertActive();
+    const owned = this.owned;
+    const sessionId = begin.payload.sessionId;
+    if (!owned || !this.mappedSessions.has(sessionId))
+      throw new Error(`Open Wrangler has no live R process session ${sessionId}.`);
+    encodeRKernelRequest(begin);
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const startedAt = performance.now();
+    const admission = this.exclusiveTail;
+    let release!: () => void;
+    const lifetime = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.profileLifetimes.add(lifetime);
+    const releaseOwner = (): void => {
+      this.profileLifetimes.delete(lifetime);
+      release();
+    };
+    let scheduled: ScheduledRequest | undefined;
+    let mayExist = false;
+    let completed = false;
+    let cleanupOwnsRelease = false;
+    let stoppedReason: DetachedBridgeRequestReason | undefined;
+    const checkpoint = (): void => {
+      if (options.cancellation?.isCancellationRequested || options.isCurrentRead?.() === false) {
+        stoppedReason = "cancellation";
+        throw new KernelRequestCancelledError();
+      }
+      if (remainingTimeout(timeoutMs, startedAt) <= 0) {
+        stoppedReason = "timeout";
+        throw new Error(`Open Wrangler kernel request timed out after ${timeoutMs} ms.`);
+      }
+      if (!this.mappedSessions.has(sessionId)) throw new Error("The owning R profile session is no longer mapped.");
+    };
+    const close =
+      begin.kind === "beginSummary"
+        ? this.request("closeSummary", { sessionId, summaryId: begin.payload.summaryId })
+        : this.request("closeDatasetStats", { sessionId, statsId: begin.payload.statsId });
+    try {
+      let request: RKernelRequest = begin;
+      let revision: number | undefined;
+      for (;;) {
+        checkpoint();
+        scheduled = this.schedule(request, undefined, {
+          owned,
+          admission: request === begin ? admission : Promise.resolve(),
+          beforeDispatch: () => {
+            checkpoint();
+            mayExist = true;
+          }
+        });
+        const response = await this.waitForScheduled(
+          scheduled,
+          {
+            ...options,
+            timeoutMs: Math.floor(remainingTimeout(timeoutMs, startedAt))
+          },
+          (reason) => {
+            stoppedReason = reason;
+          }
+        );
+        if (response.kind === "error") throw new RKernelDiagnosticError(response);
+        if (begin.kind === "beginSummary") {
+          if (
+            (response.kind !== "summaryPending" && response.kind !== "summaryComplete") ||
+            response.sessionId !== sessionId ||
+            response.summaryId !== begin.payload.summaryId ||
+            (revision !== undefined && response.revision !== revision)
+          ) {
+            throw new Error("The R process returned a mismatched summary continuation.");
+          }
+          revision = response.revision;
+          if (response.kind === "summaryComplete") {
+            completed = true;
+            checkpoint();
+            return response;
+          }
+          request = this.request("continueSummary", { sessionId, summaryId: begin.payload.summaryId, revision });
+        } else {
+          if (
+            (response.kind !== "datasetStatsPending" && response.kind !== "datasetStatsComplete") ||
+            response.sessionId !== sessionId ||
+            response.statsId !== begin.payload.statsId ||
+            (revision !== undefined && response.revision !== revision)
+          ) {
+            throw new Error("The R process returned mismatched dataset-statistics continuation.");
+          }
+          revision = response.revision;
+          if (response.kind === "datasetStatsComplete") {
+            completed = true;
+            checkpoint();
+            return response;
+          }
+          request = this.request("continueDatasetStats", { sessionId, statsId: begin.payload.statsId, revision });
+        }
+      }
+    } catch (error) {
+      cleanupOwnsRelease = true;
+      const cleanup = settle(scheduled?.completion ?? Promise.resolve())
+        .then(async () => {
+          if (mayExist && !completed) await this.closeProfile(owned, close);
+        })
+        .finally(releaseOwner);
+      const reason = error instanceof DetachedBridgeRequestError ? error.reason : stoppedReason;
+      if (reason)
+        throw new DetachedBridgeRequestError(requestDetachedMessage(reason, timeoutMs), reason, mayExist, cleanup);
+      await cleanup;
+      throw error;
+    } finally {
+      if (!cleanupOwnsRelease) releaseOwner();
+    }
+  }
+
+  private async closeProfile(
+    owned: OwnedProcess,
+    request: Extract<RKernelRequest, { kind: "closeSummary" | "closeDatasetStats" }>
+  ): Promise<void> {
+    if (owned.closeState) return;
+    try {
+      if (this.disposed) {
+        await this.disposal;
+        if (!owned.closeState) throw new Error("The R profile owner did not close during disposal.");
+        return;
+      }
+      let markDispatched!: () => void;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      const scheduled = this.schedule(request, undefined, {
+        owned,
+        admission: Promise.resolve(),
+        beforeDispatch: markDispatched
+      });
+      // Reserve FIFO position now, but do not charge another request's execution
+      // to this close's receipt budget. Pre-dispatch failure still settles the wait.
+      await Promise.race([dispatched, scheduled.completion]);
+      const response = await this.waitForScheduled(scheduled, { timeoutMs: PROFILE_CLEANUP_TIMEOUT_MS });
+      if (response.kind === "error") throw new RKernelDiagnosticError(response);
+      if (
+        response.sessionId !== request.payload.sessionId ||
+        (request.kind === "closeSummary"
+          ? response.kind !== "summaryClosed" || response.summaryId !== request.payload.summaryId
+          : response.kind !== "datasetStatsClosed" || response.statsId !== request.payload.statsId)
+      ) {
+        throw new Error("The R process returned a mismatched profile close receipt.");
+      }
+    } catch (error) {
+      this.publishInvalidation(error instanceof Error ? error : new Error(String(error)));
+      try {
+        if (this.owned === owned) await this.dispose();
+        else await stopOwnedProcess(owned);
+      } catch (disposalError) {
+        throw new AggregateError(
+          [error, disposalError],
+          "Open Wrangler could not close its R profile or owning process."
+        );
+      }
+      throw error;
+    }
   }
 
   async getColumnValues(
@@ -687,14 +880,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
   private async closeCandidateSession(sessionId: string, options: RKernelRequestOptions): Promise<void> {
     const request = this.request("closeSession", { sessionId });
     const scheduled = this.schedule(request);
-    const tracked: ScheduledRequest = {
-      state: scheduled.state,
-      completion: scheduled.completion.then((response) => {
-        if (isCorrelatedClose(response, sessionId)) this.retireSession(sessionId);
-        return response;
-      })
-    };
-    const response = await this.waitForScheduled(tracked, options);
+    const response = await this.waitForScheduled(scheduled, options);
     if (response.kind === "error") {
       if (response.code === "unknown_session") return;
       throw new RKernelDiagnosticError(response);
@@ -756,34 +942,58 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     return this.waitForScheduled(this.schedule(request, decodeContext), options);
   }
 
-  private schedule(request: RKernelRequest, decodeContext?: RKernelResponseDecodeContext): ScheduledRequest {
+  private schedule(
+    request: RKernelRequest,
+    decodeContext?: RKernelResponseDecodeContext,
+    execution: ProcessRequestExecution = {}
+  ): ScheduledRequest {
     this.assertActive();
-    const requiresTrust = request.kind !== "closeSession";
+    const requiresTrust = !["closeSession", "closeSummary", "closeDatasetStats"].includes(request.kind);
     if (requiresTrust) this.assertWorkspaceTrusted();
     const payload = encodeRKernelRequest(request);
-    const preceding = this.queueTail;
+    const exclusive = this.fileSource !== undefined && PROFILE_EXCLUSIVE_REQUESTS.has(request.kind);
+    let admission = execution.admission ?? (request.kind === "closeSession" ? Promise.resolve() : this.exclusiveTail);
+    if (exclusive) {
+      // Capture only earlier profile lifetimes. Later begins wait behind this
+      // exclusive request, while earlier advances remain able to finish.
+      admission = Promise.all([admission, ...this.profileLifetimes]).then(() => undefined);
+      this.profileLifetimes.clear();
+    }
     const state = { dispatched: false, abandonBeforeDispatch: false };
-    const completion = (async () => {
-      const started = await this.ensureStarted();
-      await preceding;
+    const completion = admission.then(() => {
       if (state.abandonBeforeDispatch) throw new KernelRequestCancelledError();
-      this.assertActive();
-      if (started.owned.closeState) throw processClosedError(started.owned);
-      if (requiresTrust) this.assertWorkspaceTrusted();
-      state.dispatched = true;
-      await writeRequestFrame(started.owned.child, request.requestId, payload);
-      const responsePath = path.join(started.owned.responseRoot, `${request.requestId}.json`);
-      const responsePayload = await waitForResponse(started.owned, responsePath, R_KERNEL_MAX_RESPONSE_BYTES);
-      return decodeRKernelResponseJson(responsePayload, request.requestId, decodeContext);
-    })();
+      const preceding = this.queueTail;
+      const queued = (async () => {
+        const owned = execution.owned ?? (await this.ensureStarted()).owned;
+        await preceding;
+        if (state.abandonBeforeDispatch) throw new KernelRequestCancelledError();
+        this.assertActive();
+        if (this.owned !== owned) throw new Error("The R request no longer owns its captured process.");
+        if (owned.closeState) throw processClosedError(owned);
+        if (requiresTrust) this.assertWorkspaceTrusted();
+        execution.beforeDispatch?.();
+        state.dispatched = true;
+        await writeRequestFrame(owned.child, request.requestId, payload);
+        const responsePath = path.join(owned.responseRoot, `${request.requestId}.json`);
+        const responsePayload = await waitForResponse(owned, responsePath, R_KERNEL_MAX_RESPONSE_BYTES);
+        const response = decodeRKernelResponseJson(responsePayload, request.requestId, decodeContext);
+        if (request.kind === "closeSession" && isCorrelatedClose(response, request.payload.sessionId)) {
+          this.retireSession(request.payload.sessionId);
+        }
+        return response;
+      })();
+      this.queueTail = settle(queued);
+      return queued;
+    });
     void completion.catch(() => undefined);
-    this.queueTail = settle(completion);
+    if (exclusive) this.exclusiveTail = settle(completion);
     return { completion, state };
   }
 
   private async waitForScheduled(
     scheduled: ScheduledRequest,
-    options: RKernelRequestOptions
+    options: RKernelRequestOptions,
+    onStopped?: (reason: DetachedBridgeRequestReason) => void
   ): Promise<RKernelResponse> {
     const timeoutMs = requestTimeout(options.timeoutMs);
     let reason: DetachedBridgeRequestReason | undefined;
@@ -793,10 +1003,12 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         timeoutMs,
         () => {
           reason = "timeout";
+          onStopped?.(reason);
         },
         options.cancellation,
         () => {
           reason = "cancellation";
+          onStopped?.(reason);
         }
       );
     } catch (error) {

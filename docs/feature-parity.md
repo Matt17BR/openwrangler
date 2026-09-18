@@ -773,6 +773,11 @@ Larger categorical distributions and duplicate estimates label their sampled pop
 exact distinct counts through 10,000 values; higher cardinalities and large numeric medians remain unavailable. An oversized page returns a request error; a smaller page remains
 available without restarting the standalone runtime.
 
+Local R file sessions let grid pages run between batches of large column profiles and Dataset statistics.
+Filters still prepare their row selection synchronously, and finishing a profile can require an uninterrupted step.
+This improves responsiveness during scans; it does not make the complete calculation faster or bound every page's
+wait. Live notebooks, R terminals and managed R documents keep synchronous native profiling.
+
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
 `data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes. Preview, history, profiling,
