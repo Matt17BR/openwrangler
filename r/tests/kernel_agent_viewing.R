@@ -1,5 +1,207 @@
 # Native-R viewing, profiling, and live-source session contract cases.
 
+local({
+  frame_runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
+  native_filter_rows <- get("filter_row_positions", frame_runtime, inherits = FALSE)
+  scans <- 0L
+  assign("filter_row_positions", function(frame, descriptor, resolved) {
+    if (length(resolved$filters) != 0L) scans <<- scans + 1L
+    native_filter_rows(frame, descriptor, resolved)
+  }, frame_runtime)
+  on.exit(assign("filter_row_positions", native_filter_rows, frame_runtime), add = TRUE)
+  sources <- new.env(parent = baseenv())
+  sources$.ow_csv_source <- data.table::data.table(label = c("alpha", "beta", "none", NA_character_), value = c(4L, 1L, 9L, 7L))
+  path <- tempfile(fileext = ".csv")
+  writeLines("label,value\nalpha,4", path)
+  on.exit(unlink(path), add = TRUE)
+  contract <- openwrangler_r_frame_contract
+  native_new_cache <- contract$new_file_filter_cache
+  cache <- NULL
+  cache_count <- 0L
+  contract$new_file_filter_cache <- function() {
+    cache_count <<- cache_count + 1L
+    cache <<- native_new_cache()
+    cache
+  }
+  file_agent <- openwrangler_r_kernel_agent$new_agent(contract, sources,
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\""))
+  on.exit(file_agent$dispose(), add = TRUE)
+  send <- function(kind, payload) dispatch_with(file_agent, kind, payload)
+  text_filter <- function(value) list(column = list(id = "r:c:0", name = "label"), type = "string",
+    predicates = I(list(list(kind = "predicate", operator = "contains", value = value))))
+  filtered_window <- function(value = "a", direction = "asc") page_window(
+    sorts = list(list(column = list(id = "r:c:1", name = "value"), direction = direction, nulls = "last")),
+    filters = list(text_filter(value)), row_limit = 2L)
+  opened <- send("openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window()))
+  assert_identical(opened$kind, "page", "managed filter fixture did not open")
+  first <- send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(vapply(first$page$page$rows, `[[`, character(1L), "id"), c("r:r:1", "r:r:0"),
+    "filtered sorting changed stable source row identities")
+  first_scan_count <- scans
+  repeated <- send("getPage", list(sessionId = session_id, page = filtered_window(direction = "desc")))
+  assert_identical(vapply(repeated$page$page$rows, `[[`, character(1L), "id"), c("r:r:0", "r:r:1"),
+    "changing sort reused the previous row order")
+  assert_identical(scans, first_scan_count, "repeated managed filtering rescanned source values")
+  reference <- I(list(list(id = "r:c:1", name = "value")))
+  view <- filtered_window()$view
+  summary <- send("getSummary", list(sessionId = session_id, columns = reference, view = view))
+  assert_identical(summary$summaries[[1L]]$totalCount, 2L, "the profile changed cached membership")
+  assert_identical(summary$summaries[[1L]]$numeric$min, 1L, "the cached profile minimum changed")
+  assert_identical(summary$summaries[[1L]]$numeric$max, 4L, "the cached profile maximum changed")
+  stats <- send("getDatasetStats", list(sessionId = session_id, view = view))
+  assert_identical(stats$totalRows, 2L, "dataset statistics changed cached membership")
+  values <- send("getColumnValues", list(sessionId = session_id, column = reference[[1L]], view = view, search = NULL, limit = 10L))
+  assert_identical(values$kind, "columnValues", "cached column values failed")
+  assert_identical(send("beginSummary", list(sessionId = session_id, summaryId = "01234567-0123-4123-8123-012345678901",
+    columns = reference, view = view))$kind, "summaryComplete", "continued summary did not use the filtered view")
+  assert_identical(send("beginDatasetStats", list(sessionId = session_id, statsId = "01234567-0123-4123-8123-012345678902",
+    view = view))$kind, "datasetStatsComplete", "continued statistics did not use the filtered view")
+  assert_identical(scans, first_scan_count, "page and profile owners did not share filtered membership")
+
+  # A cache hit must still read and validate the current source's structure.
+  data.table::setnames(sources$.ow_csv_source, "value", "changed")
+  assert_identical(send("getPage", list(sessionId = session_id, page = filtered_window()))$kind,
+    "error", "cached membership bypassed source validation")
+  data.table::setnames(sources$.ow_csv_source, "changed", "value")
+  retained_capture <- cache$capture
+  assert_identical(send("openSession", list(sessionId = second_session_id, variableName = ".ow_csv_source", page = page_window()))$kind,
+    "page", "the second managed session did not open")
+  assert_identical(identical(cache$capture, retained_capture), TRUE, "opening a session replaced the established cache owner")
+  before <- scans
+  send("getPage", list(sessionId = second_session_id, page = filtered_window()))
+  assert_identical(scans, before + 1L, "different capture identities shared cached membership")
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(scans, before + 2L, "the agent retained more than one filter entry")
+
+  before <- scans
+  zero <- send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
+  assert_identical(zero$page$page$totalRows, 0L, "an empty filter result changed")
+  send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
+  assert_identical(scans, before + 1L, "empty membership was not cached")
+  send("getPage", list(sessionId = session_id, page = page_window()))
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+    "an unfiltered read retained the previous filter owner")
+  send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
+  assert_identical(scans, before + 2L, "an empty query did not release membership")
+
+  # Charge the resolved key as well as indices without allocating a huge fixture.
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  maximum_bytes <- get("maximum_file_filter_cache_bytes", frame_runtime, inherits = FALSE)
+  on.exit(assign("maximum_file_filter_cache_bytes", maximum_bytes, frame_runtime), add = TRUE)
+  stopifnot(maximum_bytes <= 64 * 1024^2)
+  assign("maximum_file_filter_cache_bytes", as.numeric(object.size(cache$rows)), frame_runtime)
+  contract$clear_file_filter_cache(cache)
+  before <- scans
+  for (attempt in seq_len(2L)) {
+    bounded <- send("getPage", list(sessionId = session_id, page = filtered_window()))
+    assert_identical(bounded$page$page$totalRows, 2L, "uncached fallback changed membership")
+    assert_identical(is.null(cache$capture) && is.null(cache$key), TRUE, "over-budget membership retained its owner")
+  }
+  assert_identical(scans, before + 2L, "over-budget membership incorrectly reused a cache entry")
+  assign("maximum_file_filter_cache_bytes", maximum_bytes, frame_runtime)
+
+  # Custom Code can call an ambient callback that changes shared values before it fails.
+  sources$mutate_source <- function() data.table::set(sources$.ow_csv_source, i = 3L, j = "label", value = "gamma")
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  before <- scans
+  failed <- send("previewStep", list(sessionId = second_session_id, revision = 0L,
+    step = list(id = "failed-shared-mutation", kind = "customCode",
+      params = list(code = "mutate_source(); stop('expected failure after source change'); result <- df")),
+    page = page_window()))
+  assert_identical(failed$kind, "error", "the source-changing Custom Code fixture did not fail")
+  assert_identical(sources$.ow_csv_source$label[[3L]], "gamma", "the failing callback did not change shared values")
+  changed <- send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(changed$page$page$totalRows, 3L, "failed cross-session Custom Code left stale membership")
+  assert_identical(scans, before + 1L, "failed cross-session Custom Code did not invalidate before execution")
+
+  # Ordinary live sessions must continue reading same-schema by-reference changes.
+  live_sources <- new.env(parent = baseenv())
+  live_sources$frame <- data.table::data.table(label = c("alpha", "none"), value = 1:2)
+  live <- openwrangler_r_kernel_agent$new_agent(contract, live_sources)
+  on.exit(live$dispose(), add = TRUE)
+  assert_identical(cache_count, 1L, "an ordinary live session allocated a managed-file cache")
+  dispatch_with(live, "openSession", list(sessionId = session_id, variableName = "frame", page = page_window()))
+  before <- scans
+  assert_identical(dispatch_with(live, "getPage", list(sessionId = session_id, page = filtered_window()))$page$page$totalRows,
+    1L, "live filter fixture changed")
+  data.table::set(live_sources$frame, i = 2L, j = "label", value = "beta")
+  assert_identical(dispatch_with(live, "getPage", list(sessionId = session_id, page = filtered_window()))$page$page$totalRows,
+    2L, "live same-schema mutation reused stale membership")
+  assert_identical(scans, before + 2L, "live filtering unexpectedly reused managed membership")
+
+  agent_runtime <- environment(openwrangler_r_kernel_agent$new_agent)
+  native_preflight <- get("preflight_response", agent_runtime, inherits = FALSE)
+  on.exit(assign("preflight_response", native_preflight, agent_runtime), add = TRUE)
+  assign("preflight_response", function(response) {
+    if (identical(response$kind, "closed")) stop("expected close preflight failure", call. = FALSE)
+    native_preflight(response)
+  }, agent_runtime)
+  assert_identical(send("closeSession", list(sessionId = second_session_id))$kind, "error", "the close preflight fixture did not fail")
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+    "failed close preflight retained the agent's filter owner")
+  assign("preflight_response", native_preflight, agent_runtime)
+  send("closeSession", list(sessionId = second_session_id))
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  agent_environment <- environment(file_agent$dispose)
+  exports <- get("export_lifecycle", agent_environment, inherits = FALSE)
+  native_dispose <- exports$dispose
+  exports$dispose <- function() stop("expected export disposal failure", call. = FALSE)
+  assign("export_lifecycle", exports, agent_environment)
+  disposal <- tryCatch(file_agent$dispose(), error = identity)
+  exports$dispose <- native_dispose
+  assign("export_lifecycle", exports, agent_environment)
+  assert_identical(inherits(disposal, "error"), TRUE, "the export cleanup fixture did not fail")
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+    "failed export cleanup retained the agent's filter owner")
+
+  # In-flight jobs retain their own fixed membership when later pages replace it.
+  sources$.ow_csv_source <- data.table::data.table(label = rep(c("a", "b"), length.out = 200001L), value = seq_len(200001L))
+  native_summary_advance <- contract$advance_summary
+  native_stats_advance <- contract$advance_dataset_stats
+  contract$advance_summary <- function(state, ...) native_summary_advance(state, maximum_chunks = 1L)
+  contract$advance_dataset_stats <- function(state, ...) native_stats_advance(state, maximum_chunks = 1L)
+  pending_agent <- openwrangler_r_kernel_agent$new_agent(contract, sources,
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\""))
+  on.exit(pending_agent$dispose(), add = TRUE)
+  pending_send <- function(kind, payload) dispatch_with(pending_agent, kind, payload)
+  pending_send("openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window(row_limit = 1L)))
+  summary_id <- "01234567-0123-4123-8123-012345678903"
+  stats_id <- "01234567-0123-4123-8123-012345678904"
+  pending_view <- page_window(filters = list(text_filter("a")))$view
+  before <- scans
+  assert_identical(pending_send("beginSummary", list(sessionId = session_id, summaryId = summary_id, columns = reference,
+    view = pending_view))$kind, "summaryPending", "the membership fixture did not yield its summary")
+  assert_identical(pending_send("beginDatasetStats", list(sessionId = session_id, statsId = stats_id,
+    view = pending_view))$kind, "datasetStatsPending", "the membership fixture did not yield its dataset statistics")
+  assert_identical(scans, before + 1L, "concurrent profile begins rescanned identical membership")
+  refused <- pending_send("previewStep", list(sessionId = session_id, revision = 0L,
+    step = list(id = "blocked-rename", kind = "renameColumn", params = list(column = reference[[1L]], newName = "changed")),
+    page = page_window(row_limit = 1L)))
+  assert_identical(refused$code, "read_in_progress", "pending profiles allowed a source-reaching request")
+  pending_send("getPage", list(sessionId = session_id, page = page_window(filters = list(text_filter("a")), row_limit = 1L)))
+  assert_identical(scans, before + 1L, "a refused mutation evicted reusable membership")
+  other_membership <- pending_send("getPage", list(sessionId = session_id,
+    page = page_window(filters = list(text_filter("b")), row_limit = 1L)))
+  assert_identical(other_membership$page$page$rows[[1L]]$id, "r:r:1", "the replacement filter changed source row identity")
+  pending_send("getPage", list(sessionId = session_id, page = page_window(row_limit = 1L)))
+  assert_identical(is.null(cache$capture), TRUE, "the pending jobs prevented empty-view cache release")
+  repeat {
+    summary <- pending_send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 0L))
+    if (!identical(summary$kind, "summaryPending")) break
+  }
+  assert_identical(summary$kind, "summaryComplete", "the summary lost its retained membership")
+  assert_identical(summary$summaries[[1L]]$totalCount, 100001L, "a later page replaced the summary population")
+  assert_identical(summary$summaries[[1L]]$numeric$max, 200001L, "a later page changed the retained summary values")
+  repeat {
+    stats <- pending_send("continueDatasetStats", list(sessionId = session_id, statsId = stats_id, revision = 0L))
+    if (!identical(stats$kind, "datasetStatsPending")) break
+  }
+  assert_identical(stats$kind, "datasetStatsComplete", "dataset statistics lost retained membership")
+  assert_identical(stats$totalRows, 100001L, "a later page replaced the dataset-profile population")
+  assert_identical(stats$stats$missingCells, 0L, "retained dataset-profile values changed")
+  assert_identical(scans, before + 2L, "continuing retained jobs rescanned a replaced filter")
+})
+
 for (invalid_library in list(NULL, "pandas", 1L, list(), "")) {
   payload <- list(sessionId = session_id, variableName = "frame", page = page_window(), library = invalid_library)
   request <- list(transportVersion = 18L, requestId = request_id, kind = "openSession", payload = payload)

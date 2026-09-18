@@ -719,14 +719,15 @@ openwrangler_r_kernel_agent <- local({
     result
   }
 
-  materialize <- function(frame_contract, capture, page) {
+  materialize <- function(frame_contract, capture, page, filter_cache = NULL) {
     frame_contract$materialize_view_page(
       capture,
       view_query = page$view,
       row_offset = page$row_offset,
       row_limit = page$row_limit,
       column_offset = page$column_offset,
-      column_limit = page$column_limit
+      column_limit = page$column_limit,
+      filter_cache = filter_cache
     )
   }
 
@@ -10800,6 +10801,7 @@ openwrangler_r_kernel_agent <- local({
     sessions <- new.env(hash = TRUE, parent = emptyenv())
     pending_summaries <- new.env(hash = TRUE, parent = emptyenv())
     pending_stats <- new.env(hash = TRUE, parent = emptyenv())
+    filter_cache <- if (is.null(file_source)) NULL else frame_contract$new_file_filter_cache()
     disposed <- FALSE
 
     close_session_reads <- function(session_id = NULL) {
@@ -10814,6 +10816,7 @@ openwrangler_r_kernel_agent <- local({
 
     dispose <- function() {
       disposed <<- TRUE
+      frame_contract$clear_file_filter_cache(filter_cache)
       close_session_reads()
       rm(list = ls(sessions, all.names = TRUE), envir = sessions)
       export_lifecycle$dispose()
@@ -10830,9 +10833,11 @@ openwrangler_r_kernel_agent <- local({
 
       # File library copies share this private source. Replay and inspection can
       # execute Custom Code, so source-reaching changes wait across all sessions.
-      if (kind %in% c("previewStep", "redoStep", "undoStep", "inspectStepPage", "applyDraft", "discardDraft") &&
-          (length(ls(pending_summaries, all.names = TRUE)) != 0L || length(ls(pending_stats, all.names = TRUE)) != 0L)) {
-        abort("read_in_progress", "Finish or cancel pending R profiles before changing the source", TRUE)
+      if (kind %in% c("previewStep", "redoStep", "undoStep", "inspectStepPage", "applyDraft", "discardDraft")) {
+        if (length(ls(pending_summaries, all.names = TRUE)) != 0L || length(ls(pending_stats, all.names = TRUE)) != 0L) {
+          abort("read_in_progress", "Finish or cancel pending R profiles before changing the source", TRUE)
+        }
+        frame_contract$clear_file_filter_cache(filter_cache)
       }
 
       if (identical(kind, "openSession")) {
@@ -10967,7 +10972,7 @@ openwrangler_r_kernel_agent <- local({
           requestId = request_id,
           kind = "page",
           sessionId = session_id,
-          page = materialize(frame_contract, active_capture(session), page)
+          page = materialize(frame_contract, active_capture(session), page, filter_cache)
         ))
       }
 
@@ -11012,8 +11017,8 @@ openwrangler_r_kernel_agent <- local({
           owner$sessionId <- session_id
           owner$revision <- session$revision
           owner$capture <- active_capture(session)
-          owner$calculation <- if (is_summary) frame_contract$begin_summary(owner$capture, columns, view) else
-            frame_contract$begin_dataset_stats(owner$capture, view)
+          owner$calculation <- if (is_summary) frame_contract$begin_summary(owner$capture, columns, view, filter_cache) else
+            frame_contract$begin_dataset_stats(owner$capture, view, filter_cache)
           assign(id, owner, envir = records)
         } else {
           revision <- whole_number(payload$revision, "request.payload.revision", maximum_revision)
@@ -11061,7 +11066,7 @@ openwrangler_r_kernel_agent <- local({
           requestId = request_id,
           kind = "summary",
           sessionId = session_id,
-          summaries = frame_contract$materialize_summaries(active_capture(session), columns, view)
+          summaries = frame_contract$materialize_summaries(active_capture(session), columns, view, filter_cache)
         ))
       }
 
@@ -11074,7 +11079,7 @@ openwrangler_r_kernel_agent <- local({
         session <- get(session_id, envir = sessions, inherits = FALSE)
         view <- decode_view(payload$view, frame_contract$limits)
         result <- validate_dataset_stats_result(
-          frame_contract$materialize_dataset_stats(active_capture(session), view),
+          frame_contract$materialize_dataset_stats(active_capture(session), view, filter_cache),
           frame_contract$limits
         )
         return(list(
@@ -11111,7 +11116,7 @@ openwrangler_r_kernel_agent <- local({
         limit <- whole_number(payload$limit, "request.payload.limit", 10000L)
         if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive")
         session <- get(session_id, envir = sessions, inherits = FALSE)
-        result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit)
+        result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit, filter_cache)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -11637,6 +11642,7 @@ openwrangler_r_kernel_agent <- local({
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("unknown_session", "The requested R session is already closed", TRUE)
         }
+        frame_contract$clear_file_filter_cache(filter_cache)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,

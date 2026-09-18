@@ -1721,6 +1721,17 @@ may retain a compatible data-table key; explicit sorting clears the data-table k
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
 
+Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
+value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation;
+sorts still order the selected rows separately. The unsorted integer positions and filter key together may occupy
+at most 64 MiB. A miss releases the old entry before scanning; oversized selections remain usable without retention.
+Empty filters, source-reaching edits or replay, session close and agent disposal release the entry. Invalidation
+precedes execution and cleanup, including their failure paths. Initial opening, inspection and mutation responses
+do not populate it; later reads may reuse a published active draft. The retained capture is already owned by its
+session. The entry's byte bound excludes that frame and row vectors independently retained by pending profiles. The existing
+32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and uncached filter
+selection still runs synchronously.
+
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
 

@@ -22,6 +22,7 @@ openwrangler_r_frame_contract <- local({
   maximum_histogram_bins <- 20L
   maximum_cached_sort_columns <- 4L
   maximum_sort_cache_bytes <- 32L * 1024L * 1024L
+  maximum_file_filter_cache_bytes <- 64L * 1024L * 1024L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
   maximum_operation_output_bytes <- 64L * 1024L * 1024L
@@ -3794,6 +3795,21 @@ openwrangler_r_frame_contract <- local({
     cache$columns <- list()
     cache$bytes <- 0
     invisible(NULL)
+  }
+
+  clear_file_filter_cache <- function(cache) {
+    if (!is.null(cache)) {
+      cache$capture <- NULL
+      cache$key <- NULL
+      cache$rows <- integer()
+    }
+    invisible(NULL)
+  }
+
+  new_file_filter_cache <- function() {
+    cache <- new.env(parent = emptyenv())
+    clear_file_filter_cache(cache)
+    cache
   }
 
   set_sequential_row_origins <- function(capture, row_count, row_identity_domain, offset = 0L) {
@@ -11275,13 +11291,30 @@ openwrangler_r_frame_contract <- local({
     row_positions
   }
 
-  view_row_positions <- function(capture, frame, view_query, apply_sorts) {
+  view_row_positions <- function(capture, frame, view_query, apply_sorts, filter_cache = NULL) {
     resolved <- resolve_view_query(view_query, capture$descriptor)
+    if (length(resolved$filters) == 0L) clear_file_filter_cache(filter_cache)
     if (length(resolved$filters) == 0L && (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L)) {
       if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
       return(list(rows = NULL, totalRows = capture$descriptor$shape$rows, resolved = resolved))
     }
-    row_positions <- filter_row_positions(frame, capture$descriptor, resolved)
+    filter_key <- if (!is.null(filter_cache) && length(resolved$filters) != 0L) {
+      list(logic = resolved$logic, filters = resolved$filters)
+    } else NULL
+    if (!is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)) {
+      row_positions <- filter_cache$rows
+    } else {
+      clear_file_filter_cache(filter_cache)
+      row_positions <- filter_row_positions(frame, capture$descriptor, resolved)
+      if (!is.null(filter_key)) {
+        cache_bytes <- as.double(utils::object.size(row_positions)) + as.double(utils::object.size(filter_key))
+        if (cache_bytes <= maximum_file_filter_cache_bytes) {
+          filter_cache$capture <- capture
+          filter_cache$key <- filter_key
+          filter_cache$rows <- row_positions
+        }
+      }
+    }
     if (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L || length(row_positions) == 0L) {
       if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
       return(list(rows = row_positions, totalRows = length(row_positions), resolved = resolved))
@@ -11446,12 +11479,13 @@ openwrangler_r_frame_contract <- local({
   materialize_summaries <- function(
     capture,
     column_references,
-    view_query = list(filters = list(), sorts = list())
+    view_query = list(filters = list(), sorts = list()),
+    filter_cache = NULL
   ) {
     validate_capture(capture)
     resolved <- resolve_profile_columns(column_references, capture$descriptor)
     frame <- read_capture_frame(capture, validated = TRUE)
-    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE, filter_cache = filter_cache)
     add_metric(capture$metrics, "profileColumns", length(resolved))
     budget <- new_payload_budget(capture$metadataBytes)
     summaries <- lapply(resolved, function(column) {
@@ -11460,23 +11494,23 @@ openwrangler_r_frame_contract <- local({
     json_array(summaries)
   }
 
-  begin_summary <- function(capture, column_references, view_query) {
+  begin_summary <- function(capture, column_references, view_query, filter_cache = NULL) {
     validate_capture(capture)
     resolved <- resolve_profile_columns(column_references, capture$descriptor)
     if (length(resolved) != 1L) abort("invalid-column-reference", "a continued R profile requires one column")
     frame <- read_capture_frame(capture, validated = TRUE)
-    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE, filter_cache = filter_cache)
     add_metric(capture$metrics, "profileColumns")
     new_column_summary(capture, frame, resolved[[1L]], view$rows, view$totalRows, new_payload_budget(capture$metadataBytes))
   }
 
-  begin_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list())) {
+  begin_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list()), filter_cache = NULL) {
     validate_capture(capture)
     state <- new.env(parent = emptyenv())
     state$descriptor <- capture$descriptor
     state$column_count <- state$descriptor$shape$columns
     state$frame <- read_capture_frame(capture, validated = TRUE)
-    state$view <- view_row_positions(capture, state$frame, view_query, apply_sorts = FALSE)
+    state$view <- view_row_positions(capture, state$frame, view_query, apply_sorts = FALSE, filter_cache = filter_cache)
     state$row_count <- state$view$totalRows
     state$dataframe_flavor <- capture$descriptor$dataframeFlavor
     add_metric(capture$metrics, "datasetProfiles")
@@ -11567,8 +11601,8 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
-  materialize_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list())) {
-    advance_dataset_stats(begin_dataset_stats(capture, view_query))
+  materialize_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list()), filter_cache = NULL) {
+    advance_dataset_stats(begin_dataset_stats(capture, view_query, filter_cache))
   }
 
   materialize_column_values <- function(
@@ -11576,7 +11610,8 @@ openwrangler_r_frame_contract <- local({
     column_reference,
     view_query = list(filters = list(), sorts = list()),
     search = NULL,
-    limit = 100L
+    limit = 100L,
+    filter_cache = NULL
   ) {
     validate_capture(capture)
     descriptor <- capture$descriptor
@@ -11585,7 +11620,7 @@ openwrangler_r_frame_contract <- local({
     if (limit < 1L) abort("invalid-view-query", "limit must be positive")
     if (!is.null(search)) search <- bounded_utf8(search, "search", maximum_text_bytes)
     frame <- read_capture_frame(capture, validated = TRUE)
-    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE, filter_cache = filter_cache)
     source_column <- frame[[resolved_column$position]]
     column_descriptor <- descriptor$schema[[resolved_column$position]]
     semantics <- column_descriptor$semantics
@@ -11699,11 +11734,12 @@ openwrangler_r_frame_contract <- local({
     row_offset = 0L,
     row_limit = 100L,
     column_offset = 0L,
-    column_limit = 100L
+    column_limit = 100L,
+    filter_cache = NULL
   ) {
     validate_capture(capture)
     frame <- read_capture_frame(capture, validated = TRUE)
-    view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE, filter_cache = filter_cache)
     total_rows <- view$totalRows
     window <- resolve_page_window(
       capture$descriptor,
@@ -11862,6 +11898,8 @@ openwrangler_r_frame_contract <- local({
     nested_operation_frame = nested_operation_frame,
     capture_nested_result = capture_nested_result,
     capture_live_frame = capture_live_frame,
+    new_file_filter_cache = new_file_filter_cache,
+    clear_file_filter_cache = clear_file_filter_cache,
     isolate_capture = isolate_capture,
     isolate_custom_code_input = isolate_custom_code_input,
     rename_column_at = rename_column_at,
