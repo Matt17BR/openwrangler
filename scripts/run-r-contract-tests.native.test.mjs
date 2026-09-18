@@ -47,6 +47,77 @@ function macIdentity(pid, fields = {}) {
   };
 }
 
+test("POSIX settlement owns fresh discovery without a second background poller", async (context) => {
+  for (const fail of [false, true]) {
+    await context.test(fail ? "unverifiable observation" : "reparented descendant", (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 0 });
+      let root = macIdentity(40001, { ownerMarked: true });
+      let child;
+      let refused = false;
+      let scans = 0;
+      let targets;
+      const tracker = createPosixProcessTracker(40001, "owned-test", {
+        observationIntervalMs: 10,
+        readProcessIdentity: (pid) => (pid === 40001 ? root : child),
+        listProcessIdentities: () => {
+          scans++;
+          if (scans === 2) t.mock.timers.setTime(50);
+          if (refused) throw new Error("controlled observation refusal");
+          return child ? [child] : [];
+        },
+        signalVerifiedProcesses: (values) => {
+          targets = values;
+        }
+      });
+      try {
+        t.mock.timers.tick(10);
+        assert.equal(scans, 2, "background discovery runs before settlement starts");
+        t.mock.timers.tick(9);
+        assert.equal(scans, 2, "the discovery gap starts after a slow observation completes");
+        t.mock.timers.tick(1);
+        assert.equal(scans, 3, "background discovery continues until settlement takes ownership");
+        assert.equal(tracker.isSettled({ isSettled: () => false }), false);
+        const settlementScans = scans;
+        t.mock.timers.tick(100);
+        assert.equal(scans, settlementScans, "settlement must not compete with background discovery");
+        if (fail) {
+          refused = true;
+          assert.throws(() => tracker.isSettled({ isSettled: () => true }), /controlled observation refusal/);
+          assert.throws(() => tracker.signal("SIGKILL"), /controlled observation refusal/);
+          assert.deepEqual(
+            targets.map((value) => value.pid),
+            [40001],
+            "retained identities remain available for exact signaling"
+          );
+          refused = false;
+          root = undefined;
+          assert.throws(() => tracker.isSettled({ isSettled: () => true }), /controlled observation refusal/);
+        } else {
+          root = undefined;
+          child = macIdentity(40002, { ownerMarked: true });
+          assert.equal(
+            tracker.isSettled({ isSettled: () => true }),
+            false,
+            "fresh settlement discovers a reparented descendant"
+          );
+          tracker.signal("SIGTERM");
+          assert.deepEqual(
+            targets.map((value) => value.pid),
+            [40002]
+          );
+          child = undefined;
+          assert.equal(tracker.isSettled({ isSettled: () => true }), true);
+        }
+      } finally {
+        tracker.stop();
+      }
+      const stoppedScans = scans;
+      t.mock.timers.tick(100);
+      assert.equal(scans, stoppedScans, "final stop leaves no background observation");
+    });
+  }
+});
+
 test("macOS tracker retains both exec samples through reread and retirement", () => {
   let root = macIdentity(40001, { ownerMarked: true });
   let scan = [];
