@@ -32,12 +32,9 @@ type ExecuteSessionRequest = (
 ) => Promise<OpenWranglerResponse>;
 
 export class SessionRequestScheduler {
-  private activeForegroundOperation: Promise<void> | undefined;
-  private activeForegroundRequest: SessionBoundRequest | undefined;
-  private activeForegroundOptions: BridgeRequestOptions | undefined;
-  private activeBackgroundOperation: Promise<void> | undefined;
-  private activeBackgroundRequest: SessionBoundRequest | undefined;
-  private activeBackgroundOptions: BridgeRequestOptions | undefined;
+  private activeForegroundOperation: QueuedSessionOperation | undefined;
+  private activeInteractiveProfile: QueuedSessionOperation | undefined;
+  private activeBackgroundOperation: QueuedSessionOperation | undefined;
   private interactiveQueue: QueuedSessionOperation[] = [];
   private backgroundQueue: QueuedSessionOperation[] = [];
   private terminalOperation: QueuedSessionOperation | undefined;
@@ -80,12 +77,18 @@ export class SessionRequestScheduler {
   cancelViewRequests(viewRequestIds: readonly string[]): void {
     if (viewRequestIds.length === 0) return;
     const cancelled = new Set(viewRequestIds);
-    for (const [active, options] of [
-      [this.activeForegroundRequest, this.activeForegroundOptions],
-      [this.activeBackgroundRequest, this.activeBackgroundOptions]
-    ] as const) {
-      const viewRequestId = active ? requestViewId(active) : undefined;
-      if (active && viewRequestId && cancelled.has(viewRequestId) && isCancellableViewRequest(active, options)) {
+    for (const active of [
+      this.activeForegroundOperation,
+      this.activeInteractiveProfile,
+      this.activeBackgroundOperation
+    ]) {
+      const viewRequestId = active ? requestViewId(active.request) : undefined;
+      if (
+        active &&
+        viewRequestId &&
+        cancelled.has(viewRequestId) &&
+        isCancellableViewRequest(active.request, active.options)
+      ) {
         this.cancelledActiveViewRequestIds.add(viewRequestId);
       }
     }
@@ -131,8 +134,9 @@ export class SessionRequestScheduler {
 
   hasPendingRequest(predicate: (request: SessionBoundRequest) => boolean): boolean {
     return (
-      (this.activeForegroundRequest !== undefined && predicate(this.activeForegroundRequest)) ||
-      (this.activeBackgroundRequest !== undefined && predicate(this.activeBackgroundRequest)) ||
+      (this.activeForegroundOperation !== undefined && predicate(this.activeForegroundOperation.request)) ||
+      (this.activeInteractiveProfile !== undefined && predicate(this.activeInteractiveProfile.request)) ||
+      (this.activeBackgroundOperation !== undefined && predicate(this.activeBackgroundOperation.request)) ||
       this.interactiveQueue.some(({ request }) => predicate(request)) ||
       this.backgroundQueue.some(({ request }) => predicate(request)) ||
       (this.terminalOperation !== undefined && predicate(this.terminalOperation.request))
@@ -150,8 +154,9 @@ export class SessionRequestScheduler {
       if (request?.kind !== requestKind || requestViewId(request) !== viewRequestId) return;
       checkpoints.push({ state, lane, requestKind, viewRequestId });
     };
-    append(this.activeForegroundRequest, "active", "foreground");
-    append(this.activeBackgroundRequest, "active", "background");
+    append(this.activeForegroundOperation?.request, "active", "foreground");
+    append(this.activeInteractiveProfile?.request, "active", "foreground");
+    append(this.activeBackgroundOperation?.request, "active", "background");
     for (const operation of this.interactiveQueue) append(operation.request, "queued", "foreground");
     for (const operation of this.backgroundQueue) append(operation.request, "queued", "background");
     if (checkpoints.length > 1) {
@@ -163,7 +168,8 @@ export class SessionRequestScheduler {
   snapshot(): SessionRequestSchedulerSnapshot {
     return {
       quiescent: this.isIdle(),
-      activeForegroundOperation: this.activeForegroundOperation !== undefined,
+      activeForegroundOperation:
+        this.activeForegroundOperation !== undefined || this.activeInteractiveProfile !== undefined,
       activeBackgroundOperation: this.activeBackgroundOperation !== undefined,
       interactiveQueueLength: this.interactiveQueue.length,
       backgroundQueueLength: this.backgroundQueue.length,
@@ -172,69 +178,63 @@ export class SessionRequestScheduler {
   }
 
   private startNext(): void {
-    if (!this.activeForegroundOperation && this.interactiveQueue.length > 0) {
+    while (!this.activeForegroundOperation && this.interactiveQueue.length > 0) {
       const next = this.interactiveQueue[0];
       if (
-        !this.activeBackgroundOperation ||
-        (this.activeBackgroundRequest &&
-          canRunAlongsideBackground(next.request, next.options, this.activeBackgroundRequest))
+        (this.activeInteractiveProfile && next.request.kind !== "getPage" && next.request.kind !== "getColumnValues") ||
+        (this.activeBackgroundOperation &&
+          !canRunAlongsideBackground(next.request, next.options, this.activeBackgroundOperation.request))
       ) {
-        this.interactiveQueue.shift();
-        this.startOperation(next, "foreground");
+        break;
       }
+      this.interactiveQueue.shift();
+      this.startOperation(
+        next,
+        next.request.kind === "getSummary" || next.request.kind === "getDatasetStats"
+          ? "activeInteractiveProfile"
+          : "activeForegroundOperation"
+      );
     }
 
     if (
       !this.activeForegroundOperation &&
+      !this.activeInteractiveProfile &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length === 0
     ) {
       const terminal = this.terminalOperation;
       this.terminalOperation = undefined;
-      if (terminal) this.startOperation(terminal, "foreground");
+      if (terminal) this.startOperation(terminal, "activeForegroundOperation");
     }
 
     if (
       !this.activeForegroundOperation &&
+      !this.activeInteractiveProfile &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length > 0
     ) {
       const background = this.backgroundQueue.shift();
-      if (background) this.startOperation(background, "background");
+      if (background) this.startOperation(background, "activeBackgroundOperation");
     }
 
     this.resolveIdleWaiters();
   }
 
-  private startOperation(operation: QueuedSessionOperation, lane: SessionRequestExecutionLane): void {
-    if (lane === "foreground") {
-      this.activeForegroundRequest = operation.request;
-      this.activeForegroundOptions = operation.options;
-    } else {
-      this.activeBackgroundRequest = operation.request;
-      this.activeBackgroundOptions = operation.options;
-    }
-    const activeOperation = this.execute(operation.request, operation.options)
+  private startOperation(
+    operation: QueuedSessionOperation,
+    owner: "activeForegroundOperation" | "activeInteractiveProfile" | "activeBackgroundOperation"
+  ): void {
+    this[owner] = operation;
+    void this.execute(operation.request, operation.options)
       .then(operation.resolve, operation.reject)
       .finally(() => {
-        if (lane === "foreground" && this.activeForegroundOperation === activeOperation) {
-          this.activeForegroundOperation = undefined;
-          this.activeForegroundRequest = undefined;
-          this.activeForegroundOptions = undefined;
-        }
-        if (lane === "background" && this.activeBackgroundOperation === activeOperation) {
-          this.activeBackgroundOperation = undefined;
-          this.activeBackgroundRequest = undefined;
-          this.activeBackgroundOptions = undefined;
-        }
+        if (this[owner] === operation) this[owner] = undefined;
         const viewRequestId = requestViewId(operation.request);
         if (viewRequestId) this.cancelledActiveViewRequestIds.delete(viewRequestId);
         this.startNext();
       });
-    if (lane === "foreground") this.activeForegroundOperation = activeOperation;
-    else this.activeBackgroundOperation = activeOperation;
   }
 
   private cancelOperations(operations: QueuedSessionOperation[]): void {
@@ -251,6 +251,7 @@ export class SessionRequestScheduler {
   private isIdle(): boolean {
     return (
       !this.activeForegroundOperation &&
+      !this.activeInteractiveProfile &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length === 0 &&
