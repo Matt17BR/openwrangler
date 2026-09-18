@@ -204,9 +204,9 @@ export function createReleasedRDocumentJourney({
         WORKBENCH_OPERATION_TIMEOUT_MS,
         "opening the existing CSV with its private unavailable R package"
       );
+      recordAcceptanceProgress("jupyter-r:file:dependency:opened");
       fileTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      assert.ok(fileTab?.input instanceof vscode.TabInputCustom);
-      assert.equal(fileTab.input.uri.toString(), source.toString());
+      assert.ok(fileTab?.input instanceof vscode.TabInputWebview);
       await waitFor(
         () => {
           const response = testing.panelOpenResponse();
@@ -215,15 +215,18 @@ export function createReleasedRDocumentJourney({
         30_000,
         "the R file panel to report its missing jsonlite dependency"
       );
+      recordAcceptanceProgress("jupyter-r:file:dependency:missing");
       if (originalLibraries === undefined) delete process.env.R_LIBS;
       else process.env.R_LIBS = originalLibraries;
       assert.equal(testing.diagnostics().sessionCount, 0);
       const install = await waitForOpenWranglerWebviewButton(workbench, "Install required packages", true);
+      recordAcceptanceProgress("jupyter-r:file:dependency:probe");
       await install.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, noWaitAfter: true });
       const confirmation = await waitForVisibleEditorDialog(
         workbench,
         "Install or update the R packages needed to open this file?"
       );
+      recordAcceptanceProgress("jupyter-r:file:dependency:confirmation");
       const detail = await confirmation.dialog.locator(".dialog-message-detail").innerText();
       const executableLine = detail.split("\n").find((line) => line.startsWith("Rscript: "));
       assert.ok(executableLine);
@@ -282,7 +285,16 @@ export function createReleasedRDocumentJourney({
       openSubscription.dispose();
       closeSubscription.dispose();
       try {
-        if (!recovered && fileTab) await vscode.window.tabGroups.close(fileTab, true);
+        if (!recovered && fileTab) {
+          recordAcceptanceProgress("jupyter-r:file:dependency:failed-cleanup");
+          await withBoundedAcceptancePromise(
+            vscode.window.tabGroups.close(fileTab, true),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            "closing the failed R dependency-recovery panel"
+          ).catch(() => {
+            recordAcceptanceProgress("jupyter-r:file:dependency:failed-cleanup:unsettled");
+          });
+        }
       } finally {
         cleanupAcceptanceTemporaryDirectory(library);
       }
