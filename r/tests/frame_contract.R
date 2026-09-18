@@ -6121,6 +6121,64 @@ assert_identical(
 cast_nonnullable_result$value[[1L]] <- 99L
 assert_identical(cast_nonnullable_source$value[[1L]], "1", "a cast result shared storage with its source")
 
+local({
+  seconds <- c(
+    (2^51 - 1) / 1e6, -(2^51 - 1) / 1e6,
+    -5.000000000000001e-7, -5e-7, -4.999999999999999e-7,
+    -0.0000001, 59.9999998, 1704067199.9999998, NA_real_
+  )
+  expected <- c(
+    "2041-05-10T11:56:53.685247", "1898-08-23T12:03:06.314753",
+    "1969-12-31T23:59:59.999999", "1970-01-01T00:00:00.000000",
+    "1970-01-01T00:00:00.000000", "1970-01-01T00:00:00.000000",
+    "1970-01-01T00:01:00.000000", "2024-01-01T00:00:00.000000", NA_character_
+  )
+  frame <- data.frame(instant = structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC"))
+  before <- serialize(frame, NULL, version = 3L)
+  old_options <- options(OutDec = ",", digits.secs = 2L)
+  on.exit(options(old_options), add = TRUE)
+  capture <- openwrangler_r_frame_contract$capture_frame(frame)
+  page <- openwrangler_r_frame_contract$materialize_page(capture)
+  actual <- vapply(page$page$rows, function(row) {
+    if (row$values[[1L]]$isNull) NA_character_ else row$values[[1L]]$display
+  }, character(1L))
+  assert_identical(actual, expected, "default POSIXct text truncated instead of rounding to microseconds")
+  raw <- vapply(page$page$rows, function(row) {
+    if (row$values[[1L]]$isNull) NA_real_ else as.double(row$values[[1L]]$raw)
+  }, double(1L))
+  assert_identical(raw, seconds, "datetime display rounding changed raw selection values")
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(list(id = "r:c:0", name = "instant")))[[1L]]
+  assert_identical(summary$visualization$min, expected[[2L]], "datetime profile minimum did not use rounded text")
+  assert_identical(summary$visualization$max, expected[[1L]], "datetime profile maximum did not use rounded text")
+  text <- openwrangler_r_frame_contract$cast_column_at(frame, 1L, "instant", "string")$instant
+  assert_identical(text, ifelse(is.na(expected), NA_character_, paste0(expected, "Z")), "datetime Cast did not use rounded UTC text")
+  empty <- openwrangler_r_frame_contract$cast_column_at(frame[FALSE, , drop = FALSE], 1L, "instant", "string")
+  assert_identical(empty$instant, character(), "empty datetime Cast changed its output type")
+  nonfinite <- data.frame(instant = structure(c(Inf, -Inf, NaN, NA_real_), class = c("POSIXct", "POSIXt"), tzone = "UTC"))
+  assert_identical(openwrangler_r_frame_contract$cast_column_at(nonfinite, 1L, "instant", "string")$instant,
+    c("Inf", "-Inf", "NaN", NA_character_), "datetime Cast changed native nonfinite string tokens")
+  assert_identical(serialize(frame, NULL, version = 3L), before, "datetime formatting changed source storage or metadata")
+
+  zones <- list(
+    list(timezone = "Europe/Berlin", seconds = c(1711846799.9999998, 1729990799.9999998),
+      expected = c("2024-03-31T03:00:00.000000", "2024-10-27T02:00:00.000000")),
+    list(timezone = "Europe/Paris", seconds = -2208988800 + 0.123456,
+      expected = "1900-01-01T00:09:21.123456"),
+    list(timezone = "", seconds = 59.9999998, expected = "1970-01-01T00:01:00.000000"),
+    list(timezone = NULL, seconds = 59.9999998, expected = "1970-01-01T00:01:00.000000")
+  )
+  for (case in zones) {
+    instant <- structure(case$seconds, class = c("POSIXct", "POSIXt"))
+    attr(instant, "tzone") <- case$timezone
+    page <- openwrangler_r_frame_contract$materialize_page(openwrangler_r_frame_contract$capture_frame(data.frame(instant = instant)))
+    assert_identical(vapply(page$page$rows, function(row) row$values[[1L]]$display, character(1L)),
+      case$expected, "rounded datetime display lost timezone carry or UTC fallback")
+  }
+  explicit <- openwrangler_r_frame_contract$format_datetime_column_at(frame, 1L, "instant", "%OS6")
+  assert_identical(explicit$instant, base::format.POSIXct(frame$instant, "%OS6", tz = "UTC"),
+    "explicit datetime formats no longer follow native R formatting")
+})
+
 cast_datetime_source <- data.frame(
   instant = as.POSIXct(c("2026-01-02 03:04:05", NA), tz = "Europe/Berlin"),
   check.names = FALSE

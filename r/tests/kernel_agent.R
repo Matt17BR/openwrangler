@@ -2377,10 +2377,8 @@ source_environment$categorical_scalar_frame <- data.frame(
   text = c("β", "", NA_character_, "alpha", "β"),
   category = factor(c("used", "", NA, "used", "other"), levels = c("unused", "used", "", "other")),
   day = as.Date(c("2024-01-02", "2024-01-03", NA, "2024-01-02", "2024-01-03")),
-  instant = as.POSIXct(
-    c("2024-01-02 03:04:05", "2024-01-03 04:05:06", NA, "2024-01-02 03:04:05", NA),
-    tz = "UTC"
-  ),
+  instant = structure(c(1.00000075, 1.00000125, NA, 1.00000075, NA),
+    class = c("POSIXct", "POSIXt"), tzone = "UTC"),
   elapsed = as.difftime(c(1, NA, 2, 1, 2), units = "hours"),
   wide = bit64::as.integer64(c("9007199254740993", "-2", NA, "9007199254740993", "-2")),
   check.names = FALSE,
@@ -2406,6 +2404,11 @@ categorical_scalar_expected <- openwrangler_r_frame_contract$one_hot_encode_colu
   prefix_separator = "_",
   drop_original = FALSE
 )$value
+assert_identical(
+  names(categorical_scalar_expected)[startsWith(names(categorical_scalar_expected), "instant_")],
+  c("instant_1970-01-01T00:00:01.000000", "instant_1970-01-01T00:00:01.000001"),
+  "One Hot changed persistent datetime column names to rounded display labels"
+)
 assert_identical(
   dispatch("openSession", list(sessionId = categorical_scalar_session_id, variableName = "categorical_scalar_frame", page = page_window()))$kind,
   "page",
@@ -2601,6 +2604,24 @@ assert_identical(
   TRUE,
   "generated R one-hot code accepted an out-of-range POSIXct display"
 )
+local({
+  source <- categorical_scalar_before
+  source$instant <- structure(c(1.0000001, 1.0000002, NA, 1.0000001, NA),
+    class = c("POSIXct", "POSIXt"), tzone = "UTC")
+  before <- serialize(source, NULL, version = 3L)
+  live_error <- tryCatch(openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    source, 7L, "instant", drop_original = FALSE), error = identity)
+  replay <- new.env(parent = baseenv())
+  replay$categorical_scalar_frame <- source
+  generated_error <- tryCatch(eval(parse(text = categorical_scalar_apply$code), replay), error = identity)
+  assert_identical(inherits(live_error, "openwrangler_r_frame_error") && identical(live_error$code, "column-name-collision") &&
+    inherits(generated_error, "error") && grepl("would create duplicate column names", conditionMessage(generated_error), fixed = TRUE), TRUE,
+    "One Hot stopped refusing datetime categories with colliding native labels")
+  assert_identical(exists("open_wrangler_result", replay, inherits = FALSE), FALSE,
+    "One Hot published after a saved plan encountered colliding datetime labels")
+  assert_identical(serialize(replay$categorical_scalar_frame, NULL, version = 3L), before,
+    "failed datetime One Hot replay mutated its source")
+})
 categorical_oversized_character_frame <- source_environment$categorical_scalar_frame
 categorical_oversized_character_frame$text[[1L]] <- strrep("a", 8193L)
 assign("categorical_scalar_frame", categorical_oversized_character_frame, envir = .GlobalEnv)
@@ -5566,6 +5587,49 @@ assert_identical(cast_undo$page$schema[[6L]]$rawType, "double", "R Cast undo did
 assert_identical(source_environment$cast_frame, cast_source_before, "the R Cast lifecycle mutated its source")
 cast_closed <- dispatch("closeSession", list(sessionId = cast_session_id))
 assert_identical(cast_closed$kind, "closed", "the R Cast session did not close")
+
+local({
+  source_environment$rounded_datetime <- data.frame(instant = structure(
+    c((2^51 - 1) / 1e6, -5.000000000000001e-7, 59.9999998, NA_real_),
+    class = c("POSIXct", "POSIXt"), tzone = "Europe/Berlin"))
+  before <- serialize(source_environment$rounded_datetime, NULL, version = 3L)
+  expected <- c("2041-05-10T11:56:53.685247Z", "1969-12-31T23:59:59.999999Z",
+    "1970-01-01T00:01:00.000000Z", NA_character_)
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    opened <- dispatch("openSession", list(sessionId = cast_session_id,
+      variableName = "rounded_datetime", library = library, page = page_window()))
+    assert_identical(opened$kind, "page", "rounded datetime Cast session did not open")
+    preview <- dispatch("previewStep", list(sessionId = cast_session_id, revision = 0L,
+      step = cast_step("rounded-datetime", 1L, "instant", "string"), page = page_window()))
+    assert_identical(preview$kind, "stepPreview", "rounded datetime Cast did not preview")
+    assert_identical(vapply(preview$page$page$rows, function(row) {
+      if (row$values[[1L]]$isNull) NA_character_ else row$values[[1L]]$raw
+    }, character(1L)), expected, "live datetime Cast changed rounded UTC values")
+    applied <- dispatch("applyDraft", list(sessionId = cast_session_id,
+      revision = preview$revision, page = page_window()))
+    assert_identical(applied$kind, "planUpdated", "rounded datetime Cast did not apply")
+    for (empty in c(FALSE, TRUE)) {
+      replay <- new.env(parent = baseenv())
+      replay$rounded_datetime <- if (empty) source_environment$rounded_datetime[FALSE, , drop = FALSE] else source_environment$rounded_datetime
+      replay_before <- serialize(replay$rounded_datetime, NULL, version = 3L)
+      eval(parse(text = applied$code), replay)
+      assert_identical(replay$open_wrangler_result$instant, if (empty) character() else expected,
+        "generated datetime Cast disagreed with rounded live values or empty type")
+      assert_identical(serialize(replay$rounded_datetime, NULL, version = 3L), replay_before,
+        "generated datetime Cast mutated its input binding")
+    }
+    replay$rounded_datetime <- data.frame(instant = structure(c(Inf, -Inf, NaN, NA_real_),
+      class = c("POSIXct", "POSIXt"), tzone = "Europe/Berlin"))
+    eval(parse(text = applied$code), replay)
+    assert_identical(replay$open_wrangler_result$instant, c("Inf", "-Inf", "NaN", NA_character_),
+      "generated datetime Cast changed native nonfinite string tokens")
+    assert_identical(serialize(source_environment$rounded_datetime, NULL, version = 3L), before,
+      "datetime Cast mutated source timestamps or metadata")
+    assert_identical(dispatch("closeSession", list(sessionId = cast_session_id))$kind, "closed",
+      "rounded datetime Cast session did not close")
+  }
+  rm("rounded_datetime", envir = source_environment)
+})
 
 source_environment$cast_table <- data.table::data.table(primary_key = c("2", "1"), value = c("4", "3"))
 data.table::setkey(source_environment$cast_table, primary_key)

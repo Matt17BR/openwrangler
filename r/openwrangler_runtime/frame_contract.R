@@ -716,16 +716,38 @@ openwrangler_r_frame_contract <- local({
     unname(displays)
   }
 
-  display_datetime_values <- function(values, timezone, label) {
+  format_iso_datetime <- function(values, timezone, utc_suffix = FALSE) {
+    seconds <- base::unclass(values)
+    base::attributes(seconds) <- NULL
+    whole <- base::trunc(seconds)
+    # Round the signed fraction before normalizing negative seconds and carries.
+    micros <- base::round(base::round(seconds - whole, digits = 6L) * 1e6)
+    carry <- base::floor(micros / 1e6)
+    finite <- base::is.finite(seconds)
+    carry[!finite] <- 0
+    whole <- whole + carry
+    micros <- micros - carry * 1e6
+    text <- base::format.POSIXct(
+      base::structure(whole, class = c("POSIXct", "POSIXt")),
+      tz = timezone,
+      format = "%Y-%m-%dT%H:%M:%S",
+      usetz = FALSE
+    )
+    present <- finite & !base::is.na(text)
+    text[present] <- base::paste0(text[present], ".", base::sprintf("%06.0f", micros[present]), if (utc_suffix) "Z" else "")
+    text
+  }
+
+  display_datetime_values <- function(values, timezone, label, stable_category_labels = FALSE) {
     display_timezone <- timezone
     if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
     displays <- tryCatch(
-      base::format.POSIXct(
-        values,
-        tz = display_timezone,
-        format = "%Y-%m-%dT%H:%M:%OS6",
-        usetz = FALSE
-      ),
+      if (stable_category_labels) {
+        # One Hot labels are persistent column names, shared with saved generated plans.
+        base::format.POSIXct(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
+      } else {
+        format_iso_datetime(values, display_timezone)
+      },
       error = function(error) NULL
     )
     value_count <- storage_length(values)
@@ -5625,7 +5647,7 @@ openwrangler_r_frame_contract <- local({
           } else {
             list(class = c("POSIXct", "POSIXt"), tzone = semantics$timezone)
           }
-          display_datetime_values(datetime_values, semantics$timezone, label)
+          display_datetime_values(datetime_values, semantics$timezone, label, stable_category_labels = TRUE)
         },
         difftime = paste(
           vapply(categories, exact_double, character(1L), USE.NAMES = FALSE),
@@ -8700,7 +8722,7 @@ openwrangler_r_frame_contract <- local({
     } else if (identical(kind, "date")) {
       format(column, format = "%Y-%m-%d")
     } else if (identical(kind, "datetime")) {
-      format(column, tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6Z", usetz = FALSE)
+      format_iso_datetime(column, "UTC", utc_suffix = TRUE)
     } else if (identical(kind, "difftime")) {
       units <- semantics$units
       numeric_values <- as.double(column, units = units)
@@ -11665,6 +11687,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   list(
+    format_iso_datetime = format_iso_datetime,
     require_package = require_package,
     require_arrow = require_arrow,
     require_nanoparquet = require_nanoparquet,

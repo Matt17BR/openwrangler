@@ -737,7 +737,11 @@ nanosecond timestamps preserve adjacent ticks, nulls and the full signed 64-bit 
 with `Z`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. These columns
 support base R and dplyr cleaning, including Rename, Select/Drop/Clone Columns, Filter/Sort
 Rows, Drop Missing Rows and duplicate handling, with matching generated R. CSV keeps exact ISO text and Parquet
-keeps timestamp precision and civil/instant meaning. Existing POSIXct columns retain their previous behavior.
+keeps timestamp precision and civil/instant meaning.
+
+POSIXct grid text, copied cells, profiles and Convert Type to text round to microseconds, avoiding a one-microsecond
+display error from native R's truncating format. Source values keep their original precision. Explicit Format Datetime
+and existing One Hot column names retain their native formatting.
 
 Selecting data.table or collapse still opens these Parquet files with exact viewing, filters, sorts, profiles and
 export. Cleaning is unavailable while they contain clock columns; use the engine picker to create an editing copy
