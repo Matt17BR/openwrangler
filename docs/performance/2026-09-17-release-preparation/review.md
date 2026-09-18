@@ -1,10 +1,13 @@
 # Opening data, column profiles and cleaning
 
 Local measurements of Open Wrangler's 2.6 development package and Microsoft Data Wrangler 1.24.2 in VS Code.
-All three UI tables use the September 18 package built from source `7a72f24fb019eed9d55673e1f53b870dc7ede12d`, including
+The CSV, paired Python notebook, DuckDB and Spark observations use the September 18 package from source
+`7a72f24fb019eed9d55673e1f53b870dc7ede12d`, including
 [PR #1599](https://github.com/Matt17BR/openwrangler/pull/1599). Its production source matches `231ed139`; the two
-intervening source differences are tests. The linked raw records identify the package checksum and keep earlier
-cohorts separate. These measurements precede release qualification.
+intervening differences are tests. The Base R rows were refreshed with `21630ef06005462c7414a635e4465f742a9e0008`
+after the native R changes in [PR #1607](https://github.com/Matt17BR/openwrangler/pull/1607).
+The linked raw records identify each package checksum and retain earlier cohorts. These measurements precede release
+qualification.
 
 ## Opening CSV files and seeing their profiles
 
@@ -142,16 +145,17 @@ on one laptop do not establish tail latency, scaling or a general speed ranking.
 
 ## Opening native DuckDB, R and Spark frames
 
-All six validations and 18 fixed observations completed with the corrected development package. Each table entry is
-the median of three original fixed attempts. Every attempt reached a responsive grid and the required amount profile;
-none was replaced. These routes have different setup and execution costs, so the table does not rank engines.
+DuckDB and Spark retain four validations and 12 fixed observations from the earlier package. R was refreshed after
+the final native changes, completing both validations and all six fixed observations. Each table entry is the median
+of three original fixed attempts. Every attempt reached a responsive grid and the required amount profile; none was
+replaced. These routes have different setup and execution costs, so the table does not rank engines.
 
 | Open Wrangler route      |      Rows | Open through row selection | Select amount through profile display |
 | ------------------------ | --------: | -------------------------: | ------------------------------------: |
 | DuckDB notebook relation |   100,000 |                     2.64 s |                                0.37 s |
 | DuckDB notebook relation | 1 million |                     2.91 s |                                0.37 s |
-| Base R managed document  |   100,000 |                     1.91 s |                                0.98 s |
-| Base R managed document  | 1 million |                     1.92 s |                                0.98 s |
+| Base R managed document  |   100,000 |                     1.08 s |                                0.45 s |
+| Base R managed document  | 1 million |                     1.09 s |                                0.58 s |
 | Local PySpark notebook   |   100,000 |                     1.72 s |                                1.53 s |
 | Local PySpark notebook   | 1 million |                     1.71 s |                                2.88 s |
 
@@ -177,13 +181,19 @@ each opening. Original CSV files, R documents and helper bytes were unchanged, a
 retained executed notebooks. These checks do not establish a final all-cell comparison of every native in-memory
 frame. The separate Pandas/Polars comparison above performed that stronger before-and-after check.
 
-This session ran on AC with the battery charging from 22% to 34% and energy performance preference set to `power`.
-It used a separate editor lifecycle from the paired Python notebook collection. Public tab closure and **File > Exit**
-preceded wrapper cleanup; exit was zero, no owned processes remained and the package was unchanged. These observations
-are separate from earlier cohorts and do not establish a controlled performance change.
+The DuckDB/Spark collection ran on AC while charging from 22% to 34%, with energy performance preference `power`.
+The final R refresh ran on AC at 99%, with preference `balance_performance` and the `powersave` governor. Its R
+dependencies also differ from the earlier collection. The lower R times do not establish a controlled speedup.
+Both collections used private editor lifecycles separate from the paired Python notebooks. Public tab closure and
+**File > Exit** preceded cleanup; exits were zero, no owned processes remained, and source files and packages were
+unchanged. The final R editor needed no forced cleanup.
 
 <details>
 <summary>Earlier native correction and failures retained</summary>
+
+The complete earlier `7a72f24f` native cohort remains in the raw records. Its Base R medians were 1.91 and 1.92 seconds
+through selection at 100,000 and one million rows, and 0.98 seconds through the selected profile at both sizes. Those
+R observations no longer contribute to the table above; the DuckDB and Spark observations remain current.
 
 The September 17 R million-row validation reached a responsive grid but exhausted its 60-second budget while the
 selected profile remained unavailable. Its visible warning was **R kernel summary 0 has inconsistent value counts**.
@@ -212,14 +222,16 @@ In a separate source-level check, Open Wrangler's native R reader loaded a 3-mil
 the OS cache warmed by source hashing. Timing covered the reader call, excluding process startup, runtime loading,
 initial garbage collection, frame admission, profiles, UI and result serialization or comparison. Memory includes
 process setup through loading. The [reader record](r-csv-load.json) measures eager loading cost, not file-opening
-latency or a demonstrated speedup.
+latency or a demonstrated speedup. It uses source `3dee1310`; the measured CSV reader implementation is unchanged
+by the later native R updates.
 
 ## Environment and input data
 
 Measurements were collected on September 17 and 18, 2026, using VS Code 1.137.0 on Ubuntu 26.04.1, an Intel Core Ultra 9 185H
 and about 61 GiB of RAM. The isolated editor used a private 1280 by 900 software-rendered display. Python was 3.12.14,
 with Pandas 3.0.5, Polars 1.44.1 and PyArrow 25.0.1. Native observations used DuckDB 1.5.5, PySpark 4.2.0, and
-R 4.5.2 with jsonlite 2.0.0 and rlang 1.2.0. Installation, Workspace Trust and interpreter selection were untimed.
+R 4.5.2 with jsonlite 2.0.0 and rlang 1.2.0. The final R refresh used rlang 1.3.0, Arrow 25.0.0 and clock 0.7.4, with
+the same R and jsonlite versions. Installation, Workspace Trust and interpreter selection were untimed.
 All product interactions used public controls and rendered UI; Microsoft extension package contents were not inspected.
 
 The synthetic CSV files contain 100,000 or 1 million rows and six columns, approximately 5.3 MB or 53.9 MB. IDs run

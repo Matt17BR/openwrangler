@@ -6943,5 +6943,471 @@
       ],
       "interpretation": "Public tab closure and File > Exit preceded CDP disconnection and wrapper cleanup. The wrapper invokes cleanup unconditionally; its editorForcedCleanup flag alone does not establish an abnormal exit. No owned processes remained."
     }
+  },
+  "finalROpeningRefresh": {
+    "collectionDate": "2026-09-18",
+    "status": "Both planned validations and six original fixed attempts completed. No replacements. This refresh supplies only the Base R rows in the report; all earlier raw cohorts remain unchanged.",
+    "product": {
+      "name": "Open Wrangler",
+      "version": "2.6.0 development package",
+      "source": "21630ef06005462c7414a635e4465f742a9e0008",
+      "vsixSha256": "6f7afa50e9e57fee2d4ffea40732ae16d67d9a43101a143224478201e915a37f",
+      "installedPackageMatchesVsix": true,
+      "releaseQualifiedAtCollection": false
+    },
+    "environment": {
+      "editor": "VS Code 1.137.0",
+      "editorCommit": "645f29cc3176500b4b5762ba887cf2a7f0ffdf2c",
+      "os": "Ubuntu 26.04.1 LTS",
+      "kernel": "Linux 7.0.0-31-generic x86_64",
+      "cpu": "Intel Core Ultra 9 185H",
+      "logicalCpus": 22,
+      "ramKiB": 63963960,
+      "display": "private Xvfb, software rendering",
+      "viewport": [1280, 900],
+      "r": "4.5.2",
+      "rPackages": {
+        "jsonlite": "2.0.0",
+        "rlang": "1.3.0",
+        "arrow": "25.0.0",
+        "clock": "0.7.4"
+      },
+      "powerStart": {
+        "utc": "2026-09-18T12:31:41.855797+00:00",
+        "BAT0": {
+          "type": "Battery",
+          "capacity": "99",
+          "status": "Charging"
+        },
+        "AC": {
+          "online": "1",
+          "type": "Mains"
+        },
+        "energyPerformancePreference": "balance_performance",
+        "governor": "powersave"
+      },
+      "powerEnd": {
+        "utc": "2026-09-18T12:33:45.791292+00:00",
+        "BAT0": {
+          "type": "Battery",
+          "capacity": "99",
+          "status": "Charging"
+        },
+        "AC": {
+          "online": "1",
+          "type": "Mains"
+        },
+        "energyPerformancePreference": "balance_performance",
+        "governor": "powersave"
+      },
+      "powerInterpretation": "AC connected, charging at 99%, energy performance preference balance_performance and powersave governor. The earlier native cohort used power preference while charging from 22% to 34%; this is not a controlled before/after comparison."
+    },
+    "method": {
+      "route": "Base R managed document, with a fresh native R process and full six-column input checks before every picker choice. One private editor remains open across the eight observations.",
+      "setupExcluded": "Installation, Workspace Trust, R process startup, CSV loading and native formula/type assertions.",
+      "openInteractiveMs": "r_frame choice in the managed R document picker through responsive grid. Before each observation, public Run R Document starts a fresh R process and loads and fully checks the CSV. This startup, CSV parsing and native check are excluded. Base R is the displayed cleaning library.",
+      "profileMs": "Amount-label selection and panel reveal through the completed selected amount summary and 20-bin distribution. Statistics may have been computed during opening; this is interaction-to-display time, not fresh computation time.",
+      "profileContract": {
+        "rowCount": "N",
+        "nullCount": "N / 10",
+        "nanCount": 0,
+        "distinctPresent": 900,
+        "min": 1,
+        "max": 999,
+        "sum": "450 * N",
+        "mean": 500,
+        "median": "500 except R at one million rows, which correctly displays n/a",
+        "standardDeviation": "between 288 and 289",
+        "histogram": "visible numeric distribution with 20 bins, range 1 to 999"
+      },
+      "workflowBudgetMs": 60000,
+      "pollMs": 100,
+      "automaticWorkflowRetries": 0,
+      "sizeOrder": [100000, 1000000],
+      "attemptOrderPerSize": ["validation", 1, 2, 3],
+      "collectors": [
+        {
+          "file": "r-public-controls.cjs",
+          "sha256": "867feb32cf9e308ca17e3ca6409e98c2b179f4f8c0b0cae73d2c8a00c2cfd26e"
+        },
+        {
+          "file": "r-measure-native-open.cjs",
+          "sha256": "3c20afa9414ecf77ce0cc50fc7e2111150a5c3d115ecf62847d40d8ed6f680c5"
+        },
+        {
+          "file": "r-ui-helpers.cjs",
+          "sha256": "93cb11e43011566111e31d587041e4e93b4e9519412b53a1a3d968a375b986f6"
+        },
+        {
+          "file": "profile-ready.cjs",
+          "sha256": "3f821ca187e73c64a878dccb82c664aab5f548c0c0a98e757dae6ad7443afd96"
+        }
+      ],
+      "collectorVersion": "native-open-6-no-scroll-base-r",
+      "summaryPolicy": "Only these six fixed observations supply the two Base R rows. Earlier R observations and these two validations remain excluded. DuckDB, Spark and Python comparisons retain their original source and package identities.",
+      "limits": "Different power settings, dependency versions and source commits prevent a controlled speedup claim. Three observations on one laptop do not establish tail latency or scaling; the 100 ms poll is not an accuracy bound."
+    },
+    "inputs": {
+      "columns": ["id", "amount", "category", "active", "day", "event_at"],
+      "csvSources": [
+        {
+          "file": "six-columns-100000.csv",
+          "sha256": "8399ccbd3959d4611be41f9942370ce82389c6febc42b528f390879fd3665fb3",
+          "unchanged": true,
+          "role": "Original CSV read by DuckDB and R native loaders"
+        },
+        {
+          "file": "six-columns-1000000.csv",
+          "sha256": "f886e2fdbe3f9faa6e5189e81b8ab1633fec86ae0fb2c1f8d23787265e59bb9f",
+          "unchanged": true,
+          "role": "Original CSV read by DuckDB and R native loaders"
+        }
+      ],
+      "nativeAssertions": "Each fresh source document checks every value, null, row order and native type in all six columns before its timed picker choice.",
+      "rSourceDocuments": [
+        {
+          "file": "r-100000.R",
+          "sha256": "19155eb7a84dca977060a1a6ca53bb3c228cfabfb9d9164045dca413e548b60d"
+        },
+        {
+          "file": "r-1000000.R",
+          "sha256": "528fa859f2ae9bcaac48e06097bf61f572a5d45a28167f6c144d391d6ae07bad"
+        }
+      ]
+    },
+    "completion": {
+      "plannedValidations": 2,
+      "completedValidations": 2,
+      "plannedFixedAttempts": 6,
+      "completedFixedAttempts": 6,
+      "failures": 0,
+      "replacements": 0
+    },
+    "validations": [
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 100000,
+        "sample": "validation",
+        "startedUtc": "2026-09-18T12:32:29.265Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 43329.147465,
+        "gridReady": 44293.156582,
+        "initialRowCount": "100001",
+        "interactive": 44443.257528,
+        "openMs": 964.0091170000014,
+        "openInteractiveMs": 1114.110063,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 44443.307226,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 44945.545558,
+        "profileMs": 502.2383320000008,
+        "ok": true,
+        "publicBackendIndications": {
+          "labels": ["BASE R"],
+          "unavailable": false
+        },
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 1000000,
+        "sample": "validation",
+        "startedUtc": "2026-09-18T12:33:00.162Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 74225.989725,
+        "gridReady": 75180.879677,
+        "initialRowCount": "1000001",
+        "interactive": 75274.94238,
+        "openMs": 954.8899519999977,
+        "openInteractiveMs": 1048.9526549999864,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 75274.951957,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\nn/a\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 75859.047487,
+        "profileMs": 584.095530000006,
+        "ok": true,
+        "publicBackendIndications": {
+          "labels": ["BASE R"],
+          "unavailable": false
+        },
+        "cleanupComplete": true
+      }
+    ],
+    "summary": [
+      {
+        "engine": "r",
+        "rows": 100000,
+        "planned": 3,
+        "openComplete": 3,
+        "profileComplete": 3,
+        "failedAttempts": 0,
+        "durationsMs": {
+          "openInteractiveMs": {
+            "count": 3,
+            "median": 1083.6765019999948,
+            "min": 1077.1386379999967,
+            "max": 1107.3128230000002
+          },
+          "profileMs": {
+            "count": 3,
+            "median": 454.2963880000025,
+            "min": 369.5669080000007,
+            "max": 470.1884580000042
+          }
+        }
+      },
+      {
+        "engine": "r",
+        "rows": 1000000,
+        "planned": 3,
+        "openComplete": 3,
+        "profileComplete": 3,
+        "failedAttempts": 0,
+        "durationsMs": {
+          "openInteractiveMs": {
+            "count": 3,
+            "median": 1088.822748999999,
+            "min": 1082.64804,
+            "max": 1110.2507040000055
+          },
+          "profileMs": {
+            "count": 3,
+            "median": 580.8572500000009,
+            "min": 579.7168970000057,
+            "max": 607.5394510000042
+          }
+        }
+      }
+    ],
+    "samples": [
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 100000,
+        "sample": 1,
+        "startedUtc": "2026-09-18T12:32:44.389Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 58453.502609,
+        "gridReady": 59438.394169,
+        "initialRowCount": "100001",
+        "interactive": 59560.815432,
+        "openMs": 984.8915599999964,
+        "openInteractiveMs": 1107.3128230000002,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 59560.828604,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 59930.395512,
+        "profileMs": 369.5669080000007,
+        "ok": true,
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 100000,
+        "sample": 2,
+        "startedUtc": "2026-09-18T12:32:47.406Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 61469.739091,
+        "gridReady": 62438.868095,
+        "initialRowCount": "100001",
+        "interactive": 62553.415593,
+        "openMs": 969.1290039999949,
+        "openInteractiveMs": 1083.6765019999948,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 62553.423893,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 63007.720281,
+        "profileMs": 454.2963880000025,
+        "ok": true,
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 100000,
+        "sample": 3,
+        "startedUtc": "2026-09-18T12:32:50.482Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 64546.241025,
+        "gridReady": 65502.976514,
+        "initialRowCount": "100001",
+        "interactive": 65623.379663,
+        "openMs": 956.7354889999988,
+        "openInteractiveMs": 1077.1386379999967,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 65623.386678,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n100,000\nNull\n10,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n45,000,000\nMean\n500\nMedian\n500\nStd. deviation\n288.6739\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 66093.575136,
+        "profileMs": 470.1884580000042,
+        "ok": true,
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 1000000,
+        "sample": 1,
+        "startedUtc": "2026-09-18T12:33:09.402Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 83466.437312,
+        "gridReady": 84419.392183,
+        "initialRowCount": "1000001",
+        "interactive": 84549.085352,
+        "openMs": 952.954871000009,
+        "openInteractiveMs": 1082.64804,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 84549.101619,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\nn/a\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 85129.958869,
+        "profileMs": 580.8572500000009,
+        "ok": true,
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 1000000,
+        "sample": 2,
+        "startedUtc": "2026-09-18T12:33:18.665Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 92729.308578,
+        "gridReady": 93695.133399,
+        "initialRowCount": "1000001",
+        "interactive": 93839.559282,
+        "openMs": 965.824821000002,
+        "openInteractiveMs": 1110.2507040000055,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 93839.573054,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\nn/a\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 94447.112505,
+        "profileMs": 607.5394510000042,
+        "ok": true,
+        "cleanupComplete": true
+      },
+      {
+        "product": "ow",
+        "engine": "r",
+        "variable": "r_frame",
+        "rows": 1000000,
+        "sample": 3,
+        "startedUtc": "2026-09-18T12:33:28.492Z",
+        "pollMs": 100,
+        "collectorVersion": "native-open-6-no-scroll-base-r",
+        "profileKind": "selected-profile display; may already be computed",
+        "openStart": 102556.226048,
+        "gridReady": 103518.436766,
+        "initialRowCount": "1000001",
+        "interactive": 103645.048797,
+        "openMs": 962.2107180000021,
+        "openInteractiveMs": 1088.822748999999,
+        "identity": {
+          "idColumn": 2,
+          "firstRow": 2,
+          "selectedRow": 3,
+          "selectedId": 1
+        },
+        "profileStart": 103645.059302,
+        "profileText": "SELECTED COLUMN\namount\ndouble\nCounts\n%\nRows\n1,000,000\nNull\n100,000\nNaN\n0\nDistinct\n900\nMin\n1\nMax\n999\nSum\n450,000,000\nMean\n500\nMedian\nn/a\nStd. deviation\n288.6724\nDISTRIBUTION\n1 to 999 · 20 bins",
+        "profileReady": 104224.776199,
+        "profileMs": 579.7168970000057,
+        "ok": true,
+        "cleanupComplete": true
+      }
+    ],
+    "settlement": {
+      "publicExit": {
+        "startedUtc": "2026-09-18T12:33:35.554Z",
+        "ok": true,
+        "closedTabs": 2,
+        "tabsBefore": ["r-100000.R", "r-1000000.R"],
+        "tabsAfter": [],
+        "productEditorFramesAfter": 0,
+        "exitRequestedAt": "2026-09-18T12:33:35.795Z",
+        "cdpDisconnectedAt": "2026-09-18T12:33:35.913Z"
+      },
+      "wholePhaseSeconds": 110.49699473600049,
+      "editorExit": 0,
+      "editorForcedCleanup": false,
+      "displayStopped": true,
+      "artifactUnchanged": true,
+      "remainingOwnedPids": [],
+      "sourceFilesUnchanged": [
+        {
+          "file": "r-100000.R",
+          "unchanged": true
+        },
+        {
+          "file": "six-columns-100000.csv",
+          "unchanged": true
+        },
+        {
+          "file": "r-1000000.R",
+          "unchanged": true
+        },
+        {
+          "file": "six-columns-1000000.csv",
+          "unchanged": true
+        }
+      ]
+    }
   }
 }
