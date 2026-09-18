@@ -6683,9 +6683,23 @@ assert_identical(collision_frame, data.frame(first = 1L, second = 2L), "a failed
 }))
 run_frame_contract_case("profiling", local({
 
+# Match the managed process runtime, which cannot resolve attached-package functions.
+runtime_environment <- new.env(parent = baseenv())
+sys.source("r/openwrangler_runtime/frame_contract.R", envir = runtime_environment, keep.source = FALSE)
+openwrangler_r_frame_contract <- runtime_environment$openwrangler_r_frame_contract
+contract_environment <- environment(openwrangler_r_frame_contract$materialize_summaries)
+
 local({
   extrema <- clock::naive_time_parse(c("1677-09-21T00:12:43.145224192", "2026-01-01T00:00:00.000000001",
     "2262-04-11T23:47:16.854775807", NA_character_), precision = "nanosecond")
+  small <- data.frame(civil = extrema, instant = clock::as_sys_time(extrema))
+  small_capture <- openwrangler_r_frame_contract$capture_frame(small)
+  small_summaries <- openwrangler_r_frame_contract$materialize_summaries(small_capture,
+    list(list(id = "r:c:0", name = "civil"), list(id = "r:c:1", name = "instant")))
+  assert_identical(small_summaries[[1L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192",
+    max = "2262-04-11T23:47:16.854775807"), "isolated small clock profiling lost exact civil extrema")
+  assert_identical(small_summaries[[2L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192Z",
+    max = "2262-04-11T23:47:16.854775807Z"), "isolated small clock profiling lost exact UTC extrema")
   column <- rep(extrema[2L], 100003L)
   column[c(65536L, 100003L, 100002L)] <- extrema[c(1L, 3L, 4L)]
   frame <- data.frame(stamp = column)

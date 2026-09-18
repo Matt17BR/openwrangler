@@ -3057,7 +3057,7 @@ openwrangler_r_frame_contract <- local({
     if (identical(semantics$kind, "clock_datetime")) {
       ordered <- order_present_values(column[present_indices], semantics, FALSE)
       minimum_index <- present_indices[[ordered[[1L]]]]
-      maximum_index <- present_indices[[tail(ordered, 1L)]]
+      maximum_index <- present_indices[[ordered[[length(ordered)]]]]
     } else {
       values <- as.double(column[present_indices])
       minimum_index <- present_indices[[which.min(values)]]
@@ -3320,7 +3320,7 @@ openwrangler_r_frame_contract <- local({
         } else if (kind == "clock_datetime") {
           ordered <- order_present_values(present, semantics, FALSE)
           first <- ordered[[1L]]
-          last <- tail(ordered, 1L)
+          last <- ordered[[length(ordered)]]
           values <- clock_ticks(present[c(first, last)])
           if (is.null(datetime_minimum) || compare_integer_text(values[[1L]], datetime_minimum) < 0L) {
             datetime_minimum <- values[[1L]]
