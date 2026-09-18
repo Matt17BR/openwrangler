@@ -173,7 +173,7 @@ export function createReleasedRDocumentJourney({
     source: vscode.Uri,
     rscript: string
   ): Promise<void> {
-    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-r-dependency-"));
+    const library = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-library-"));
     const unavailablePackage = path.join(library, "jsonlite");
     mkdirSync(unavailablePackage);
     const descriptor = Buffer.from(
@@ -206,8 +206,6 @@ export function createReleasedRDocumentJourney({
         "opening the existing CSV with its private unavailable R package"
       );
       recordAcceptanceProgress("jupyter-r:file:dependency:opened");
-      fileTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-      assert.ok(fileTab?.input instanceof vscode.TabInputWebview);
       await waitFor(
         () => {
           const response = testing.panelOpenResponse();
@@ -216,6 +214,9 @@ export function createReleasedRDocumentJourney({
         30_000,
         "the R file panel to report its missing jsonlite dependency"
       );
+      const openedTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      assert.ok(openedTab?.input instanceof vscode.TabInputWebview);
+      fileTab = openedTab;
       recordAcceptanceProgress("jupyter-r:file:dependency:missing");
       if (originalLibraries === undefined) delete process.env.R_LIBS;
       else process.env.R_LIBS = originalLibraries;
@@ -1075,6 +1076,8 @@ export function createReleasedRDocumentJourney({
           "the managed process roots to settle before opening CSV"
         );
         const csvExportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-export-"));
+        let csvOperationError: unknown;
+        const csvCleanupErrors: unknown[] = [];
         try {
           await csvConfiguration.update("defaultBackend", "r", vscode.ConfigurationTarget.Workspace);
           await openFileAfterDependencyRecovery(testing, workbench, csvUri, exactRscript);
@@ -1241,6 +1244,8 @@ export function createReleasedRDocumentJourney({
               initialProcessRoots
             );
           }
+        } catch (error) {
+          csvOperationError = error;
         } finally {
           try {
             if (csvSessionId) await disposePackagedSessionPanel(testing, csvSessionId, "the native R CSV session");
@@ -1250,13 +1255,35 @@ export function createReleasedRDocumentJourney({
               "the native R CSV private process root to be removed"
             );
             assert.equal(testing.diagnostics().sessionCount, 0);
+          } catch (error) {
+            csvCleanupErrors.push(error);
           } finally {
             try {
               await csvConfiguration.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Workspace);
+            } catch (error) {
+              csvCleanupErrors.push(error);
             } finally {
-              cleanupAcceptanceTemporaryDirectory(csvExportDirectory);
+              try {
+                cleanupAcceptanceTemporaryDirectory(csvExportDirectory);
+              } catch (error) {
+                csvCleanupErrors.push(error);
+              }
             }
           }
+        }
+        if (csvOperationError !== undefined && csvCleanupErrors.length > 0) {
+          const detail = (csvOperationError instanceof Error ? csvOperationError.message : String(csvOperationError))
+            .replace(/\s+/gu, " ")
+            .slice(0, 1_000);
+          throw new AggregateError(
+            [csvOperationError, ...csvCleanupErrors],
+            `The native R CSV journey failed: ${detail}. Cleanup also failed.`
+          );
+        }
+        if (csvOperationError !== undefined) throw csvOperationError;
+        if (csvCleanupErrors.length === 1) throw csvCleanupErrors[0];
+        if (csvCleanupErrors.length > 1) {
+          throw new AggregateError(csvCleanupErrors, "The native R CSV journey cleanup failed.");
         }
         recordAcceptanceProgress("jupyter-r:file:complete");
       }
