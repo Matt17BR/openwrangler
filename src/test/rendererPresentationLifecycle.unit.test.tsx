@@ -70,11 +70,16 @@ describe("renderer presentation lifecycle", () => {
     }
   });
 
-  it("acknowledges a committed synchronization before flushing presentation and recovers only after a clear", () => {
+  it.each([false, true])("acknowledges before publishing current presentation after debounce=%s", (debounced) => {
     vi.useFakeTimers();
     const { result, unmount } = renderHook(() => useRendererPresentationLifecycle(committedSession));
     try {
-      act(() => result.current.publishGridViewState(gridViewState(285)));
+      act(() => result.current.restoreHostGridViewState(gridViewState(275)));
+      act(() => result.current.publishGridViewState({ ...gridViewState(285, 200, 90), selectedColumnId: "c:0" }));
+      if (debounced) {
+        act(() => vi.advanceTimersByTime(100));
+        expect(messagesOfKind("updateViewState")).toHaveLength(1);
+      }
       postMessage.mockClear();
 
       act(() =>
@@ -98,8 +103,8 @@ describe("renderer presentation lifecycle", () => {
           kind: "updateViewState",
           state: {
             columnWidths: [["c:1", 285]],
-            selectedColumnId: "c:1",
-            viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+            selectedColumnId: "c:0",
+            viewport: { firstVisibleRow: 200, scrollLeft: 90 }
           }
         }
       ]);

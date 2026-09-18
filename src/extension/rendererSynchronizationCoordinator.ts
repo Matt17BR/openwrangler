@@ -1,6 +1,4 @@
 import type { OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
-import { encodeGridViewState, type GridViewState } from "../shared/viewState";
-import type { SessionPresentation } from "./dataBridge";
 import { createSecureNonce } from "./secureNonce";
 
 const DEFAULT_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
@@ -36,8 +34,6 @@ export interface RendererSynchronizationCallbacks {
   readonly getOpenResponse: () => OpenWranglerResponse | undefined;
   /** Recovery has a session, but its replacement is not yet accepted by the renderer. */
   readonly isSnapshotPending?: () => boolean;
-  readonly getSessionPresentation: () => SessionPresentation | undefined;
-  readonly getViewState: () => GridViewState | undefined;
   readonly isImportBusy: () => boolean;
   readonly ensureSessionOpen: () => Promise<void>;
   readonly clearStepInspection: () => void;
@@ -259,9 +255,18 @@ export class RendererSynchronizationCoordinator {
     });
   }
 
+  schedulePublishedViewSynchronization(): void {
+    void this.enqueueSynchronization(false, true).catch(() => {
+      this.callbacks.reportDiagnostic("Open Wrangler could not synchronize the active editor renderer.");
+    });
+  }
+
   synchronizeAcceptedSnapshot(): Promise<void> {
     // The atomic receipt retires trailing publications from the previous view.
     this.generation += 1;
+    this.viewStateLocked = false;
+    this.synchronizationNeedsSnapshot = false;
+    this.synchronizationNeedsInspectionClear = false;
     return this.enqueueSynchronization(false, true);
   }
 
@@ -270,7 +275,7 @@ export class RendererSynchronizationCoordinator {
     this.synchronizationRequested = true;
     this.synchronizationNeedsInspectionClear ||= clearInspection;
     this.synchronizationNeedsSnapshot ||= !snapshotAlreadyInstalled;
-    this.viewStateLocked = this.synchronizationNeedsSnapshot;
+    this.viewStateLocked ||= this.synchronizationNeedsSnapshot;
     if (this.synchronizationRun) return this.synchronizationRun;
 
     const synchronization = (async () => {
@@ -328,6 +333,8 @@ export class RendererSynchronizationCoordinator {
     if (response.kind === "sessionOpened") {
       if (this.pendingPreReadyImportResponse) this.invalidate();
       this.pendingPreReadyImportResponse = undefined;
+      // The import's final synchronization publishes the retained snapshot before idle.
+      if (this.ready) return;
     } else {
       this.pendingPreReadyImportResponse = response;
       this.invalidate();
@@ -424,7 +431,7 @@ export class RendererSynchronizationCoordinator {
   private async synchronize(clearInspection: boolean, publishSnapshot: boolean): Promise<void> {
     if (this.disposed || !this.ready || this.callbacks.isSnapshotPending?.()) return;
     const generation = this.generation;
-    this.viewStateLocked = publishSnapshot;
+    this.viewStateLocked ||= publishSnapshot;
     if (clearInspection) {
       this.callbacks.clearStepInspection();
       if (!(await this.postMessage({ kind: "stepInspectionCleared", resumeProfiling: false }))) return;
@@ -475,19 +482,12 @@ export class RendererSynchronizationCoordinator {
       let published = false;
       try {
         if (!isCurrent()) return;
-        const presentation = this.callbacks.getSessionPresentation();
-        if (presentation && !(await this.postMessage({ kind: "sessionPresentation", presentation }))) return;
-        if (!isCurrent()) return;
-        const state = this.callbacks.getViewState();
-        const serialized = state ? encodeGridViewState(state) : undefined;
-        if (state && (!serialized || !(await this.postMessage({ kind: "viewState", state: serialized })))) return;
-        if (!isCurrent()) return;
         this.callbacks.didPublishAuthoritativeSnapshot();
         published = true;
       } finally {
         if (!published && generation === this.generation && !this.disposed && this.callbacks.isSnapshotPending?.()) {
-          // The delivered snapshot already reset the App's foreground owner,
-          // even when replacement interrupted a later presentation post.
+          // The atomic snapshot already reset the App's foreground owner,
+          // even when recovery began while delivery was settling.
           this.generation += 1;
           this.callbacks.didPublishAuthoritativeSnapshot();
         }

@@ -2152,6 +2152,19 @@ replacement only when the renderer returns the exact offered view context throug
 path; sending a message alone is insufficient. That receipt also saves the accepted grid placement. Once the complete
 view is accepted, ordinary grid presentation updates can proceed while the separate hydration marker is pending.
 Full-snapshot synchronization and import transitions retain their presentation lock.
+Ordinary session, draft and cleaning-plan publications include their bounded grid view state in the same host
+message as the result. Session snapshots also include matching draft presentation when available, excluding code.
+The renderer validates these host-only fields separately from the unchanged native runtime response and installs
+them together before enabling interaction. A malformed supplied field rejects the complete message. A successful
+publication or Code Preview layout change needs only a synchronization marker; it does not replay the snapshot or
+restore view state again. Startup, reload and explicit resynchronization still publish a complete snapshot.
+An import or backend change with a ready renderer publishes its retained snapshot through final synchronization
+before reporting idle. It does not send an earlier copy that would enable interaction before that restoration.
+While presentation is locked, the host ignores renderer view-state writes without echoing a later restoration.
+After acknowledging the exact current synchronization marker, the renderer sends its current bounded view state,
+including changes whose earlier debounce reached the locked host. A layout marker preserves an outstanding
+full-snapshot lock until its matching acknowledgement. Accepting a runtime replacement retires that old view and
+releases its lock; a newer full-snapshot request still acquires its own lock.
 Before capturing an authoritative snapshot, the host waits only for an already-committed page's exact panel publication,
 including its final persistence write and retained page. It does not wait for pages still executing or awaiting their
 first persistence write. Snapshot preparation blocks additional scoped pages, then retires uncommitted page and view

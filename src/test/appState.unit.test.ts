@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FilterModel, LiveGridPage, SessionMetadata } from "../shared/protocol";
+import { isOpenWranglerResponse } from "../shared/protocolValidation";
 import {
   alignedColumnWindow,
   backgroundDiagnosticKey,
@@ -115,6 +116,110 @@ describe("App view-state model", () => {
         summaries: []
       })
     ).toBeUndefined();
+  });
+
+  it.each(["sessionOpened", "stepPreview", "planUpdated"])(
+    "decodes atomic %s view state without accepting host extras in native responses",
+    (kind) => {
+      const response = {
+        kind,
+        metadata,
+        page,
+        ...(kind === "sessionOpened"
+          ? { summaries: [] }
+          : {
+              revision: metadata.revision,
+              code: "frame",
+              ...(kind === "planUpdated"
+                ? { action: "apply" }
+                : {
+                    diff: {
+                      addedRows: 0,
+                      removedRows: 0,
+                      addedColumns: [],
+                      removedColumns: [],
+                      changedCells: 0,
+                      cells: [],
+                      truncated: false
+                    }
+                  })
+            })
+      };
+      expect(isOpenWranglerResponse(response)).toBe(true);
+      const packet = {
+        ...response,
+        ...(kind === "sessionOpened" ? { offeredViewContextId: "snapshot:atomic" } : {}),
+        viewState: {
+          columnWidths: [["c:1", 240]],
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 2, scrollLeft: 80 }
+        }
+      };
+      const original = JSON.stringify(packet);
+      expect(isOpenWranglerResponse(packet)).toBe(false);
+      expect(decodeAppHostMessage(packet)).toEqual({
+        ...packet,
+        viewState: { ...packet.viewState, columnWidths: new Map([["c:1", 240]]) }
+      });
+      expect(JSON.stringify(packet)).toBe(original);
+      for (const viewState of [
+        undefined,
+        null,
+        { ...packet.viewState, columnWidths: [["c:1", -1]] },
+        { ...packet.viewState, viewport: { firstVisibleRow: -1, scrollLeft: 0 } }
+      ]) {
+        expect(decodeAppHostMessage({ ...packet, viewState })).toBeUndefined();
+      }
+      expect(decodeAppHostMessage({ ...packet, unexpected: true })).toBeUndefined();
+      expect(
+        decodeAppHostMessage({
+          ...packet,
+          metadata: { ...metadata, schema: metadata.schema.map((column) => ({ ...column, position: 8 })) }
+        })
+      ).toBeUndefined();
+    }
+  );
+
+  it("binds an atomic snapshot presentation to its confirmed revision and draft", () => {
+    const draftStep = { id: "upper-city", kind: "upperText", params: { column: { id: "c:0", name: "city" } } };
+    const presentation = {
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      draft: {
+        diff: {
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        },
+        warnings: ["Review the restored draft."],
+        beforeSchema: metadata.schema
+      }
+    };
+    const packet = {
+      kind: "sessionOpened",
+      offeredViewContextId: "snapshot:draft",
+      metadata: { ...metadata, draftStep },
+      page,
+      summaries: [],
+      presentation
+    };
+    expect(decodeAppHostMessage(packet)).toEqual(packet);
+    for (const invalid of [
+      undefined,
+      null,
+      { ...presentation, sessionId: "other" },
+      { ...presentation, revision: metadata.revision + 1 },
+      { ...presentation, draft: undefined },
+      { ...presentation, draft: { ...presentation.draft, warnings: [false] } },
+      { ...presentation, code: "unexpected private code" }
+    ]) {
+      expect(decodeAppHostMessage({ ...packet, presentation: invalid })).toBeUndefined();
+    }
+    expect(decodeAppHostMessage({ ...packet, metadata })).toBeUndefined();
   });
 
   it("decodes one authoritative recovery payload and rejects mixed ownership or duplicate pages", () => {

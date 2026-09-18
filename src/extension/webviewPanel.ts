@@ -18,6 +18,7 @@ import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
   SNAPSHOT_VIEW_CONTEXT_PREFIX,
+  type SessionPresentation,
   type SessionRecoveryContext,
   type SessionRecoveryMessage
 } from "../shared/sessionRecovery";
@@ -141,7 +142,30 @@ export class OpenWranglerPanel {
     };
     this.rendererSync = new RendererSynchronizationCoordinator({
       postMessage: (message) => {
-        if (message && typeof message === "object" && "kind" in message && message.kind === "sessionOpened") {
+        if (
+          message &&
+          typeof message === "object" &&
+          "kind" in message &&
+          (message.kind === "sessionOpened" || message.kind === "stepPreview" || message.kind === "planUpdated")
+        ) {
+          const response = message as Extract<
+            OpenWranglerResponse,
+            { kind: "sessionOpened" | "stepPreview" | "planUpdated" }
+          >;
+          const state = this.bridge.getViewState?.(response.metadata.sessionId);
+          const viewState = state && encodeGridViewState(state);
+          if (state && !viewState) return Promise.resolve(false);
+          const publication = { ...response, ...(viewState ? { viewState } : {}) };
+          if (response.kind !== "sessionOpened") return this.panel.webview.postMessage(publication);
+          const presentation = this.bridge.getSessionPresentation?.(response.metadata.sessionId);
+          let rendererPresentation: Omit<SessionPresentation, "code"> | undefined;
+          if (
+            presentation?.sessionId === response.metadata.sessionId &&
+            presentation.revision === response.metadata.revision
+          ) {
+            const { code: _code, ...rest } = presentation;
+            rendererPresentation = rest;
+          }
           const offer =
             this.snapshotOffer && !this.snapshotOffer.sent
               ? this.snapshotOffer
@@ -152,7 +176,11 @@ export class OpenWranglerPanel {
           this.latestPageViewRequestId = undefined;
           this.snapshotViewContextId = undefined;
           if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, undefined);
-          return this.panel.webview.postMessage({ ...message, offeredViewContextId });
+          return this.panel.webview.postMessage({
+            ...publication,
+            offeredViewContextId,
+            ...(rendererPresentation ? { presentation: rendererPresentation } : {})
+          });
         }
         return this.panel.webview.postMessage(message);
       },
@@ -164,14 +192,6 @@ export class OpenWranglerPanel {
       prepareSnapshot: () => this.prepareSnapshot(),
       getOpenResponse: () => this.openResponse,
       isSnapshotPending: () => this.currentRuntimeReplacement() !== undefined,
-      getSessionPresentation: () => {
-        if (!this.sessionId) return undefined;
-        const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
-        return presentation?.sessionId === this.sessionId && presentation.revision === this.sessionRevision
-          ? presentation
-          : undefined;
-      },
-      getViewState: () => (this.sessionId ? this.bridge.getViewState?.(this.sessionId) : undefined),
       isImportBusy: () => this.changingImportOptions,
       ensureSessionOpen: () => this.open(),
       clearStepInspection: () => {
@@ -670,9 +690,8 @@ export class OpenWranglerPanel {
 
     if (decoded.kind === "updateViewState") {
       if (this.currentRuntimeReplacement()) return;
-      if (this.changingImportOptions || this.rendererSync.rendererViewStateLocked) {
-        await this.postViewState();
-      } else if (this.sessionId) {
+      if (this.changingImportOptions || this.rendererSync.rendererViewStateLocked) return;
+      if (this.sessionId) {
         await this.bridge.updateViewState?.(this.sessionId, decoded.state);
       }
       return;
@@ -711,10 +730,9 @@ export class OpenWranglerPanel {
             summaries: []
           };
         }
-        let published = await this.post(response);
-        if (published && response.kind === "planUpdated") {
-          published = await this.postViewState();
-          if (published && this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+        const published = await this.post(response);
+        if (published && response.kind === "planUpdated" && this.rendererSync.rendererReady) {
+          this.rendererSync.schedulePublishedViewSynchronization();
         }
       } catch (error) {
         await this.post({
@@ -869,10 +887,9 @@ export class OpenWranglerPanel {
           this.snapshot = response;
           this.snapshotViewContextId = undefined;
           this.latestPageViewRequestId = undefined;
-          await this.post(response);
-          await this.postSessionPresentation();
-          await this.postViewState();
-          if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+          if ((await this.post(response)) && this.rendererSync.rendererReady) {
+            this.rendererSync.schedulePublishedViewSynchronization();
+          }
           return;
         }
         await this.post(response);
@@ -939,10 +956,9 @@ export class OpenWranglerPanel {
         this.snapshot = response;
         this.snapshotViewContextId = undefined;
         this.latestPageViewRequestId = undefined;
-        await this.post(response);
-        await this.postSessionPresentation();
-        await this.postViewState();
-        if (this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+        if ((await this.post(response)) && this.rendererSync.rendererReady) {
+          this.rendererSync.schedulePublishedViewSynchronization();
+        }
         return;
       }
       await this.post(response);
@@ -1252,11 +1268,6 @@ export class OpenWranglerPanel {
       }
       if (response.kind !== "sessionOpened") await this.postUnpublishedAuthoritativeSnapshot();
       await this.postImportResponse(response);
-      if (response.kind === "sessionOpened") {
-        this.unpublishedAuthoritativeSnapshot = false;
-        await this.postSessionPresentation();
-        await this.postViewState();
-      }
     } catch (error) {
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       await this.postUnpublishedAuthoritativeSnapshot();
@@ -1271,11 +1282,7 @@ export class OpenWranglerPanel {
         this.importChangeCancellation = undefined;
         cancellation.dispose();
       }
-      if (!this.disposed && generation === this.openAttemptGeneration) {
-        this.changingImportOptions = false;
-        await this.postRendererMessage({ kind: "importOptionsState", busy: false });
-        if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
-      }
+      await this.finishImportChange(generation);
     }
   }
 
@@ -1531,11 +1538,6 @@ export class OpenWranglerPanel {
       }
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       await this.postImportResponse(response);
-      if (response.kind === "sessionOpened") {
-        this.unpublishedAuthoritativeSnapshot = false;
-        await this.postSessionPresentation();
-        await this.postViewState();
-      }
     } catch (error) {
       if (this.disposed || generation !== this.openAttemptGeneration || (retry && !this.isCurrentBackendChange(retry)))
         return;
@@ -1556,11 +1558,18 @@ export class OpenWranglerPanel {
         this.importChangeCancellation = undefined;
         cancellation.dispose();
       }
-      if (!this.disposed && generation === this.openAttemptGeneration) {
-        this.changingImportOptions = false;
-        await this.postRendererMessage({ kind: "importOptionsState", busy: false });
-        if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
-      }
+      await this.finishImportChange(generation);
+    }
+  }
+
+  private async finishImportChange(generation: number): Promise<void> {
+    if (this.disposed || generation !== this.openAttemptGeneration) return;
+    this.changingImportOptions = false;
+    if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
+    if (this.disposed || generation !== this.openAttemptGeneration) return;
+    if (!this.rendererSync.rendererReady || this.currentRuntimeReplacement()) {
+      await this.postRendererMessage({ kind: "importOptionsState", busy: false });
+      if (generation === this.openAttemptGeneration) this.publishPendingRecoveryOffer();
     }
   }
 
@@ -1840,14 +1849,17 @@ export class OpenWranglerPanel {
           metadata: { ...this.snapshot.metadata, stats: response.stats }
         };
       }
-      let published = await this.postRuntimeResponse(request, response);
-      if (response.kind === "sessionOpened" && published) published = await this.postSessionPresentation();
+      if (request.kind === "openSession" && response.kind === "sessionOpened" && this.changingImportOptions) {
+        await this.postImportResponse(response);
+        return;
+      }
+      const published = await this.postRuntimeResponse(request, response);
       if (
         published &&
+        this.rendererSync.rendererReady &&
         (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated")
       ) {
-        published = await this.postViewState();
-        if (published && this.rendererSync.rendererReady) this.scheduleRendererSynchronization(false);
+        this.rendererSync.schedulePublishedViewSynchronization();
       }
     } catch (error) {
       if (this.disposed) return;
@@ -2158,7 +2170,8 @@ export class OpenWranglerPanel {
       this.hasHydratedRenderer() &&
       this.codePreviewLayoutTransitionPending();
     if (!canReveal || !snapshot) {
-      this.scheduleRendererSynchronization(false);
+      if (this.hasHydratedRenderer()) this.rendererSync.schedulePublishedViewSynchronization();
+      else this.scheduleRendererSynchronization(false);
       return;
     }
 
@@ -2166,7 +2179,9 @@ export class OpenWranglerPanel {
     this.codePreviewReveal = reveal;
     const settleLayout = (): void => {
       reveal.pending = false;
-      if (!this.disposed && this.codePreviewReveal === reveal) this.scheduleRendererSynchronization(false);
+      if (!this.disposed && this.codePreviewReveal === reveal) {
+        this.rendererSync.schedulePublishedViewSynchronization();
+      }
     };
     void vscode.commands
       .executeCommand("openWrangler.codePreview.open", { preserveFocus: true })
@@ -2281,29 +2296,11 @@ export class OpenWranglerPanel {
     return this.post(response);
   }
 
-  private async postViewState(): Promise<boolean> {
-    if (!this.sessionId) return true;
-    const state = this.bridge.getViewState?.(this.sessionId);
-    if (!state) return true;
-    const serialized = encodeGridViewState(state);
-    return serialized ? this.postRendererMessage({ kind: "viewState", state: serialized }) : false;
-  }
-
-  private async postSessionPresentation(): Promise<boolean> {
-    if (!this.sessionId) return true;
-    const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
-    if (presentation && presentation.sessionId === this.sessionId && presentation.revision === this.sessionRevision) {
-      return this.postRendererMessage({ kind: "sessionPresentation", presentation });
-    }
-    return true;
-  }
-
   private async postUnpublishedAuthoritativeSnapshot(): Promise<void> {
     if (!this.unpublishedAuthoritativeSnapshot || !this.snapshot) return;
+    if (this.changingImportOptions && this.rendererSync.rendererReady) return;
     this.unpublishedAuthoritativeSnapshot = false;
-    if (!(await this.post(this.snapshot))) return;
-    if (!(await this.postSessionPresentation())) return;
-    await this.postViewState();
+    await this.post(this.snapshot);
   }
 
   private async rememberConfirmedFileImportOptions(metadata: SessionMetadata): Promise<void> {

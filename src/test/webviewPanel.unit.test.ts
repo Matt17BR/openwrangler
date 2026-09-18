@@ -475,16 +475,11 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   );
 
-  it.each([
-    ["sessionOpened", "projection"],
-    ["sessionPresentation", "projection"],
-    ["sessionOpened", "filter"],
-    ["sessionPresentation", "filter"]
-  ] as const)("retains a %s publication's fresh %s page after snapshot confirmation", async (phase, query) => {
+  it.each(["projection", "filter"] as const)("retains the confirmed snapshot's fresh %s page", async (query) => {
     let notify!: (replacement: SessionRuntimeReplacement) => void;
-    let holdPresentation = false;
-    const presentationStarted = deferred<void>();
-    const releasePresentation = deferred<void>();
+    let holdSnapshot = false;
+    const snapshotStarted = deferred<void>();
+    const releaseSnapshot = deferred<void>();
     const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (candidate.kind !== "getPage") throw new Error(`Unexpected ${candidate.kind}`);
       return {
@@ -516,9 +511,9 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       {
         postMessage: async (message) => {
-          if (holdPresentation && (message as { kind?: string }).kind === phase) {
-            presentationStarted.resolve();
-            await releasePresentation.promise;
+          if (holdSnapshot && (message as { kind?: string }).kind === "sessionOpened") {
+            snapshotStarted.resolve();
+            await releaseSnapshot.promise;
           }
           return true;
         }
@@ -527,11 +522,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    holdPresentation = true;
+    holdSnapshot = true;
     const pull = harness.receive({ kind: "requestSessionSnapshot" });
     let confirmedViewContextId: string | undefined;
     try {
-      await presentationStarted.promise;
+      await snapshotStarted.promise;
       const viewContextId = await confirmLatestSnapshot(harness);
       confirmedViewContextId = query === "filter" ? "fresh-filter-view" : viewContextId;
       const freshPage = pageMessage("restored-projection", confirmedViewContextId);
@@ -547,8 +542,8 @@ describe("OpenWranglerPanel retained view state", () => {
         metadata: { filterModel: freshPage.request.filterModel }
       });
     } finally {
-      holdPresentation = false;
-      releasePresentation.resolve();
+      holdSnapshot = false;
+      releaseSnapshot.resolve();
       await pull;
     }
     await acknowledgeLatestRendererSynchronization(harness);
@@ -571,9 +566,9 @@ describe("OpenWranglerPanel retained view state", () => {
     async (oldPublication) => {
       let notify!: (replacement: SessionRuntimeReplacement) => void;
       let holdMarker = false;
-      let holdPresentation = false;
-      const presentationStarted = deferred<void>();
-      const releasePresentation = deferred<void>();
+      let holdSnapshot = false;
+      const snapshotStarted = deferred<void>();
+      const releaseSnapshot = deferred<void>();
       const markerStarted = deferred<void>();
       const releaseMarker = deferred<void>();
       let state: GridViewState = { columnWidths: new Map(), viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
@@ -621,9 +616,9 @@ describe("OpenWranglerPanel retained view state", () => {
         },
         {
           postMessage: async (message) => {
-            if (holdPresentation && (message as { kind?: string }).kind === "sessionPresentation") {
-              presentationStarted.resolve();
-              await releasePresentation.promise;
+            if (holdSnapshot && (message as { kind?: string }).kind === "sessionOpened") {
+              snapshotStarted.resolve();
+              await releaseSnapshot.promise;
             }
             if (holdMarker && isRendererSynchronizationMessage(message)) {
               markerStarted.resolve();
@@ -640,9 +635,9 @@ describe("OpenWranglerPanel retained view state", () => {
       let oldPull: Promise<void> | undefined;
       let viewContextId = "original-view";
       if (oldPublication) {
-        holdPresentation = true;
+        holdSnapshot = true;
         oldPull = harness.receive({ kind: "requestSessionSnapshot" });
-        await presentationStarted.promise;
+        await snapshotStarted.promise;
         viewContextId = await confirmLatestSnapshot(harness);
       }
       harness.posted.length = 0;
@@ -684,7 +679,7 @@ describe("OpenWranglerPanel retained view state", () => {
         state: receiptState
       });
       expect(updateViewState).toHaveBeenCalledTimes(2);
-      releasePresentation.resolve();
+      releaseSnapshot.resolve();
       await markerStarted.promise;
       releaseMarker.resolve();
       await oldPull;
@@ -693,16 +688,9 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   );
 
-  it.each([
-    ["sessionOpened", "before"],
-    ["sessionOpened", "after"],
-    ["sessionPresentation", "before"],
-    ["sessionPresentation", "after"],
-    ["viewState", "before"],
-    ["viewState", "after"]
-  ] as const)(
-    "follows a delivered snapshot interrupted at %s with its receipt %s settlement",
-    async (phase, receipt) => {
+  it.each(["before", "after"] as const)(
+    "follows an interrupted atomic snapshot with its receipt %s settlement",
+    async (receipt) => {
       let notify!: (replacement: SessionRuntimeReplacement) => void;
       let holdSnapshot = false;
       const postedSnapshot = deferred<void>();
@@ -730,7 +718,7 @@ describe("OpenWranglerPanel retained view state", () => {
         },
         {
           postMessage: async (message) => {
-            if (holdSnapshot && (message as { kind?: string }).kind === phase) {
+            if (holdSnapshot && (message as { kind?: string }).kind === "sessionOpened") {
               postedSnapshot.resolve();
               await releaseSnapshot.promise;
             }
@@ -1038,7 +1026,13 @@ describe("OpenWranglerPanel retained view state", () => {
           }
         }
       );
-      await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(viewing)));
+      await vi.waitFor(() =>
+        expect(harness.posted).toContainEqual({
+          ...hostSnapshot(viewing),
+          presentation: { sessionId: metadata.sessionId, revision: 0 },
+          viewState: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+        })
+      );
       await harness.receive({ kind: "ready" });
       await acknowledgeLatestRendererSynchronization(harness);
       await harness.receive({ kind: "setViewContext", viewContextId: "confirmed" });
@@ -1090,7 +1084,14 @@ describe("OpenWranglerPanel retained view state", () => {
       modeResult.resolve(outcome);
       await change;
       expect(harness.posted).toContainEqual({ kind: "sessionModeChangeState", busy: false, mode: "editing" });
-      expect(harness.posted).toContainEqual(outcome.kind === "sessionOpened" ? hostSnapshot(outcome) : outcome);
+      expect(harness.posted).toContainEqual(
+        outcome.kind === "sessionOpened"
+          ? {
+              ...hostSnapshot(outcome),
+              viewState: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+            }
+          : outcome
+      );
       if (phase === "successful mode") {
         setViewContext.mockClear();
         await harness.receive({
@@ -1118,6 +1119,94 @@ describe("OpenWranglerPanel retained view state", () => {
       }
     }
   );
+
+  it("reoffers runtime recovery after an import prompt releases its renderer lock", async () => {
+    const source: SessionSource = {
+      ...metadata.source,
+      path: "/workspace/sample.csv",
+      uri: "file:///workspace/sample.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const initial = responseForSource(source);
+    const importPrompt = deferred<void>();
+    vi.mocked(promptImportOptions).mockImplementation(async () => {
+      await importPrompt.promise;
+      throw new ImportCancelledError();
+    });
+    let notify!: (replacement: SessionRuntimeReplacement) => void;
+    const replacement: SessionRuntimeReplacement = {
+      sessionId: metadata.sessionId,
+      isCurrent: () => true,
+      captureView: () => () => true,
+      readPage: vi.fn(async () => ({
+        response: {
+          kind: "page" as const,
+          revision: 0,
+          metadata: initial.metadata,
+          page,
+          viewRequestId: "recovery-read"
+        },
+        isCurrent: () => true
+      }))
+    };
+    const reconfigureFileSession = vi.fn();
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(),
+        reconfigureFileSession,
+        onDidReplaceRuntime: (listener) => {
+          notify = listener;
+          return { dispose() {} };
+        },
+        getSessionPresentation: () => ({ sessionId: metadata.sessionId, revision: 0, code: "clean_df = df" }),
+        getViewState: () => ({
+          columnWidths: new Map([["c:0", 260]]),
+          viewport: { firstVisibleRow: 0, scrollLeft: 30 }
+        })
+      },
+      { source, openResponse: initial }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    await harness.receive({ kind: "setViewContext", viewContextId: "current-view" });
+    harness.posted.length = 0;
+
+    const changing = harness.receive({ kind: "changeImportOptions" });
+    await vi.waitFor(() => expect(promptImportOptions).toHaveBeenCalledOnce());
+    notify(replacement);
+    await vi.waitFor(() =>
+      expect(harness.posted.some((message) => (message as { kind: string }).kind === "sessionRecovered")).toBe(true)
+    );
+    const offer = harness.posted.find(
+      (message) => (message as { kind: string }).kind === "sessionRecovered"
+    ) as SessionRecoveryMessage;
+    expect(offer.context).toEqual({
+      sessionId: metadata.sessionId,
+      revision: 0,
+      viewContextId: "current-view",
+      lastPageRequestId: null,
+      request: null
+    });
+    expect(replacement.readPage).toHaveBeenCalledOnce();
+    // The renderer cannot accept this offer while the import prompt owns its view.
+    harness.posted.length = 0;
+    importPrompt.resolve();
+    await changing;
+    expect(harness.posted).toEqual([
+      { kind: "cancelled", targetRequestId: "change-import-options" },
+      { kind: "importOptionsState", busy: false },
+      offer
+    ]);
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+    expect(replacement.readPage).toHaveBeenCalledOnce();
+    await harness.receive({ kind: "setViewContext", viewContextId: offer.offeredViewContextId });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    await acknowledgeLatestRendererSynchronization(harness);
+    expect(OpenWranglerPanel.panelHydratedForSession(metadata.sessionId)).toBe(true);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([]);
+    expect(replacement.readPage).toHaveBeenCalledOnce();
+  });
 
   it.each(["background", "foreground", "superseded"] as const)(
     "settles a recovery viewport read for its %s owner without retrying",
@@ -1660,6 +1749,78 @@ describe("OpenWranglerPanel retained view state", () => {
       })}`
     );
   });
+
+  it.each(["Apply", "plan rewrite"] as const)(
+    "publishes %s and its viewport once in the same packet",
+    async (action) => {
+      const step = { id: "lower-city", kind: "lowerText" as const, params: { column: { id: "c:0", name: "city" } } };
+      const initial: SessionOpenedResponse = {
+        ...openedResponse,
+        metadata: {
+          ...metadata,
+          ...(action === "Apply" ? { draftStep: step } : { steps: [step], latestStepInputSchema: metadata.schema })
+        }
+      };
+      const updated: OpenWranglerResponse = {
+        kind: "planUpdated",
+        action: "apply",
+        revision: 1,
+        metadata: {
+          ...metadata,
+          revision: 1,
+          ...(action === "Apply" ? { steps: [step], latestStepInputSchema: metadata.schema } : {})
+        },
+        page,
+        code: "clean_df = df"
+      };
+      const state: GridViewState = {
+        columnWidths: new Map([["c:0", 275]]),
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+      };
+      const request = vi.fn(async () => updated);
+      const rewriteCleaningPlan = vi.fn(async () => updated);
+      const harness = createPanelHarness(
+        { request, rewriteCleaningPlan, getViewState: () => state },
+        { openResponse: initial }
+      );
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      await vi.waitFor(() => expect(latestRendererSynchronization(harness.posted).layoutTransitionPending).toBe(false));
+      await acknowledgeLatestRendererSynchronization(harness);
+      harness.posted.length = 0;
+
+      await harness.receive(
+        action === "Apply"
+          ? {
+              kind: "runtimeRequest",
+              request: { kind: "applyDraft", offset: 0, limit: 200, columnOffset: 0, columnLimit: 16 }
+            }
+          : {
+              kind: "rewriteCleaningPlan",
+              action: "deleteStep",
+              stepId: step.id,
+              offset: 0,
+              limit: 200,
+              columnOffset: 0,
+              columnLimit: 16
+            }
+      );
+      await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+      const marker = latestRendererSynchronization(harness.posted);
+      expect(marker).toMatchObject({ sessionId: metadata.sessionId, revision: 1, layoutTransitionPending: false });
+      expect(harness.posted).toEqual([
+        { ...updated, viewState: { ...state, columnWidths: [["c:0", 275]] } },
+        { kind: "importOptionsState", busy: false },
+        marker
+      ]);
+      expect(request).toHaveBeenCalledTimes(action === "Apply" ? 1 : 0);
+      expect(rewriteCleaningPlan).toHaveBeenCalledTimes(action === "plan rewrite" ? 1 : 0);
+      await acknowledgeLatestRendererSynchronization(harness);
+      expect(harness.posted).toHaveLength(3);
+    }
+  );
 
   it.each(["successful Apply", "other request error", "thrown Apply"] as const)(
     "does not report a returned Apply failure for %s",
@@ -2744,6 +2905,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toBeUndefined();
     await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
     const marker = latestRendererSynchronization(harness.posted);
+    expect(harness.posted).toContainEqual({ ...hostSnapshot(opened), viewState: serializedAuthoritativeState });
     let settled = false;
     void synchronization.then(() => {
       settled = true;
@@ -2754,7 +2916,7 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "updateViewState", state: rendererState });
     expect(updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedAuthoritativeState });
+    expect(harness.posted).toEqual([]);
 
     await harness.receive({
       kind: "rendererSynchronized",
@@ -3735,8 +3897,14 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       code: "def clean_data(df):\n    return df\n"
     };
+    const state: GridViewState = {
+      columnWidths: new Map([["c:0", 270]]),
+      viewport: { firstVisibleRow: 1, scrollLeft: 20 }
+    };
+    const serializedState = { ...state, columnWidths: [["c:0", 270]] };
     const harness = createPanelHarness(
       {
+        getViewState: () => state,
         request: vi.fn(async (candidate: OpenWranglerRequest) => {
           if (candidate.kind === "discardDraft") return discarded;
           if (candidate.kind === "previewStep") {
@@ -3771,6 +3939,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
     const draftMarker = latestRendererSynchronization(harness.posted);
     expect(draftMarker.layoutTransitionPending).toBe(true);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([]);
+    expect(harness.posted).toContainEqual({ ...preview, viewState: serializedState });
 
     expect(executeCommand).not.toHaveBeenCalled();
     expect(harness.htmlAssignmentCount).toBe(1);
@@ -3798,6 +3968,12 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(latestRendererSynchronization(harness.posted).syncId).not.toBe(draftMarker.syncId));
     const markerDuringOpening = latestRendererSynchronization(harness.posted);
     expect(markerDuringOpening.layoutTransitionPending).toBe(true);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([
+      {
+        ...hostSnapshot({ kind: "sessionOpened", metadata: preview.metadata, page, summaries: [] }),
+        viewState: serializedState
+      }
+    ]);
     expect(executeCommand.mock.calls).toEqual([["openWrangler.codePreview.open", { preserveFocus: true }]]);
     await harness.receive({
       kind: "rendererSynchronized",
@@ -3817,6 +3993,12 @@ describe("OpenWranglerPanel retained view state", () => {
     const settledMarker = latestRendererSynchronization(harness.posted);
     expect(settledMarker).not.toEqual(draftMarker);
     expect(settledMarker.layoutTransitionPending).toBe(false);
+    expect(harness.posted.filter(isSessionOpenedResponse)).toHaveLength(1);
+    expect(
+      harness.posted.some((message) =>
+        ["viewState", "sessionPresentation"].includes((message as { kind: string }).kind)
+      )
+    ).toBe(false);
 
     // A stale duplicate acknowledgement cannot satisfy the synchronization
     // published after opening the view or reopen Code Preview.
@@ -3894,6 +4076,45 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
+
+  it.each(["disable", "deactivate"] as const)(
+    "settles Code Preview canceled by %s before acknowledgement without replaying the snapshot",
+    async (change) => {
+      const draftStep = { id: "draft", kind: "upperText" as const, params: { column: { id: "c:0", name: "city" } } };
+      const opened = { ...openedResponse, metadata: { ...metadata, draftStep } };
+      const harness = createPanelHarness({ request: vi.fn() }, { openResponse: opened });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const pending = latestRendererSynchronization(harness.posted);
+      expect(pending.layoutTransitionPending).toBe(true);
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      if (change === "disable") {
+        vi.spyOn(workspace, "getConfiguration").mockImplementation(
+          () =>
+            ({
+              get: (key: string, fallback?: unknown) => (key === "panelRevealBehavior" ? "never" : fallback)
+            }) as vscode.WorkspaceConfiguration
+        );
+      } else harness.deactivate();
+      await confirmLatestSnapshot(harness);
+      harness.posted.length = 0;
+
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: pending.syncId,
+        sessionId: pending.sessionId,
+        revision: pending.revision
+      });
+      await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+      const settled = latestRendererSynchronization(harness.posted);
+      expect(settled.syncId).not.toBe(pending.syncId);
+      expect(settled.layoutTransitionPending).toBe(false);
+      expect(harness.posted).toEqual([{ kind: "importOptionsState", busy: false }, settled]);
+      expect(executeCommand).not.toHaveBeenCalled();
+      await acknowledgeLatestRendererSynchronization(harness);
+      expect(OpenWranglerPanel.panelHydratedForSession(metadata.sessionId)).toBe(true);
+    }
+  );
 
   it.each(["discard", "disable", "deactivate", "dispose"] as const)(
     "retains pending Code Preview opening when the panel changes: %s",
@@ -4988,6 +5209,76 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(bridge.cancelViewRequests).toHaveBeenCalledWith("session", ["summary-a", "stats-a"]);
   });
 
+  it.each(["matching", "different session", "different revision"] as const)(
+    "binds the initial draft presentation to its snapshot (%s)",
+    async (identity) => {
+      const draftStep = { id: "draft", kind: "lowerText" as const, params: { column: { id: "c:0", name: "city" } } };
+      const opened = { ...openedResponse, metadata: { ...metadata, draftStep } };
+      const draft = {
+        diff: {
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 1,
+          cells: [],
+          truncated: false
+        },
+        warnings: ["Review the draft"],
+        beforeSchema: metadata.schema
+      };
+      const state: GridViewState = {
+        columnWidths: new Map([["c:0", 260]]),
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 1, scrollLeft: 44 }
+      };
+      const harness = createPanelHarness(
+        {
+          request: vi.fn(),
+          getViewState: () => state,
+          getSessionPresentation: () => ({
+            sessionId: identity === "different session" ? "other-session" : metadata.sessionId,
+            revision: identity === "different revision" ? 1 : metadata.revision,
+            code: "clean_df = df",
+            draft
+          })
+        },
+        { openResponse: opened }
+      );
+      await harness.open();
+      expect(harness.posted).toEqual([
+        { kind: "stepInspectionCleared", resumeProfiling: true },
+        {
+          ...hostSnapshot(opened),
+          viewState: { ...state, columnWidths: [["c:0", 260]] },
+          ...(identity === "matching" ? { presentation: { sessionId: metadata.sessionId, revision: 0, draft } } : {})
+        }
+      ]);
+    }
+  );
+
+  it("refuses an atomic snapshot whose host-owned viewport cannot be serialized", async () => {
+    const state: GridViewState = {
+      columnWidths: new Map([["c:0", 20]]),
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    };
+    const harness = createPanelHarness({ request: vi.fn(), getViewState: () => state });
+    await harness.open();
+    expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: true }]);
+    expect(OpenWranglerPanel.panelHydratedForSession(metadata.sessionId)).toBe(false);
+
+    state.columnWidths = new Map([["c:0", 260]]);
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([
+      {
+        ...hostSnapshot(openedResponse),
+        viewState: { ...state, columnWidths: [["c:0", 260]] }
+      }
+    ]);
+    await acknowledgeLatestRendererSynchronization(harness);
+    expect(OpenWranglerPanel.panelHydratedForSession(metadata.sessionId)).toBe(true);
+  });
+
   it("round-trips only validated host-owned grid presentation state", async () => {
     const state = {
       columnWidths: new Map([["c:0", 260]]),
@@ -5015,14 +5306,14 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
 
     await harness.send({ kind: "ready" });
-    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedState });
+    expect(harness.posted).toContainEqual({ ...hostSnapshot(openedResponse), viewState: serializedState });
 
     const synchronization = latestRendererSynchronization(harness.posted);
     const staleSyncId = `${synchronization.syncId.startsWith("A") ? "B" : "A"}${synchronization.syncId.slice(1)}`;
     harness.posted.length = 0;
     await harness.send({ kind: "updateViewState", state: serializedState });
     expect(bridge.updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted).toContainEqual({ kind: "viewState", state: serializedState });
+    expect(harness.posted).toEqual([]);
 
     await harness.receive({
       kind: "rendererSynchronized",
@@ -5113,10 +5404,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
 
     expect(updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted.at(-1)).toEqual({
-      kind: "viewState",
-      state: { ...authoritativeState, columnWidths: [["c:0", 245]] }
-    });
+    expect(harness.posted).toEqual([{ kind: "importOptionsState", busy: true }]);
 
     replacement.resolve(
       responseForSource(
@@ -5706,7 +5994,8 @@ describe("OpenWranglerPanel retained view state", () => {
       backendPreference: "auto"
     });
     await harness.open();
-    await confirmLatestSnapshot(harness);
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
     harness.posted.length = 0;
     configureImportOptions(nextOptions);
 
@@ -5733,10 +6022,17 @@ describe("OpenWranglerPanel retained view state", () => {
     if (!committed) throw new Error("Expected the confirmed replacement snapshot.");
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
-      hostSnapshot(committed),
-      { kind: "sessionPresentation", presentation: restoredPresentation() },
-      { kind: "viewState", state: { ...retainedView, columnWidths: [["c:0", 245]] } },
-      { kind: "importOptionsState", busy: false }
+      {
+        ...hostSnapshot(committed),
+        presentation: {
+          sessionId: committed.metadata.sessionId,
+          revision: committed.metadata.revision,
+          draft: restoredPresentation()?.draft
+        },
+        viewState: { ...retainedView, columnWidths: [["c:0", 245]] }
+      },
+      { kind: "importOptionsState", busy: false },
+      latestRendererSynchronization(harness.posted)
     ]);
     expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
       version: 2,
@@ -5745,8 +6041,15 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
-    expect(harness.posted).toContainEqual(hostSnapshot(committed));
-    expect(harness.posted).toContainEqual({ kind: "sessionPresentation", presentation: restoredPresentation() });
+    expect(harness.posted).toContainEqual({
+      ...hostSnapshot(committed),
+      presentation: {
+        sessionId: committed.metadata.sessionId,
+        revision: committed.metadata.revision,
+        draft: restoredPresentation()?.draft
+      },
+      viewState: { ...retainedView, columnWidths: [["c:0", 245]] }
+    });
 
     await confirmLatestSnapshot(harness);
     await harness.receive(pageMessage("after-import-change", "changed-view"));
@@ -5825,7 +6128,8 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
       expect(reconfigureFileSession).toHaveBeenCalledOnce();
       const publicationsBeforeRecoveredReady = harness.posted.filter(isSessionOpenedResponse).length;
-      expect(publicationsBeforeRecoveredReady).toBe(2);
+      expect(publicationsBeforeRecoveredReady).toBe(1);
+      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([hostSnapshot(committed)]);
 
       await harness.receive({ kind: "ready" });
       const recovered = latestRendererSynchronization(harness.posted);
@@ -6307,6 +6611,8 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
     harness.posted.length = 0;
 
     await harness.receive({ kind: "changeImportOptions" });
@@ -6315,7 +6621,10 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
       { kind: "cancelled", targetRequestId: "change-import-options" },
-      { kind: "importOptionsState", busy: false }
+      hostSnapshot(initial),
+      { kind: "cancelled", targetRequestId: "change-import-options" },
+      { kind: "importOptionsState", busy: false },
+      latestRendererSynchronization(harness.posted)
     ]);
 
     harness.posted.length = 0;
@@ -6348,7 +6657,8 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: initial }
     );
     await harness.open();
-    await confirmLatestSnapshot(harness);
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
     harness.posted.length = 0;
     configureImportOptions({
       delimiter: ";",
@@ -6362,7 +6672,10 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
       failure,
-      { kind: "importOptionsState", busy: false }
+      hostSnapshot(initial),
+      failure,
+      { kind: "importOptionsState", busy: false },
+      latestRendererSynchronization(harness.posted)
     ]);
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
@@ -7582,7 +7895,13 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
     );
-    await vi.waitFor(() => expect(harness.posted).toContainEqual(hostSnapshot(editing)));
+    await vi.waitFor(() =>
+      expect(harness.posted).toContainEqual({
+        ...hostSnapshot(editing),
+        presentation: { sessionId: metadata.sessionId, revision: 0 },
+        viewState: { columnWidths: [], viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      })
+    );
     harness.posted.length = 0;
 
     await harness.receive({
@@ -7817,15 +8136,13 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "reconnectLiveSource" });
 
     expect(reconnectLiveSession).toHaveBeenCalledWith("session", 0, { priority: "interactive" });
-    expect(harness.posted).toContainEqual(hostSnapshot(pysparkOpened));
-    expect(harness.posted).toContainEqual({
-      kind: "sessionPresentation",
-      presentation: { sessionId: "session", revision: 0, code: "" }
-    });
-    expect(harness.posted).toContainEqual({
-      kind: "viewState",
-      state: { ...getViewState.mock.results[0]?.value, columnWidths: [["c:0", 240]] }
-    });
+    expect(harness.posted).toEqual([
+      {
+        ...hostSnapshot(pysparkOpened),
+        presentation: { sessionId: "session", revision: 0 },
+        viewState: { ...getViewState.mock.results[0]?.value, columnWidths: [["c:0", 240]] }
+      }
+    ]);
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 

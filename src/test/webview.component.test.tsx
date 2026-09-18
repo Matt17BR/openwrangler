@@ -3904,6 +3904,117 @@ describe("App file import options", () => {
     ).toEqual([expect.stringContaining("sales"), expect.stringContaining("city")]);
   });
 
+  it("preserves a new grid selection while the host finishes publishing Apply", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      const step: TransformStep = {
+        id: "upper-city",
+        kind: "upperText",
+        params: { column: { id: "c:0", name: "city" } }
+      };
+      const previewPage: GridPage = {
+        ...page,
+        rows: page.rows.map((row) => ({
+          ...row,
+          values: row.values.map((cell, position) =>
+            position === 0 && cell.kind === "string" && typeof cell.raw === "string"
+              ? { ...cell, raw: cell.raw.toUpperCase(), display: cell.display.toUpperCase() }
+              : cell
+          )
+        }))
+      };
+      const state = {
+        columnWidths: [["c:0", 260]],
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      };
+      const draftPresentation = {
+        sessionId: metadata.sessionId,
+        revision: 1,
+        draft: {
+          diff: {
+            addedRows: 0,
+            removedRows: 0,
+            addedColumns: [],
+            removedColumns: [],
+            changedCells: 2,
+            cells: [],
+            truncated: false
+          },
+          warnings: ["Review the restored draft before applying it."],
+          beforeSchema: metadata.schema
+        }
+      };
+      render(<App />);
+      dispatchAppMessage({
+        kind: "sessionOpened",
+        metadata: { ...metadata, revision: 1, draftStep: step },
+        page: previewPage,
+        summaries: [],
+        presentation: draftPresentation,
+        viewState: { ...state, columnWidths: [["c:1", 240]], selectedColumnId: "c:1" }
+      });
+      expect(screen.getByRole("cell", { name: "10.5" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("grid").querySelectorAll("col")[2]).toHaveStyle({ width: "240px" });
+      expect(screen.getByRole("alert")).toHaveTextContent(draftPresentation.draft.warnings[0]);
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "a".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: 1,
+        layoutTransitionPending: false
+      });
+
+      fireEvent.click(await screen.findByRole("button", { name: "Apply step" }));
+      expect(webviewPostMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "runtimeRequest", request: expect.objectContaining({ kind: "applyDraft" }) })
+      );
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+      dispatchAppMessage({
+        kind: "planUpdated",
+        action: "apply",
+        revision: 2,
+        metadata: { ...metadata, revision: 2, steps: [step], latestStepInputSchema: metadata.schema },
+        page: previewPage,
+        code: "frame",
+        viewState: state
+      });
+
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+      expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Apply step" })).not.toBeInTheDocument();
+      expect(screen.getByRole("grid").querySelectorAll("col")[1]).toHaveStyle({ width: "260px" });
+      expect(screen.getByRole("cell", { name: "MILAN" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.queryByText(draftPresentation.draft.warnings[0])).not.toBeInTheDocument();
+      const paris = screen.getByRole("cell", { name: "PARIS" });
+      fireEvent.pointerDown(paris, { button: 0, buttons: 1, pointerId: 7, pointerType: "mouse" });
+      fireEvent.pointerUp(paris, { button: 0, buttons: 0, pointerId: 7, pointerType: "mouse" });
+      expect(paris).toHaveAttribute("aria-selected", "true");
+      expect(paris).toHaveFocus();
+
+      for (const layoutTransitionPending of [true, false]) {
+        dispatchAppMessage({
+          kind: "rendererSynchronization",
+          syncId: (layoutTransitionPending ? "b" : "c").repeat(32),
+          sessionId: metadata.sessionId,
+          revision: 2,
+          layoutTransitionPending
+        });
+        expect(paris).toHaveAttribute("aria-selected", "true");
+        expect(paris).toHaveFocus();
+      }
+
+      expect(screen.getByRole("cell", { name: "MILAN" })).toHaveAttribute("aria-selected", "false");
+      dispatchAppMessage({ kind: "viewState", state });
+      expect(paris).toHaveAttribute("aria-selected", "false");
+      const milan = screen.getByRole("cell", { name: "MILAN" });
+      expect(milan).toHaveAttribute("aria-selected", "true");
+      expect(milan).toHaveFocus();
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   it("keeps a user-edited draft view when the runtime confirms discard", async () => {
     const step: TransformStep = {
       id: "round-sales",
