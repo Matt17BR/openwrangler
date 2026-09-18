@@ -372,6 +372,12 @@ population, type, sampling and count limits. The existing kernel transport profi
 integer, double and duration summaries, including missing values and signed zero, through TypeScript. Its small
 integer64 fixture checks exact typed bounds; large integer64 arithmetic and distinct counts stay with frame profiling.
 The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
+Managed file profiling extends these owners with synchronous/continued result equality, fresh native-binding checks
+after a yield, retained-job cleanup and exclusion of mutation or replay from another session. The
+[process transport unit owner](../src/test/rProcessTransport.unit.test.ts) checks page admission, the original deadline,
+stale queued advances, exclusive-request fairness and cleanup of ambiguous begins against the captured child.
+Measure actual queued-page latency, setup, finalization, total work
+and retained memory separately; a chunk budget alone does not prove responsiveness.
 The existing native Custom Code owners execute real dplyr, data.table and collapse calls from file and package-backed
 frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
 The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes

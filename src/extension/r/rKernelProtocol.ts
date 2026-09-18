@@ -36,7 +36,7 @@ import {
   isTransformStep
 } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 17 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 18 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -653,6 +653,47 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
+      kind: "beginSummary";
+      payload: Readonly<{
+        sessionId: string;
+        summaryId: string;
+        columns: readonly RKernelColumnReference[];
+        view: RKernelViewQuery;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "continueSummary";
+      payload: Readonly<{ sessionId: string; summaryId: string; revision: number }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "closeSummary";
+      payload: Readonly<{ sessionId: string; summaryId: string }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "beginDatasetStats";
+      payload: Readonly<{ sessionId: string; statsId: string; view: RKernelViewQuery }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "continueDatasetStats";
+      payload: Readonly<{ sessionId: string; statsId: string; revision: number }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "closeDatasetStats";
+      payload: Readonly<{ sessionId: string; statsId: string }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
       kind: "listExcelSheets";
       payload: Readonly<{ sessionId: string }>;
     }>
@@ -799,6 +840,55 @@ export type RKernelRequest =
     }>;
 
 export type RKernelResponse =
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "summaryPending";
+      sessionId: string;
+      summaryId: string;
+      revision: number;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "summaryComplete";
+      sessionId: string;
+      summaryId: string;
+      revision: number;
+      summaries: readonly ColumnSummary[];
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "summaryClosed";
+      sessionId: string;
+      summaryId: string;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "datasetStatsPending";
+      sessionId: string;
+      statsId: string;
+      revision: number;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "datasetStatsComplete";
+      sessionId: string;
+      statsId: string;
+      revision: number;
+      totalRows: number;
+      stats: DatasetStats;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "datasetStatsClosed";
+      sessionId: string;
+      statsId: string;
+    }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
@@ -1014,8 +1104,55 @@ export function decodeRKernelResponseJson(
       page: decodeRFramePage(record.page)
     });
   }
-  if (kind === "summary") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "summaries"]);
+  if (kind === "summaryPending" || kind === "summaryClosed") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "summaryId",
+      ...(kind === "summaryPending" ? ["revision"] : [])
+    ]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      summaryId: identifier(record.summaryId, "response.summaryId"),
+      ...(kind === "summaryPending"
+        ? { kind, revision: boundedInteger(record.revision, "response.revision", 2_147_483_647) }
+        : { kind })
+    });
+  }
+  if (kind === "datasetStatsPending" || kind === "datasetStatsClosed") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "statsId",
+      ...(kind === "datasetStatsPending" ? ["revision"] : [])
+    ]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      statsId: identifier(record.statsId, "response.statsId"),
+      ...(kind === "datasetStatsPending"
+        ? { kind, revision: boundedInteger(record.revision, "response.revision", 2_147_483_647) }
+        : { kind })
+    });
+  }
+  if (kind === "summary" || kind === "summaryComplete") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "summaries",
+      ...(kind === "summaryComplete" ? ["summaryId", "revision"] : [])
+    ]);
     validateEnvelope(record, expected);
     const candidate: unknown = {
       kind: "summary",
@@ -1044,13 +1181,27 @@ export function decodeRKernelResponseJson(
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
-      kind: "summary" as const,
+      ...(kind === "summaryComplete"
+        ? {
+            kind,
+            summaryId: identifier(record.summaryId, "response.summaryId"),
+            revision: boundedInteger(record.revision, "response.revision", 2_147_483_647)
+          }
+        : { kind }),
       sessionId: identifier(record.sessionId, "response.sessionId"),
       summaries: Object.freeze(candidate.summaries)
     });
   }
-  if (kind === "datasetStats") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "totalRows", "stats"]);
+  if (kind === "datasetStats" || kind === "datasetStatsComplete") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "totalRows",
+      "stats",
+      ...(kind === "datasetStatsComplete" ? ["statsId", "revision"] : [])
+    ]);
     validateEnvelope(record, expected);
     const totalRows = boundedInteger(record.totalRows, "response.totalRows", R_FRAME_CONTRACT_LIMITS.rows);
     const candidate: unknown = {
@@ -1069,7 +1220,13 @@ export function decodeRKernelResponseJson(
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
-      kind: "datasetStats" as const,
+      ...(kind === "datasetStatsComplete"
+        ? {
+            kind,
+            statsId: identifier(record.statsId, "response.statsId"),
+            revision: boundedInteger(record.revision, "response.revision", 2_147_483_647)
+          }
+        : { kind }),
       sessionId: identifier(record.sessionId, "response.sessionId"),
       totalRows,
       stats: Object.freeze(candidate.stats)
@@ -1402,6 +1559,47 @@ function validateRequest(request: RKernelRequest): void {
     const payload = exactRecord(record.payload, ["sessionId", "page"], "R kernel page payload");
     identifier(payload.sessionId, "request.payload.sessionId");
     validatePage(payload.page);
+    return;
+  }
+  if (record.kind === "beginSummary" || record.kind === "continueSummary" || record.kind === "closeSummary") {
+    const beginning = record.kind === "beginSummary";
+    const payload = exactRecord(
+      record.payload,
+      [
+        "sessionId",
+        "summaryId",
+        ...(beginning ? ["columns", "view"] : record.kind === "continueSummary" ? ["revision"] : [])
+      ],
+      "R kernel continuation payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    identifier(payload.summaryId, "request.payload.summaryId");
+    if (beginning) {
+      validateColumnReferences(payload.columns, 1);
+      validateViewQuery(payload.view);
+    } else if (record.kind === "continueSummary") {
+      boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    }
+    return;
+  }
+  if (
+    record.kind === "beginDatasetStats" ||
+    record.kind === "continueDatasetStats" ||
+    record.kind === "closeDatasetStats"
+  ) {
+    const beginning = record.kind === "beginDatasetStats";
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "statsId", ...(beginning ? ["view"] : record.kind === "continueDatasetStats" ? ["revision"] : [])],
+      "R kernel continuation payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    identifier(payload.statsId, "request.payload.statsId");
+    if (beginning) {
+      validateViewQuery(payload.view);
+    } else if (record.kind === "continueDatasetStats") {
+      boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    }
     return;
   }
   if (record.kind === "getSummary") {
@@ -2383,8 +2581,11 @@ function canonicalDiffCell(cell: RFrameCell): CellValue {
   return Object.freeze({ ...cell });
 }
 
-function validateColumnReferences(value: unknown): void {
-  if (!Array.isArray(value) || value.length === 0 || value.length > R_FRAME_CONTRACT_LIMITS.profileColumns) {
+function validateColumnReferences(
+  value: unknown,
+  maximumColumns: number = R_FRAME_CONTRACT_LIMITS.profileColumns
+): void {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximumColumns) {
     fail("R kernel summary columns exceed the supported limit.");
   }
   const seen = new Set<string>();

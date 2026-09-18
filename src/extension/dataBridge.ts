@@ -54,6 +54,8 @@ export interface BridgeRequestOptions {
   requiredSourceProtection?: SessionSourceProtection;
   /** Host-confirmed viewing state consumed by an edit or Spark page, captured at runtime dispatch. */
   confirmedView?: ConfirmedView;
+  /** Original read ownership, checked before a yielded native request dispatches again. */
+  isCurrentRead?: () => boolean;
   cancellation?: CancellationTokenLike;
   priority?: "interactive" | "background";
   timeoutMs?: number;

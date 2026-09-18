@@ -305,6 +305,127 @@ agent$dispose()
 if (identical(selected_kernel_agent_case, "lifecycle-and-structure")) {
 kernel_agent_case_run_count <- kernel_agent_case_run_count + 1L
 
+# Managed file profiles own their identity, bounded capacity and replay exclusion.
+local({
+  contract <- openwrangler_r_frame_contract
+  native_advance_summary <- contract$advance_summary
+  native_advance_stats <- contract$advance_dataset_stats
+  contract$advance_summary <- function(state, ...) native_advance_summary(state, maximum_chunks = 1L)
+  contract$advance_dataset_stats <- function(state, ...) native_advance_stats(state, maximum_chunks = 1L)
+  sources <- new.env(parent = baseenv())
+  sources$.ow_csv_source <- data.frame(value = rep(c(1L, NA_integer_, 3L), length.out = 131073L))
+  path <- tempfile(fileext = ".csv")
+  writeLines("value\n1", path)
+  on.exit(unlink(path), add = TRUE)
+  file_agent <- openwrangler_r_kernel_agent$new_agent(contract, sources,
+    file_source = list(path = path, format = "csv", header = TRUE, delimiter = ",", encoding = "utf-8", quoteChar = "\""))
+  on.exit(file_agent$dispose(), add = TRUE)
+  send <- function(kind, payload) dispatch_with(file_agent, kind, payload)
+  reference <- I(list(list(id = "r:c:0", name = "value")))
+  summary_payload <- function(id, session = session_id) list(sessionId = session, summaryId = id, columns = reference, view = empty_view())
+  stats_payload <- function(id, session = session_id) list(sessionId = session, statsId = id, view = empty_view())
+  summary_id <- "01234567-0123-4123-8123-012345678901"
+  stats_id <- "01234567-0123-4123-8123-012345678902"
+  extra_id <- "01234567-0123-4123-8123-012345678903"
+  other_id <- "01234567-0123-4123-8123-012345678904"
+  closing_id <- "01234567-0123-4123-8123-012345678905"
+  disposed_id <- "01234567-0123-4123-8123-012345678906"
+  assert_identical(send("beginSummary", summary_payload(summary_id))$code, "unknown_session", "unknown session admitted a profile")
+  for (session in c(session_id, second_session_id, third_session_id)) {
+    assert_identical(send("openSession", list(sessionId = session, variableName = ".ow_csv_source", page = page_window(row_limit = 2L)))$kind,
+      "page", "managed profile source did not open")
+  }
+  sources$replays <- 0L
+  custom <- list(id = "profile-custom", kind = "customCode", params = list(code = "replays <<- replays + 1L; result <- df"))
+  custom_preview <- send("previewStep", list(sessionId = third_session_id, revision = 0L, step = custom, page = page_window(row_limit = 2L)))
+  assert_identical(custom_preview$kind, "stepPreview", "custom replay fixture did not preview")
+  applied <- send("applyDraft", list(sessionId = third_session_id, revision = custom_preview$revision, page = page_window(row_limit = 2L)))
+  rename <- list(id = "profile-rename", kind = "renameColumn", params = list(column = reference[[1L]], newName = "renamed"))
+  renamed <- send("previewStep", list(sessionId = third_session_id, revision = applied$revision, step = rename, page = page_window(row_limit = 2L)))
+  applied <- send("applyDraft", list(sessionId = third_session_id, revision = renamed$revision, page = page_window(row_limit = 2L)))
+  draft <- send("previewStep", list(sessionId = second_session_id, revision = 0L, step = custom, page = page_window(row_limit = 2L)))
+  assert_identical(draft$kind, "stepPreview", "draft fixture did not preview")
+  replay_count <- sources$replays
+  pending <- send("beginSummary", summary_payload(summary_id))
+  assert_identical(pending$kind, "summaryPending", "large file summary did not yield")
+  assert_identical(pending$revision, 0L, "begin did not capture the source revision")
+  assert_identical(send("beginDatasetStats", stats_payload(stats_id))$kind, "datasetStatsPending", "dataset stats did not yield")
+  assert_identical(send("beginSummary", summary_payload(extra_id))$code, "read_in_progress", "session profile capacity was unbounded")
+  assert_identical(send("beginSummary", summary_payload(summary_id))$code, "invalid_request", "duplicate profile replaced its owner")
+  assert_identical(send("beginSummary", summary_payload(other_id, second_session_id))$kind, "summaryPending", "shared file sessions were incorrectly capped globally")
+  assert_identical(send("closeSummary", list(sessionId = second_session_id, summaryId = summary_id))$code,
+    "invalid_request", "wrong session closed another profile")
+  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 1L))$code,
+    "stale_revision", "mismatched revision advanced a profile")
+  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 0L))$kind,
+    "summaryPending", "rejected duplicate or receipt removed the valid profile")
+  assert_identical(send("getPage", list(sessionId = session_id, page = page_window(row_offset = 3L, row_limit = 2L)))$kind,
+    "page", "pending profiles blocked an ordinary page")
+  guarded <- list(
+    previewStep = list(sessionId = third_session_id, revision = applied$revision, step = custom, page = page_window(row_limit = 2L)),
+    redoStep = list(sessionId = third_session_id, revision = applied$revision, expectedStepId = rename$id, page = page_window(row_limit = 2L)),
+    undoStep = list(sessionId = third_session_id, revision = applied$revision, page = page_window(row_limit = 2L)),
+    inspectStepPage = list(sessionId = third_session_id, revision = applied$revision, stepId = custom$id, side = "output", page = page_window(row_limit = 2L)),
+    applyDraft = list(sessionId = second_session_id, revision = draft$revision, page = page_window(row_limit = 2L)),
+    discardDraft = list(sessionId = second_session_id, revision = draft$revision, page = page_window(row_limit = 2L))
+  )
+  for (kind in names(guarded)) {
+    assert_identical(send(kind, guarded[[kind]])$code,
+      "read_in_progress", paste(kind, "was not excluded across shared sessions"))
+  }
+  assert_identical(sources$replays, replay_count, "pending profiles allowed cross-session Custom Code replay")
+  assert_identical(send("closeSummary", list(sessionId = second_session_id, summaryId = other_id))$kind,
+    "summaryClosed", "pair-owned close required an unavailable begin receipt")
+
+  # A failed pending-response encoding retires only the owner admitted by that dispatch.
+  runtime <- environment(openwrangler_r_kernel_agent$new_agent)
+  encode <- get("encode_response", runtime, inherits = FALSE)
+  assign("encode_response", function(response) {
+    if (identical(response$kind, "summaryPending")) stop("injected pending encoding failure", call. = FALSE)
+    encode(response)
+  }, runtime)
+  on.exit(assign("encode_response", encode, runtime), add = TRUE)
+  assert_identical(send("beginSummary", summary_payload(extra_id, second_session_id))$kind, "error", "encoding fault did not fail begin")
+  assign("encode_response", encode, runtime)
+  assert_identical(send("continueSummary", list(sessionId = second_session_id, summaryId = extra_id, revision = draft$revision))$code,
+    "unknown_profile", "failed begin encoding retained its owner")
+  expected <- send("getSummary", list(sessionId = session_id, columns = reference, view = empty_view()))$summaries
+  repeat {
+    complete <- send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 0L))
+    if (!identical(complete$kind, "summaryPending")) break
+  }
+  assert_identical(complete$kind, "summaryComplete", "continued summary failed to finish")
+  assert_identical(complete$summaries, expected, "continued summary differs from the synchronous contract")
+  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 0L))$code,
+    "unknown_profile", "completed summary retained its native owner")
+  assert_identical(send("closeSummary", list(sessionId = session_id, summaryId = summary_id))$kind,
+    "summaryClosed", "completed close was not idempotent")
+  assert_identical(send("continueDatasetStats", list(sessionId = session_id, statsId = stats_id, revision = 0L))$kind,
+    "datasetStatsPending", "failed summary encoding removed the independent stats owner")
+  assert_identical(send("beginSummary", summary_payload(closing_id, second_session_id))$kind, "summaryPending", "cancelled capacity was not released")
+  assert_identical(send("closeSession", list(sessionId = second_session_id))$kind, "closed", "session close failed with pending work")
+  assert_identical(send("closeSummary", list(sessionId = second_session_id, summaryId = closing_id))$kind, "summaryClosed", "closed-session cleanup was not idempotent")
+  repeat {
+    complete <- send("continueDatasetStats", list(sessionId = session_id, statsId = stats_id, revision = 0L))
+    if (!identical(complete$kind, "datasetStatsPending")) break
+  }
+  assert_identical(complete$kind, "datasetStatsComplete", "closing another session removed the stats owner")
+  expected_stats <- send("getDatasetStats", list(sessionId = session_id, view = empty_view()))
+  assert_identical(complete$stats, expected_stats$stats, "continued dataset statistics changed")
+  assert_identical(send("undoStep", guarded$undoStep)$kind, "planUpdated", "closed and completed reads still blocked mutation")
+  assert_identical(sources$replays, replay_count + 1L, "the replay control did not execute after read cleanup")
+  assert_identical(send("beginSummary", summary_payload(disposed_id))$kind, "summaryPending", "completed work did not release capacity")
+  file_agent$dispose()
+  assert_identical(send("continueSummary", list(sessionId = session_id, summaryId = disposed_id, revision = 0L))$kind,
+    "error", "disposed agent retained usable profile state")
+
+  # Constructor provenance, not the caller's request shape, controls eligibility.
+  live <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, sources)
+  on.exit(live$dispose(), add = TRUE)
+  assert_identical(dispatch_with(live, "beginSummary", summary_payload(summary_id))$code,
+    "invalid_request", "a live source admitted borrowed continuation state")
+})
+
 # Dependency facts come from the same native checks used by live and generated readers.
 local({
   contract <- openwrangler_r_frame_contract
@@ -9165,7 +9286,7 @@ formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_expo
     request_number <<- request_number + 1L
     encoded <- jsonlite::toJSON(
       list(
-        transportVersion = 17L,
+        transportVersion = 18L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -9933,7 +10054,7 @@ categorical_attributed_metadata_s3_child <- function(frame_contract_path, kernel
     request_number <<- request_number + 1L
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 17L,
+        transportVersion = 18L,
         requestId = sprintf("99999999-9999-4999-8999-%012d", request_number),
         kind = kind,
         payload = payload
@@ -10281,7 +10402,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
     request_number <<- request_number + 1L
     encoded <- as.character(jsonlite::toJSON(
       list(
-        transportVersion = 17L,
+        transportVersion = 18L,
         requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
         kind = kind,
         payload = payload
@@ -10376,7 +10497,7 @@ categorical_ascii_locale_child <- function(frame_contract_path, kernel_exports_p
   on.exit(malformed_agent$dispose(), add = TRUE)
   malformed_request <- jsonlite::toJSON(
     list(
-      transportVersion = 17L,
+      transportVersion = 18L,
       requestId = "22222222-2222-4222-8222-222222222222",
       kind = "openSession",
       payload = list(
@@ -12886,7 +13007,7 @@ by_example_utf8_locale_child <- function(frame_contract_path, kernel_exports_pat
     if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 17L,
+        transportVersion = 18L,
         requestId = "acdcacdc-acdc-4cdc-8cdc-acdcacdcacdc",
         kind = kind,
         payload = payload
@@ -13166,7 +13287,7 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
     if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
     request <- jsonlite::toJSON(
       list(
-        transportVersion = 17L,
+        transportVersion = 18L,
         requestId = "f1f1f1f1-f1f1-41f1-81f1-f1f1f1f1f1f1",
         kind = kind,
         payload = payload
@@ -13768,7 +13889,7 @@ assert_identical(
 program_null_request_id <- "b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6"
 program_null_request <- as.character(jsonlite::toJSON(
   list(
-    transportVersion = 17L,
+    transportVersion = 18L,
     requestId = program_null_request_id,
     kind = "previewStep",
     payload = list(
@@ -13845,7 +13966,7 @@ negative_zero_step$params$examples[[1L]]$output <- 0L
 negative_zero_step$params$examples[[2L]]$output <- 0L
 negative_zero_request <- jsonlite::toJSON(
   list(
-    transportVersion = 17L,
+    transportVersion = 18L,
     requestId = "b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8",
     kind = "previewStep",
     payload = list(
@@ -14014,7 +14135,7 @@ for (case in structural_negative_zero_cases) {
   step$params$program <- case$program
   request <- as.character(jsonlite::toJSON(
     list(
-      transportVersion = 17L,
+      transportVersion = 18L,
       requestId = case$request_id,
       kind = "previewStep",
       payload = list(
@@ -14052,7 +14173,7 @@ for (case in structural_negative_zero_cases) {
 nul_step <- adversarial_valid_step("by-example-nul", "nul-safe")
 nul_request <- jsonlite::toJSON(
   list(
-    transportVersion = 17L,
+    transportVersion = 18L,
     requestId = "b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7",
     kind = "previewStep",
     payload = list(

@@ -7107,6 +7107,61 @@ local({
     "integer64 profile dispatched caller methods while retaining native handles")
 })
 
+# Yielded calculations preserve both scan passes and revalidate native handles.
+local({
+  contract <- openwrangler_r_frame_contract
+  rows <- 2L * contract$limits$profileChunkRows + 1L
+  frame <- data.frame(
+    wide = bit64::as.integer64(rep(c("9007199254740993", "-9007199254740992", NA), length.out = rows)),
+    value = rep(c(1, NA_real_, NaN, -2), length.out = rows),
+    text = paste0("é", seq_len(rows)),
+    category = factor(rep(c("é", "other", NA), length.out = rows))
+  )
+  before <- serialize(frame, NULL, version = 3L)
+  capture <- contract$capture_live_frame(function() frame)
+  drain <- function(state, advance) {
+    pending <- 0L
+    repeat {
+      result <- advance(state, maximum_chunks = 1L)
+      if (!is.null(result)) break
+      pending <- pending + 1L
+      assert_true(pending < 100L, "a continued profile failed to finish")
+    }
+    assert_true(pending >= 3L, "a continued profile did not yield between scan chunks")
+    result
+  }
+  for (position in seq_along(frame)) {
+    reference <- list(profile_reference(capture, position))
+    expected <- contract$materialize_summaries(capture, reference)[[1L]]
+    state <- contract$begin_summary(capture, reference, list(filters = list(), sorts = list()))
+    assert_identical(drain(state, contract$advance_summary), expected,
+      "yielding changed exact counts, histograms or deterministic profile samples")
+  }
+  stats <- contract$begin_dataset_stats(capture)
+  assert_identical(drain(stats, contract$advance_dataset_stats), contract$materialize_dataset_stats(capture),
+    "yielding between dataset columns lost row missingness or duplicate sampling")
+  assert_identical(serialize(frame, NULL, version = 3L), before, "continued profiles changed their source")
+
+  state <- contract$begin_summary(capture, list(profile_reference(capture, 1L)), list(filters = list(), sorts = list()))
+  stats <- contract$begin_dataset_stats(capture)
+  assert_identical(contract$advance_summary(state, 1L), NULL, "wide summary did not pause")
+  assert_identical(contract$advance_dataset_stats(stats, 1L), NULL, "wide dataset scan did not pause")
+  namespace <- asNamespace("bit64")
+  original <- get("C_isna_integer64", namespace, inherits = FALSE)
+  restore <- function() {
+    unlockBinding("C_isna_integer64", namespace)
+    assign("C_isna_integer64", original, namespace)
+    lockBinding("C_isna_integer64", namespace)
+  }
+  on.exit(restore(), add = TRUE)
+  unlockBinding("C_isna_integer64", namespace)
+  assign("C_isna_integer64", get("C_as_double_integer64", namespace, inherits = FALSE), namespace)
+  lockBinding("C_isna_integer64", namespace)
+  assert_error(contract$advance_summary(state, 1L), "runtime-error")
+  assert_error(contract$advance_dataset_stats(stats, 1L), "runtime-error")
+  restore()
+})
+
 empty_profile_frame <- data.frame(
   text = character(),
   amount = double(),
@@ -8211,6 +8266,18 @@ filtered_stats <- filtered_stats_result$stats
 assert_identical(filtered_stats$missingCells, 2, "dataset statistics ignored filtered rows")
 assert_identical(filtered_stats$missingRows, 2L, "filtered missing-row counts changed")
 assert_identical(filter_frame, filter_before, "native R viewing filters mutated the source dataframe")
+
+local({
+  contract <- openwrangler_r_frame_contract
+  state <- contract$begin_dataset_stats(filter_capture, text_contains)
+  assert_identical(contract$advance_dataset_stats(state, 1L), NULL, "filtered stats did not yield")
+  invisible(contract$materialize_view_page(filter_capture, view_query(), row_limit = 2L, column_limit = 2L))
+  repeat {
+    result <- contract$advance_dataset_stats(state, 1L)
+    if (!is.null(result)) break
+  }
+  assert_identical(result, filtered_stats_result, "a later page replaced pending dataset filter membership")
+})
 
 table_filter_page <- openwrangler_r_frame_contract$materialize_view_page(
   table_capture,

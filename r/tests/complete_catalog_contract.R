@@ -85,7 +85,7 @@ agent <- openwrangler_r_kernel_agent$new_agent(recording_contract, source_enviro
 dispatch <- function(kind, payload) {
   if (identical(kind, "openSession") && !"library" %in% names(payload)) payload$library <- "base"
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 17L, requestId = request_id, kind = kind, payload = payload),
+    list(transportVersion = 18L, requestId = request_id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     digits = 17L,
     null = "null",

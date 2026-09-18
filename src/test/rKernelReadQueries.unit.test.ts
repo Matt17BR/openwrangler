@@ -141,7 +141,7 @@ describe("R kernel read queries", () => {
     const session = createSession(contract);
     const transport = fakeTransport(contract);
     const queries = new RKernelReadQueries(transport, new Map([[sessionId, session]]));
-    const options = { timeoutMs: 654 };
+    const options = { timeoutMs: 654, isCurrentRead: vi.fn(() => true) };
 
     const summary = await queries.getSummary(summaryRequest("summary-1"), options);
     expect(summary).toMatchObject({
@@ -155,7 +155,7 @@ describe("R kernel read queries", () => {
       sessionId,
       [{ id: "r:c:0", name: "value" }],
       { filters: [], sorts: [] },
-      { cancellation: undefined, timeoutMs: 654 }
+      { cancellation: undefined, ...options }
     );
 
     const stats = await queries.getDatasetStats(datasetStatsRequest("stats-1"), options);
@@ -170,7 +170,7 @@ describe("R kernel read queries", () => {
     expect(transport.getDatasetStats).toHaveBeenCalledWith(
       sessionId,
       { filters: [], sorts: [] },
-      { cancellation: undefined, timeoutMs: 654 }
+      { cancellation: undefined, ...options }
     );
 
     const values = await queries.getColumnValues(valuesRequest("values-1"), options);
@@ -189,7 +189,7 @@ describe("R kernel read queries", () => {
       { filters: [], sorts: [] },
       "1",
       5,
-      { cancellation: undefined, timeoutMs: 654 }
+      { cancellation: undefined, ...options }
     );
   });
 });
