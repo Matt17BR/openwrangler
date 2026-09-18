@@ -1196,7 +1196,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     let payload: string | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        payload = await this.readPrivateMailboxArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES);
+        payload = await this.readPrivateMailboxArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES, true);
         if (payload !== undefined) break;
       } catch {
         // A notification can be replaced again while this identity-checked read is in
@@ -1342,13 +1342,18 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     decodeAttachmentResponse(payload, this.attachmentNonce, this.runtimeBundleId, expectedProcessId);
   }
 
-  private async readPrivateMailboxArtifact(filePath: string, maximumBytes: number): Promise<string | undefined> {
+  private async readPrivateMailboxArtifact(
+    filePath: string,
+    maximumBytes: number,
+    allowAtomicReplacement = false
+  ): Promise<string | undefined> {
     try {
       const bytes = await readRPrivateArtifact({
         filePath,
         maximumBytes,
         label: "interactive R response",
         missing: "returnUndefined",
+        allowAtomicReplacement,
         operations: this.artifactOperations
       });
       return bytes?.toString("utf8");

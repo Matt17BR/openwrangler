@@ -3,6 +3,7 @@
 import {
   lstat,
   link,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -344,6 +345,207 @@ describe("R private artifact boundary", () => {
     expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
     expect((await lstat(artifactPath, { bigint: true })).nlink).toBe(2n);
     expect((await lstat(linkedPath, { bigint: true })).nlink).toBe(2n);
+  });
+
+  it.each([
+    ["after open", false],
+    ["after initial stat", false],
+    ["during read", false],
+    ["after final stat", false],
+    ["after open", true],
+    ["after initial stat", true],
+    ["during read", true],
+    ["after final stat", true]
+  ] as const)(
+    "rejects atomic replacement %s without changing immutable ownership (replaceable: %s)",
+    async (stage, allowAtomicReplacement) => {
+      const artifactPath = resolve(directory, "notification.json");
+      const nextPath = resolve(directory, "notification.json.tmp");
+      await writeFile(artifactPath, "owned", { mode: 0o600 });
+      await writeFile(nextPath, "newer", { mode: 0o644 });
+      const base = createNodeRPrivateArtifactOperations();
+      let renamed = false;
+      let closed = 0;
+      const replace = async () => {
+        await rename(nextPath, artifactPath);
+        renamed = true;
+      };
+      const operations: RPrivateArtifactOperations = {
+        ...base,
+        async open(filePath, flags) {
+          const handle = await base.open(filePath, flags);
+          if (stage === "after open") await replace();
+          let stats = 0;
+          return {
+            async stat(options) {
+              const metadata = await handle.stat(options);
+              stats += 1;
+              if ((stage === "after initial stat" && stats === 1) || (stage === "after final stat" && stats === 2))
+                await replace();
+              return metadata;
+            },
+            async read(...args) {
+              const result = await handle.read(...args);
+              if (stage === "during read" && !renamed) await replace();
+              return result;
+            },
+            truncate: (length) => handle.truncate(length),
+            async close() {
+              closed += 1;
+              await handle.close();
+            }
+          };
+        }
+      };
+      const error = await captureFailure(() =>
+        readRPrivateArtifact({
+          filePath: artifactPath,
+          maximumBytes: 5,
+          label: "test R notification",
+          allowAtomicReplacement,
+          operations
+        })
+      );
+      expect(renamed).toBe(true);
+      expect(closed).toBe(1);
+      expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(!allowAtomicReplacement);
+      expect(
+        await readRPrivateArtifact({
+          filePath: artifactPath,
+          maximumBytes: 5,
+          label: "test R notification",
+          allowAtomicReplacement
+        })
+      ).toEqual(Buffer.from("newer"));
+    }
+  );
+
+  it.for([
+    "symlink",
+    "hardlink",
+    "directory",
+    "retained old inode",
+    "changed owner",
+    "changed descriptor mode",
+    "unreadable retired descriptor"
+  ] as const)("preserves an unsafe %s during a replaceable notification read", async (replacement, context) => {
+    if (replacement === "changed descriptor mode" && process.platform === "win32")
+      context.skip("POSIX file-mode transition");
+    const artifactPath = resolve(directory, "notification.json");
+    const nextPath = resolve(directory, "next");
+    const otherPath = resolve(directory, "other");
+    await writeFile(artifactPath, "owned", { mode: 0o600 });
+    await writeFile(otherPath, "other", { mode: 0o600 });
+    if (replacement === "symlink") {
+      try {
+        await symlink(otherPath, nextPath);
+      } catch (error) {
+        if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")
+          context.skip("Windows refused file-symlink creation on this host");
+        throw error;
+      }
+    } else if (replacement === "hardlink") await link(otherPath, nextPath);
+    else if (replacement === "directory") await mkdir(nextPath);
+    else await writeFile(nextPath, "newer", { mode: 0o600 });
+    const base = createNodeRPrivateArtifactOperations();
+    let swapped = false;
+    const operations: RPrivateArtifactOperations = {
+      ...base,
+      async open(filePath, flags) {
+        const handle = await base.open(filePath, flags);
+        if (replacement !== "unreadable retired descriptor") return handle;
+        let stats = 0;
+        return {
+          stat: async (options) => {
+            if (++stats > 1) throw new Error("retired descriptor stat failed");
+            return handle.stat(options);
+          },
+          read: handle.read.bind(handle),
+          truncate: handle.truncate.bind(handle),
+          close: handle.close.bind(handle)
+        };
+      },
+      async lstat(filePath) {
+        if (filePath === artifactPath && !swapped) {
+          swapped = true;
+          if (replacement === "changed descriptor mode") await chmod(artifactPath, 0o644);
+          if (replacement === "retained old inode" || replacement === "directory")
+            await rename(artifactPath, resolve(directory, "retired"));
+          await rename(nextPath, artifactPath);
+        }
+        const metadata = await base.lstat(filePath);
+        if (replacement !== "changed owner") return metadata;
+        return new Proxy(metadata, {
+          get(target, property) {
+            if (property === "uid") return target.uid + 1n;
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+        });
+      }
+    };
+    const error = await captureFailure(() =>
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        label: "test R notification",
+        allowAtomicReplacement: true,
+        operations
+      })
+    );
+    expect(swapped).toBe(true);
+    if (replacement === "unreadable retired descriptor")
+      expect((error as Error).cause).toEqual(new Error("retired descriptor stat failed"));
+    expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
+    expect(await lstat(artifactPath)).toBeDefined();
+    expect(await readFile(otherPath, "utf8")).toBe("other");
+  });
+
+  it.skipIf(process.platform === "win32").each([false, true])(
+    "preserves an artifact refused by no-follow open (replaceable: %s)",
+    async (allowAtomicReplacement) => {
+      const artifactPath = resolve(directory, "notification.json");
+      const otherPath = resolve(directory, "other.json");
+      await writeFile(otherPath, "other", { mode: 0o600 });
+      await symlink(otherPath, artifactPath);
+      const error = await captureFailure(() =>
+        readRPrivateArtifact({
+          filePath: artifactPath,
+          maximumBytes: 5,
+          label: "test R notification",
+          allowAtomicReplacement
+        })
+      );
+      expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(true);
+      expect((error as Error).cause).toMatchObject({ code: "ELOOP" });
+      expect((await lstat(artifactPath)).isSymbolicLink()).toBe(true);
+      expect(await readFile(otherPath, "utf8")).toBe("other");
+    }
+  );
+
+  it("keeps replacement semantics unavailable for removal and preserves byte bounds", async () => {
+    const artifactPath = resolve(directory, "notification.json");
+    await writeFile(artifactPath, "too-large", { mode: 0o600 });
+    await expect(
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        label: "test R notification",
+        allowAtomicReplacement: true,
+        removeAfterRead: "success"
+      })
+    ).rejects.toThrow("can only be read without removal");
+    const error = await captureFailure(() =>
+      readRPrivateArtifact({
+        filePath: artifactPath,
+        maximumBytes: 5,
+        label: "test R notification",
+        allowAtomicReplacement: true
+      })
+    );
+    expect((error as Error).message).toContain("invalid test R notification");
+    expect(rPrivateArtifactFailureRequiresContainerPreservation(error)).toBe(false);
+    expect(await readFile(artifactPath, "utf8")).toBe("too-large");
   });
 
   it("reports a descriptor close failure while still scrubbing the matching owned artifact", async () => {

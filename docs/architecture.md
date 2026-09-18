@@ -1751,7 +1751,13 @@ Opening and editing still preflight the complete encoded reply before publishing
 The host reads private R response and export files through bounded, single-link identity checks. Cleanup moves the
 identified file into a private directory and verifies the same file before and after truncating it to zero bytes.
 Directory identity uses device, inode, ownership and permissions; its link count can change with directory contents.
-Replaced files or cleanup directories are refused and preserved.
+Replaced files or cleanup directories are refused and preserved. Interactive workspace notifications are the one
+read-only exception: their producer atomically replaces the pathname. A changed read is still rejected, but a
+validated single-link replacement on the same device and under the same file ownership, with the old descriptor
+now unlinked, can use the existing bounded notification retry without blocking mailbox cleanup. The reader never
+returns bytes from that retired descriptor. Observed unsafe types, links or ownership still preserve the mailbox,
+and a later successful read cannot clear an earlier unsafe cleanup decision. These checks recognize a permitted
+filesystem transition; they do not authenticate which same-user process performed the rename.
 
 #### Cleaning and generated code
 
