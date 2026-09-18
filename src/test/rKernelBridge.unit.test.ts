@@ -27,6 +27,7 @@ import {
 } from "../extension/sessionRuntimeStateRestorer";
 import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 import { RKernelBridge } from "../extension/r/rKernelBridge";
+import { RDependencyError } from "../extension/r/rDependencyRequirements";
 import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import type { RColumnSchema, RFrameCell, RFramePageContract } from "../extension/r/rFrameContract";
@@ -46,6 +47,128 @@ import {
 } from "./rKernelBridgeTestFixtures";
 
 describe("canonical R kernel bridge", () => {
+  it.each(["startup", "selected library"] as const)(
+    "repairs an idle retired file owner after a %s dependency failure",
+    async (failure) => {
+      const source: SessionSource = { kind: "file", label: "orders.parquet", path: "/workspace/orders.parquet" };
+      const requirements = [{ packageName: "arrow" as const, minimumVersion: "23.0.1.1", namespaceAvailable: false }];
+      const transport = fakeTransport(frameContract());
+      const error =
+        failure === "startup"
+          ? new RDependencyError("Missing Arrow", requirements)
+          : new RKernelDiagnosticError({
+              transportVersion: R_KERNEL_TRANSPORT_VERSION,
+              kind: "error",
+              requestId: sessionId,
+              code: "missing_package",
+              message: "Missing Arrow",
+              recoverable: false,
+              requirements
+            });
+      transport.open.mockRejectedValue(error);
+      const replacement = createBridge(fakeTransport(frameContract()));
+      const factory = vi.fn(async () => replacement);
+      const repair = vi.fn(async () => true);
+      const bridge = new RKernelBridge(
+        { extension: { packageJSON: { version: "2.6.0" } } } as vscode.ExtensionContext,
+        transport,
+        () => sessionId,
+        () => undefined,
+        undefined,
+        {},
+        factory,
+        source,
+        { rscriptPath: "/captured/Rscript", repair }
+      );
+      try {
+        const response = await bridge.request({ ...openRequest(), source, rLibrary: "collapse" });
+        expect(response).toMatchObject({ kind: "error", code: "missing_dependencies", recoverable: true });
+        expect(response.kind === "error" && response.message).toContain("/captured/Rscript");
+        bridge.onIdle();
+        await bridge.dispose();
+        await expect(bridge.createRuntimeRecoveryDelegate()).rejects.toThrow("cannot create");
+        await expect(bridge.installFileDependencies({ ...source, path: "/other.parquet" }, "r")).resolves.toBe(false);
+        await expect(bridge.installFileDependencies(source, "pandas")).resolves.toBe(false);
+        expect(repair).not.toHaveBeenCalled();
+        await expect(bridge.installFileDependencies(source, "r")).resolves.toBe(true);
+        expect(repair).toHaveBeenCalledExactlyOnceWith(requirements, "collapse", {});
+        expect(transport.dispose).toHaveBeenCalledOnce();
+        expect((await bridge.createRuntimeRecoveryDelegate()).delegate).toBe(replacement);
+        expect(factory).toHaveBeenCalledOnce();
+      } finally {
+        await bridge.dispose();
+        await replacement.dispose();
+      }
+    }
+  );
+
+  it("waits for failed file cleanup and never repairs a notebook or an unconfirmed process exit", async () => {
+    const requirements = [{ packageName: "jsonlite" as const, minimumVersion: "1.0", namespaceAvailable: false }];
+    const source: SessionSource = { kind: "file", label: "orders.csv", path: "/workspace/orders.csv" };
+    let finish!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const transport = fakeTransport(frameContract());
+    transport.open.mockRejectedValue(new RDependencyError("Missing jsonlite", requirements));
+    transport.dispose.mockImplementationOnce(() => cleanup);
+    const repair = vi.fn(async () => true);
+    const bridge = new RKernelBridge(
+      {} as vscode.ExtensionContext,
+      transport,
+      () => sessionId,
+      () => undefined,
+      undefined,
+      {},
+      undefined,
+      source,
+      { rscriptPath: "/captured/Rscript", repair }
+    );
+    const cancellation = new vscode.CancellationTokenSource();
+    try {
+      await bridge.request({ ...openRequest(), source });
+      const operation = bridge.installFileDependencies(source, "r", { cancellation: cancellation.token });
+      await Promise.resolve();
+      expect(repair).not.toHaveBeenCalled();
+      cancellation.cancel();
+      finish();
+      await expect(operation).resolves.toBe(false);
+      expect(repair).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      cancellation.dispose();
+      await bridge.dispose();
+    }
+
+    const notebookTransport = fakeTransport(frameContract());
+    notebookTransport.open.mockRejectedValue(new RDependencyError("Missing jsonlite", requirements));
+    const notebook = createBridge(notebookTransport);
+    try {
+      await expect(notebook.request(openRequest())).rejects.toThrow("Missing jsonlite");
+      await expect(notebook.installFileDependencies(source, "r")).resolves.toBe(false);
+    } finally {
+      await notebook.dispose();
+    }
+
+    const failedTransport = fakeTransport(frameContract());
+    failedTransport.open.mockRejectedValue(new RDependencyError("Missing jsonlite", requirements));
+    failedTransport.dispose.mockRejectedValue(new Error("Process exit unconfirmed"));
+    const failed = new RKernelBridge(
+      {} as vscode.ExtensionContext,
+      failedTransport,
+      () => sessionId,
+      () => undefined,
+      undefined,
+      {},
+      undefined,
+      source,
+      { rscriptPath: "/captured/Rscript", repair }
+    );
+    await failed.request({ ...openRequest(), source });
+    await expect(failed.installFileDependencies(source, "r")).rejects.toThrow("Process exit unconfirmed");
+    expect(repair).not.toHaveBeenCalled();
+  });
+
   it.each(["current", "closed", "kernel", "cancelled", "untrusted", "revision"] as const)(
     "binds Excel sheet discovery and manual fallback to the captured file owner (%s)",
     async (transition) => {

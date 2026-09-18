@@ -651,12 +651,20 @@ including those written by DuckDB, within the native precision and range limits.
 and `nanoparquet` 0.5.1+; exact timestamp columns also require `clock` 0.7.4+. Excel requires `readxl`, and large integer
 input requires `bit64`. The [reader contract](architecture.md#parquet-jsonl-and-excel-files)
 describes type and precision limits, spreadsheet missing-value rules and eager loading.
+
+When a local R file lacks required packages, **Install required packages** opens a confirmation naming the packages,
+Rscript environment, target package library and CRAN repository. **Install** shows progress, validates the result and
+automatically retries the same file. Cancelling before installation leaves packages unchanged. Once installation
+starts, closing the data view prevents reopening but leaves package writes running in their terminal; keep that
+terminal open until it finishes. Live R notebooks and terminals retain manual package installation.
+
 Installed CSV workflows have been verified in desktop VS Code on Linux, macOS and Windows. The
 [macOS check](https://github.com/Matt17BR/openwrangler/actions/runs/35094083555/job/104787104263) covers native cells,
 Rename Preview/Apply, generated R, protected all-row CSV export and session/process cleanup. Local R file support is
 Preview. The [Windows check](https://github.com/Matt17BR/openwrangler/actions/runs/35216479111/job/105186103569)
 also covers configured CSV, the other supported file formats, process recovery and owned cleanup. Native Job Object
 controls verify Windows process containment separately.
+These installed results predate the package-repair flow and do not qualify its installation or retry UI.
 Parser options beyond this reader contract remain unsupported.
 
 ### First stable R notebook scope
@@ -709,7 +717,8 @@ An existing file editor or saved file plan for the target library must be opened
 If the retained source is still live, it is verified and captured when the runtime opens the copy.
 Copies made from an already isolated source retain that snapshot.
 Opening the picker does not freeze live values. Live sessions remain tied to the exact kernel, terminal or document process; copying does not move work to another R environment.
-Missing or incompatible packages produce installation guidance for that environment and leave the original available.
+Missing or incompatible packages identify the owning environment and leave the original available. A failed local-file
+open offers the package repair described above; live sources retain manual installation guidance.
 Old saved R file plans keep their base behavior; non-base libraries have separate saved plans.
 
 ### Frames, cleaning and export limits

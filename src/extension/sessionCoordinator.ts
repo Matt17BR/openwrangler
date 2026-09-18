@@ -61,7 +61,11 @@ import {
   type InitialRLibraryCopy,
   type InitialSessionPlan
 } from "./sessionRuntimeEstablisher";
-import { SessionRuntimeRecovery, type RuntimeRecoveryHooks } from "./sessionRuntimeRecovery";
+import {
+  runtimeRecoveryDelegateFactory,
+  SessionRuntimeRecovery,
+  type RuntimeRecoveryHooks
+} from "./sessionRuntimeRecovery";
 import {
   reconfigurationCancelled,
   SessionRuntimeReconfigurer,
@@ -114,6 +118,7 @@ const SHUTDOWN_TIMEOUT_MS = 2_000;
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
   private readonly pendingOpens = new Map<OpenWranglerBridge, number>();
+  private readonly pendingRDependencyRepairs = new Set<vscode.CancellationTokenSource>();
   private readonly pendingRLibraryCopies = new Set<RLibraryCopyReservation>();
   private readonly pendingOpenWaiters = new Set<() => void>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
@@ -182,8 +187,22 @@ export class SessionCoordinator implements vscode.Disposable {
         delegate.prepareFileAutoFallback?.(source, options) ?? Promise.resolve(undefined),
       discoverDuckDBTables: (source, options) =>
         delegate.discoverDuckDBTables?.(source, options) ?? Promise.resolve(undefined),
-      installFileDependencies: (source, backend, options) =>
-        delegate.installFileDependencies?.(source, backend, options) ?? Promise.resolve(false),
+      installFileDependencies: (source, backend, options) => {
+        if (source.kind !== "file" || backend !== "r")
+          return delegate.installFileDependencies?.(source, backend, options) ?? Promise.resolve(false);
+        const captured = delegate;
+        return this.installRFileDependencies(
+          captured,
+          source,
+          options,
+          () => delegate === captured,
+          (replacement) => {
+            if (delegate !== captured) return false;
+            delegate = replacement;
+            return true;
+          }
+        );
+      },
       onDidReplaceRuntime: (listener) =>
         this.runtimeReplacementEmitter.event(({ owner, replacement }) => {
           if (owner === delegate) listener(replacement);
@@ -1496,6 +1515,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private async shutdownSessions(timeoutMs: number): Promise<void> {
     this.disposed = true;
+    for (const cancellation of this.pendingRDependencyRepairs) cancellation.cancel();
     const sessions = [...this.sessions.values()].map((session) => {
       const alreadyClosing = session.closing;
       session.closing = true;
@@ -1618,6 +1638,58 @@ export class SessionCoordinator implements vscode.Disposable {
       if (this.sessionEstablishmentTails.get(delegate) === tail) this.sessionEstablishmentTails.delete(delegate);
     });
     return result;
+  }
+
+  private installRFileDependencies(
+    delegate: OpenWranglerBridge,
+    source: SessionSource,
+    options: BridgeRequestOptions | undefined,
+    ownsDelegate: () => boolean,
+    replaceDelegate: (replacement: OpenWranglerBridge) => boolean
+  ): Promise<boolean | ErrorResponse> {
+    const current = (): boolean =>
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      !options?.cancellation?.isCancellationRequested &&
+      ownsDelegate() &&
+      !this.pendingOpens.has(delegate) &&
+      ![...this.sessions.values()].some(
+        (session) => session.delegate === delegate || this.sessionOwnerDelegates.get(session) === delegate
+      );
+    const factory = runtimeRecoveryDelegateFactory(delegate);
+    if (!factory || !current() || this.runtimeCleanup.isSettling(delegate)) return Promise.resolve(false);
+    const cancellation = new vscode.CancellationTokenSource();
+    const cancellationSubscription = options?.cancellation?.onCancellationRequested(() => cancellation.cancel());
+    this.pendingRDependencyRepairs.add(cancellation);
+    const repair = this.serializeSessionEstablishment(delegate, async () => {
+      if (!current()) return false;
+      const ready = await delegate.installFileDependencies?.(source, "r", {
+        ...options,
+        cancellation: cancellation.token
+      });
+      if (!current()) return false;
+      if (ready !== true) return ready ?? false;
+      const replacement = await factory.createRuntimeRecoveryDelegate();
+      let published = false;
+      try {
+        if (replacement.delegate === delegate)
+          throw new Error("Native R dependency repair requires a fresh verified file runtime.");
+        if (!current() || !replaceDelegate(replacement.delegate)) return false;
+        published = true;
+        return true;
+      } finally {
+        if (!published) await replacement.dispose();
+      }
+    }).finally(() => {
+      this.pendingRDependencyRepairs.delete(cancellation);
+      cancellationSubscription?.dispose();
+      cancellation.dispose();
+    });
+    this.runtimeCleanup.trackDelegateSettlement(
+      delegate,
+      repair.then(() => undefined)
+    );
+    return repair;
   }
 
   private runtimeRecoveryHooks(session: CoordinatedSession): RuntimeRecoveryHooks {

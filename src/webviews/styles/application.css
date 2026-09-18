@@ -47,6 +47,7 @@
 .app-error {
   align-items: flex-start;
   padding: 24px;
+  overflow-wrap: anywhere;
 }
 
 .errorActions {

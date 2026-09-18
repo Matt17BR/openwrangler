@@ -6,6 +6,7 @@ import { FileBackendUnavailableError } from "../dataBridge";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, supportsRCsvImportOptions, type RProcessFileSource } from "./rProcessTransport";
 import { configuredRscriptPath, supportsRFileExecution } from "./rscriptPath";
+import { repairRFileDependencies, rEnvironmentWithLibrary } from "./rFileDependencies";
 
 /** Creates a lazy, exact-file native R owner; the coordinator owns opening and replay. */
 export function createRFileBridge(context: vscode.ExtensionContext, source: SessionSource): RKernelBridge {
@@ -80,12 +81,17 @@ export function createRFileBridge(context: vscode.ExtensionContext, source: Sess
     throw new FileBackendUnavailableError(
       "Open Wrangler could not find Rscript. Set Open Wrangler: Rscript Path to an installed Rscript executable."
     );
+  let environment: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
+  const runtimeRoot = context.asAbsolutePath("r/openwrangler_runtime");
+  const workingDirectory = path.dirname(fileSource.path);
+  const cwd = vscode.Uri.file(workingDirectory);
   const create = (): RKernelBridge => {
     if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before opening a file with R.");
     const transport = new RProcessSessionTransport({
-      runtimeRoot: context.asAbsolutePath("r/openwrangler_runtime"),
+      runtimeRoot,
       rscriptPath,
-      workingDirectory: path.dirname(fileSource.path),
+      workingDirectory,
+      environment,
       fileSource
     });
     const bridge = new RKernelBridge(
@@ -96,7 +102,22 @@ export function createRFileBridge(context: vscode.ExtensionContext, source: Sess
       undefined,
       {},
       async () => create(),
-      pinnedSource
+      pinnedSource,
+      {
+        rscriptPath,
+        repair: async (requirements, library, options) => {
+          const repaired = await repairRFileDependencies(
+            { runtimeRoot, rscriptPath, cwd, environment, format: fileSource.format },
+            requirements,
+            library,
+            options
+          );
+          if (!repaired) return false;
+          if (repaired.libraryPath)
+            environment = Object.freeze(rEnvironmentWithLibrary(environment, repaired.libraryPath));
+          return true;
+        }
+      }
     );
     bridge.reportDiagnostic(`R file runtime selected: ${JSON.stringify(rscriptPath)}.`);
     return bridge;

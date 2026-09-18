@@ -11,7 +11,13 @@ import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
 import { rStringExpression } from "./rCode";
-import { buildRDependencyPreflightCode, R_DEPENDENCY_FAILURE_CLASS } from "./rDependencyRequirements";
+import {
+  buildRDependencyPreflightCode,
+  buildRDependencySerializationCode,
+  decodeRDependencyRequirements,
+  R_DEPENDENCY_FAILURE_CLASS,
+  RDependencyError
+} from "./rDependencyRequirements";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
   decodeRKernelResponseJson,
@@ -101,6 +107,8 @@ export type RProcessSessionTransportOptions = {
   readonly rscriptPath: string;
   /** Origin directory used for the document's relative file references. */
   readonly workingDirectory: string;
+  /** Captured environment for file recovery; documents retain their existing launch-time environment. */
+  readonly environment?: Readonly<NodeJS.ProcessEnv>;
   readonly temporaryParent?: string;
   readonly createId?: () => string;
 } & (
@@ -854,7 +862,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
       const processBootstrap = buildRProcessBootstrapCode(processAgent, path.join(responseRoot, "ready.json"));
       const environment = {
-        ...process.env,
+        ...(this.options.environment ?? process.env),
         TMPDIR: root,
         TMP: root,
         TEMP: root,
@@ -1072,11 +1080,13 @@ ${buildRDependencyPreflightCode("selected Rscript")}
     base::sys.source(${rStringExpression(processAgent)}, envir = base::globalenv(), keep.source = FALSE)
   }, error = function(.__ow_error) {
     if (!base::inherits(.__ow_error, ${rStringExpression(R_DEPENDENCY_FAILURE_CLASS)})) base::stop(.__ow_error)
+${buildRDependencySerializationCode()}
     .__ow_ready_path <- ${rStringExpression(readyPath)}
     .__ow_temporary <- base::paste0(.__ow_ready_path, ".dependency-", base::Sys.getpid(), ".tmp")
     .__ow_payload <- base::paste0(
       ${rStringExpression(payloadPrefix)},
-      base::encodeString(base::conditionMessage(.__ow_error), quote = '"'),
+      .__ow_dependency_json_string(base::conditionMessage(.__ow_error)),
+      ',"requirements":', .__ow_dependency_requirements_json(.__ow_error$requirements),
       "}"
     )
     base::writeLines(.__ow_payload, .__ow_temporary, useBytes = TRUE)
@@ -1207,8 +1217,14 @@ function decodeReadyPayload(payload: string): RProcessVariableDiscovery {
     throw new Error("Open Wrangler received malformed R process startup data.");
   }
   if (value.status === "error") {
-    if (Object.keys(value).length !== 3 || !isBoundedText(value.message, 4_096)) {
+    if (
+      Object.keys(value).some((key) => !["protocolVersion", "status", "message", "requirements"].includes(key)) ||
+      !isBoundedText(value.message, 4_096)
+    ) {
       throw new Error("Open Wrangler received malformed R process startup data.");
+    }
+    if (Object.hasOwn(value, "requirements")) {
+      throw new RDependencyError(value.message, decodeRDependencyRequirements(value.requirements));
     }
     throw new Error(value.message);
   }

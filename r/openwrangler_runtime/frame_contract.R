@@ -56,33 +56,55 @@ openwrangler_r_frame_contract <- local({
     length(unclass(value))
   }
 
-  require_arrow <- function(load_namespace = TRUE) {
-    version <- base::tryCatch({
-      if (base::isTRUE(load_namespace) && !base::requireNamespace("arrow", quietly = TRUE)) NULL else
-        if (base::isNamespaceLoaded("arrow")) base::getNamespaceVersion("arrow") else utils::packageVersion("arrow")
-    }, error = function(error) NULL)
-    if (base::is.null(version) || utils::compareVersion(base::as.character(version), "23.0.1.1") < 0L) {
-      base::stop("Native R Parquet requires arrow >= 23.0.1.1. Install or update it with install.packages(\"arrow\"), then restart this R runtime and reopen.", call. = FALSE)
+  require_package <- function(package_name, minimum_version = NULL, message, load_namespace = TRUE) {
+    if (!base::is.character(package_name) || base::length(package_name) != 1L || base::is.na(package_name) ||
+        !package_name %in% c("arrow", "nanoparquet", "clock", "readxl", "bit64", "dplyr", "data.table", "collapse")) {
+      base::stop("Unknown native R dependency", call. = FALSE)
     }
-    base::invisible(NULL)
+    namespace_available <- if (base::isTRUE(load_namespace)) {
+      base::tryCatch(base::requireNamespace(package_name, quietly = TRUE), error = function(error) FALSE)
+    } else base::isNamespaceLoaded(package_name)
+    version <- base::tryCatch({
+      if (base::isNamespaceLoaded(package_name)) base::getNamespaceVersion(package_name) else utils::packageVersion(package_name)
+    }, error = function(error) NULL)
+    compatible <- !base::is.null(version) && (base::is.null(minimum_version) ||
+      utils::compareVersion(base::as.character(version), minimum_version) >= 0L)
+    if ((!base::isTRUE(load_namespace) || namespace_available) && compatible) return(base::invisible(NULL))
+    requirement <- base::list(packageName = package_name)
+    if (!base::is.null(minimum_version)) requirement$minimumVersion <- minimum_version
+    if (!base::is.null(version)) {
+      observed <- base::as.character(version)
+      if (base::length(observed) == 1L && !base::is.na(observed) && base::nchar(observed, type = "bytes") <= 64L &&
+          base::grepl("^[0-9][0-9A-Za-z.+-]*$", observed)) requirement$observedVersion <- observed
+    }
+    requirement$namespaceAvailable <- base::isTRUE(namespace_available)
+    base::stop(base::structure(
+      base::list(message = message, call = NULL, code = "missing-package", requirements = base::list(requirement)),
+      class = c("openwrangler_native_r_dependency_error", "openwrangler_r_frame_error", "error", "condition")
+    ))
+  }
+
+  require_arrow <- function(load_namespace = TRUE) {
+    require_package("arrow", "23.0.1.1",
+      "Native R Parquet requires arrow >= 23.0.1.1. Install or update it with install.packages(\"arrow\"), then restart this R runtime and reopen.",
+      load_namespace = load_namespace)
   }
 
   require_nanoparquet <- function() {
-    if (!base::requireNamespace("nanoparquet", quietly = TRUE) ||
-        utils::compareVersion(base::as.character(base::getNamespaceVersion("nanoparquet")), "0.5.1") < 0L) {
-      base::stop("Native R Parquet metadata and zero-column exports require nanoparquet >= 0.5.1. Install or update it with install.packages(\"nanoparquet\"), then restart this R runtime and reopen.", call. = FALSE)
-    }
-    base::invisible(NULL)
+    require_package("nanoparquet", "0.5.1",
+      "Native R Parquet metadata and zero-column exports require nanoparquet >= 0.5.1. Install or update it with install.packages(\"nanoparquet\"), then restart this R runtime and reopen.")
+  }
+
+  require_readxl <- function() {
+    require_package("readxl", "1.4.5",
+      "R Excel input requires readxl 1.4.5 or newer. Run install.packages('readxl') in the selected R runtime, then reopen the file.")
   }
 
   clock_is_column <- function(column) base::inherits(column, "clock_time_point")
 
   clock_require <- function() {
-    if (!base::requireNamespace("clock", quietly = TRUE) ||
-        utils::compareVersion(base::as.character(base::getNamespaceVersion("clock")), "0.7.4") < 0L) {
-      base::stop("Exact R timestamps require clock >= 0.7.4. Install or update it with install.packages(\"clock\"), then restart this R runtime and reopen.", call. = FALSE)
-    }
-    base::invisible(NULL)
+    require_package("clock", "0.7.4",
+      "Exact R timestamps require clock >= 0.7.4. Install or update it with install.packages(\"clock\"), then restart this R runtime and reopen.")
   }
 
   clock_validate <- function(column, label, validate_values = TRUE) {
@@ -1319,14 +1341,10 @@ openwrangler_r_frame_contract <- local({
     }
     if (base::identical(library, "base")) return(base::invisible(NULL))
     minimum <- base::switch(library, dplyr = "1.2.1", data.table = "1.18.2.1", collapse = "2.1.7")
-    if (!base::requireNamespace(library, quietly = TRUE) ||
-        utils::compareVersion(base::as.character(base::getNamespaceVersion(library)), minimum) < 0L) {
-      abort("missing-package", base::sprintf(
-        "Native R %s cleaning requires %s >= %s in this R runtime. Install or update it with install.packages(\"%s\"), then restart this R runtime and reopen.",
-        library, library, minimum, library
-      ))
-    }
-    base::invisible(NULL)
+    require_package(library, minimum, base::sprintf(
+      "Native R %s cleaning requires %s >= %s in this R runtime. Install or update it with install.packages(\"%s\"), then restart this R runtime and reopen.",
+      library, library, minimum, library
+    ))
   }
 
   library_frame_metadata <- function(value) {
@@ -1588,7 +1606,7 @@ openwrangler_r_frame_contract <- local({
 
   library_helpers_for <- function(requested) {
     dependencies <- list(
-      abort = character(), require_r_library = "abort", library_frame_metadata = character(),
+      abort = character(), require_package = character(), require_r_library = c("abort", "require_package"), library_frame_metadata = character(),
       library_prepare = "library_frame_metadata", library_restore = character(),
       library_rows = c("library_frame_metadata", "library_restore"),
       library_columns = c("library_prepare", "library_restore"),
@@ -10939,10 +10957,10 @@ openwrangler_r_frame_contract <- local({
     }
     options <- normalize_export_options(options, "parquet")
     target_path <- validate_export_target(target_path)
-    tryCatch(require_arrow(), error = function(error) abort("missing-package", conditionMessage(error)))
+    require_arrow()
 
     frame <- read_capture_frame(capture, validated = TRUE)
-    if (length(frame) == 0L) tryCatch(require_nanoparquet(), error = function(error) abort("missing-package", conditionMessage(error)))
+    if (length(frame) == 0L) require_nanoparquet()
     completed <- FALSE
     connection <- NULL
     on.exit({
@@ -11647,10 +11665,13 @@ openwrangler_r_frame_contract <- local({
   }
 
   list(
+    require_package = require_package,
     require_arrow = require_arrow,
     require_nanoparquet = require_nanoparquet,
+    require_readxl = require_readxl,
     clock_helpers = list(
       abort = abort,
+      require_package = require_package,
       clock_is_column = clock_is_column,
       clock_require = clock_require,
       clock_validate = clock_validate,
