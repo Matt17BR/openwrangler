@@ -386,6 +386,8 @@ Linux R phase supervision needs the selected repository Python 3.10 to 3.14 stan
 but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker
 and process identity. Native controls exercise SIGINT, SIGTERM, deadlines, output limits, closed readers, escalation
 and detached descendants. An unverifiable live target leaves settlement unverified.
+Linux background discovery runs every 100 ms to avoid continuous scanning of unrelated host processes. Launch,
+signaling and settlement still observe immediately, including detached children created since the last background scan.
 
 On macOS, the runner compiles one private native helper per invocation using `/usr/bin/xcrun clang`, so the Xcode
 Command Line Tools must be installed. Preparation, native capability checks and stale-token refusal precede R launch.
