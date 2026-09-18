@@ -2376,8 +2376,11 @@ No-code placeholders comment every source-label line; code actions still require
 When a Viewing session has no generated code, Code Preview and code-action replies explain its cleaning availability.
 
 Pending grid navigation yields to a later focus choice, including headers and resize controls. Virtualizing the
-original cell alone does not cancel navigation. A column-resize drag ends when the host restores view state, the
-logical view changes, or its controls become disabled; its own width updates and viewport resizing retain the drag.
+original cell alone does not cancel navigation. Pointer-down, key-down, wheel and click input within the workbench
+retires the current column reveal before its handler runs, so later renderer synchronization cannot reclaim focus for it.
+That handler may request a fresh reveal; programmatic focus restoration alone does not retire a reveal.
+A column-resize drag ends when the host restores view state, the logical view changes, or its controls become disabled;
+its own width updates and viewport resizing retain the drag.
 Changing the logical view or restoring view state resets cell selection. If a surviving grid cell has keyboard focus,
 focus follows the reset selection so Copy and keyboard navigation address the same cell. The reset does not acquire grid
 focus from another control.

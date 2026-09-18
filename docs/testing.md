@@ -692,6 +692,9 @@ owners also cover repeated session closes and successful or refused captures on 
 For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.
+Pivot wider Preview, Apply and Undo use the existing exact one-shot activation owner: retain the element and renderer,
+check native readiness, issue one native click and require its trusted-click receipt before waiting for a mutation.
+A missing click fails at activation; it does not consume the separate mutation deadline or trigger another click.
 The two Polars Formula Apply checks retain their original app identity and add bounded host and renderer state
 to timeout diagnostics, without recording cell values, generated code or alert text.
 Returned Apply errors also write a bounded diagnostic to the Open Wrangler output channel: a known error code
