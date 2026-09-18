@@ -702,11 +702,12 @@ choices and the R toolbar show the library independently of the input's base `da
 | collapse   | collapse 2.1.7 or newer                                            |
 
 All choices retain the existing type and reader requirements. Base R keeps the established native R operations,
-including the data.table helper for Pivot Wider. Non-base choices use the selected package for dataframe
+including the data.table helper for Pivot Wider. Non-base choices use the selected package for built-in cleaning
 verbs, including selection, assignment, sorting, grouping and reshaping.
 Exact scalar calculations and operation admission rules remain shared. Generated R uses the same selected verbs
-and package checks. Imports, profiling and export writers keep their shared native R implementations. Choosing
-dplyr does not convert the source to a tibble; choosing data.table or collapse likewise preserves the admitted frame class.
+and package checks. Viewing pages, filters, sorts and profiles use shared native R implementations, as do imports
+and export writers. Choosing dplyr does not convert the source to a tibble; choosing data.table or collapse likewise
+preserves the admitted frame class.
 Grouped and indexed objects remain unsupported. For data.table duplicate operations, the owning R environment's
 numeric-rounding option controls equality; other operation-specific limits below continue to apply.
 

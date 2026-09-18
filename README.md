@@ -173,8 +173,9 @@ Rscript path. Choosing R from a Python session opens a separate tab and
 preserves the existing steps. Changing an R file's import options also opens a separate session.
 
 All four R choices open and display timezone-free and nanosecond Parquet timestamps exactly. Base R and dplyr also
-support cleaning these columns. With data.table or collapse selected, viewing and export remain available; choose
-base R or dplyr in the engine picker to create a cleaning copy. Some temporal operations remain unsupported.
+support the documented row and column operations while preserving these timestamps. With data.table or collapse
+selected, viewing and export remain available; choose base R or dplyr in the engine picker to create a cleaning copy.
+Some temporal operations remain unsupported.
 See the [timestamp limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#frames-cleaning-and-export-limits).
 
 Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
@@ -207,10 +208,10 @@ Views, SQL editing, cleaning and exports are unavailable for this entry point. C
 PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
 and remote or authenticated clusters are unsupported.
 
-In our [local performance comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-17-release-preparation/review.md),
-median times favored Open Wrangler with Polars for opening files and showing the three tested column profiles.
-Data Wrangler opened already-loaded notebook dataframes sooner. Open Wrangler completed all 12 fixed notebook cleaning
-attempts; Data Wrangler completed 7 of 12, with the remaining attempts timing out.
+In our [local performance comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-19-release-preparation/review.md),
+Open Wrangler with Polars had the shortest median times for opening the tested CSV files and showing three column profiles.
+The report includes separate native R measurements, setup failures and limits. These six-column synthetic fixtures
+do not establish performance on wide tables or cold storage.
 
 ## Compatibility and limits
 
