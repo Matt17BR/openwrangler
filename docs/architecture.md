@@ -1807,6 +1807,8 @@ stays inside the correlated request error boundary: oversized ASCII string expan
 the escaped response, with a separate 17 MiB cap on the complete encoded response. These are payload bounds, not
 an exact allocation ceiling.
 Opening and editing still preflight the complete encoded reply before publishing session state.
+Replies contain primitive JSON values, protocol records and arrays. Unsupported R classes or attributes and malformed
+record keys are refused before publication; user column and nested-field names remain string values.
 
 The host reads private R response and export files through bounded, single-link identity checks. Cleanup moves the
 identified file into a private directory and verifies the same file before and after truncating it to zero bytes.

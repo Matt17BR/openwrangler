@@ -10556,51 +10556,88 @@ openwrangler_r_kernel_agent <- local({
   }
 
   ascii_json_character <- function(value, spend) {
-    fragments <- vapply(seq_len(base::length(base::unclass(value))), function(index) {
+    count <- base::length(base::unclass(value))
+    array <- count != 1L || inherits(value, "AsIs")
+    if (array) spend(2L + max(0L, count - 1L))
+    fragments <- vapply(seq_len(count), function(index) {
       ascii_json_scalar(base::.subset2(value, index), spend)
     }, character(1L), USE.NAMES = FALSE)
-    fragment <- if (base::length(base::unclass(value)) == 1L && !inherits(value, "AsIs")) {
-      base::.subset2(fragments, 1L)
-    } else {
+    if (array) {
       paste0("[", paste0(fragments, collapse = ","), "]")
+    } else {
+      base::.subset2(fragments, 1L)
     }
-    structure(fragment, class = "json")
   }
 
   ascii_json_response <- function(value, spend) {
-    if (is.character(value)) return(ascii_json_character(value, spend))
-    if (!is.list(value)) return(value)
     value_attributes <- attributes(value)
-    result <- lapply(seq_len(base::length(base::unclass(value))), function(index) {
+    if (
+      any(!names(value_attributes) %in% c("names", "class")) ||
+        (!is.null(value_attributes$class) && !identical(value_attributes$class, "AsIs"))
+    ) {
+      abort("runtime_error", "The R kernel response contains an unsupported value")
+    }
+    if (is.null(value)) {
+      spend(4L)
+      return("null")
+    }
+    if (is.character(value)) return(ascii_json_character(value, spend))
+    if (!is.logical(value) && !is.integer(value) && !is.double(value) && !is.list(value)) {
+      abort("runtime_error", "The R kernel response contains an unsupported value")
+    }
+    count <- base::length(base::unclass(value))
+    if (is.logical(value)) {
+      plain <- base::unclass(value)
+      fragments <- ifelse(is.na(plain), "null", ifelse(plain, "true", "false"))
+      spend(sum(nchar(fragments, type = "bytes")))
+      if (count == 1L && !inherits(value, "AsIs")) return(base::.subset2(fragments, 1L))
+      spend(2L + max(0L, count - 1L))
+      return(paste0("[", paste0(fragments, collapse = ","), "]"))
+    }
+    if (is.integer(value) || is.double(value)) {
+      encoded <- jsonlite::toJSON(
+        base::unclass(value),
+        auto_unbox = !inherits(value, "AsIs"),
+        digits = 17L,
+        na = "null",
+        null = "null",
+        pretty = FALSE
+      )
+      fragment <- base::.subset2(base::unclass(encoded), 1L)
+      spend(nchar(fragment, type = "bytes"))
+      return(fragment)
+    }
+    keys <- base::unclass(value_attributes$names)
+    if (!is.null(keys)) {
+      if (
+        !is.character(keys) || length(keys) != count || anyNA(keys) || any(keys == "") ||
+          anyDuplicated(keys) || any(grepl("[^\\x20-\\x7E]|[\"\\\\]", keys, perl = TRUE, useBytes = TRUE))
+      ) {
+        abort("runtime_error", "The R kernel response contains invalid record keys")
+      }
+      spend(sum(nchar(keys, type = "bytes")) + 3L * count)
+    }
+    spend(2L + max(0L, count - 1L))
+    if (count == 0L) return(if (is.null(keys)) "[]" else "{}")
+    fragments <- vapply(seq_len(count), function(index) {
       ascii_json_response(base::.subset2(value, index), spend)
-    })
-    attributes(result) <- value_attributes
-    result
+    }, character(1L), USE.NAMES = FALSE)
+    if (is.null(keys)) return(paste0("[", paste0(fragments, collapse = ","), "]"))
+    paste0("{", paste0(paste0("\"", keys, "\":", fragments), collapse = ","), "}")
   }
 
   encode_response <- function(response) {
-    # String fragments are a lower bound; jsonlite's final check still owns keys,
-    # numbers and structure. Charge repeated values before expanding their text.
-    string_bytes <- 0
+    response_bytes <- 0
     spend <- function(bytes) {
-      string_bytes <<- string_bytes + bytes
-      if (string_bytes > maximum_response_bytes) {
+      response_bytes <<- response_bytes + bytes
+      if (response_bytes > maximum_response_bytes) {
         abort("runtime_error", "The R kernel response is too large")
       }
     }
-    encoded <- jsonlite::toJSON(
-      ascii_json_response(response, spend),
-      auto_unbox = TRUE,
-      digits = 17L,
-      na = "null",
-      null = "null",
-      pretty = FALSE,
-      json_verbatim = TRUE
-    )
+    encoded <- ascii_json_response(response, spend)
     if (nchar(encoded, type = "bytes") > maximum_response_bytes) {
       abort("runtime_error", "The R kernel response is too large")
     }
-    encoded <- as.character(encoded)
     if (any(as.integer(charToRaw(encoded)) > 127L)) {
       abort("runtime_error", "The R kernel response could not be encoded as ASCII JSON")
     }

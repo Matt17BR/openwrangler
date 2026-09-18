@@ -5928,6 +5928,43 @@ local({
       "the R scalar encoder changed its exact ASCII escapes"
     )
   }
+  shape_cases <- list(
+    list(value = list(), expected = "[]"),
+    list(value = structure(list(), names = character()), expected = "{}"),
+    list(value = list(TRUE, NULL), expected = "[true,null]"),
+    list(value = I(list(1L)), expected = "[1]"),
+    list(value = I(list(value = 1L)), expected = '{"value":1}'),
+    list(value = I(TRUE), expected = "[true]"),
+    list(value = logical(), expected = "[]"),
+    list(value = c(FALSE, NA), expected = "[false,null]"),
+    list(value = I(NA_integer_), expected = "[null]"),
+    list(value = I(c(0.1, 0.30000000000000004)), expected = "[0.10000000000000001,0.30000000000000004]"),
+    list(value = c(ignored = 1L), expected = "1")
+  )
+  for (case in shape_cases) {
+    assert_identical(encoder(case$value), case$expected, "the R response encoder changed a protocol value shape")
+  }
+  invalid_values <- list(
+    as.Date("2026-09-18"), factor("value"), as.raw(1L), 1 + 2i,
+    matrix(1L, nrow = 1L), new.env(parent = emptyenv()),
+    structure("value", class = "json"), structure("value", custom = "attribute")
+  )
+  for (value in invalid_values) {
+    refusal <- tryCatch(encoder(value), error = identity)
+    assert_identical(
+      conditionMessage(refusal),
+      "The R kernel response contains an unsupported value",
+      "the R response encoder interpreted an unsupported R value"
+    )
+  }
+  for (keys in list("", NA_character_, c("same", "same"), intToUtf8(946L), "quote\"", "slash\\", "line\n")) {
+    refusal <- tryCatch(encoder(setNames(rep(list(1L), length(keys)), keys)), error = identity)
+    assert_identical(
+      conditionMessage(refusal),
+      "The R kernel response contains invalid record keys",
+      "the R response encoder repaired or published malformed record keys"
+    )
+  }
 
   exact <- encoder(list(value = strrep("x", 116L)))
   assert_identical(nchar(exact, type = "bytes"), 128L, "the exact R response byte limit changed")
