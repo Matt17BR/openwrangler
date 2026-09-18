@@ -6435,8 +6435,9 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  cast_code_helper_lines <- function() {
+  cast_code_helper_lines <- function(frame_contract) {
     c(
+      paste0("  .ow_format_iso_datetime <- ", paste(deparse(frame_contract$format_iso_datetime, width.cutoff = 500L), collapse = "\n")),
       "  .ow_cast_kind <- function(.ow_value) {",
       "    if (is.factor(.ow_value)) return(\"factor\")",
       "    if (inherits(.ow_value, \"integer64\")) return(\"integer64\")",
@@ -6533,7 +6534,7 @@ openwrangler_r_kernel_agent <- local({
       "      if (.ow_kind %in% c(\"logical\", \"integer\", \"integer64\")) return(as.character(.ow_value))",
       "      if (identical(.ow_kind, \"double\")) return(.ow_cast_double_text(.ow_value))",
       "      if (identical(.ow_kind, \"Date\")) return(format(.ow_value, \"%Y-%m-%d\"))",
-      "      if (identical(.ow_kind, \"POSIXct\")) return(format(.ow_value, \"%Y-%m-%dT%H:%M:%OS6Z\", tz = \"UTC\"))",
+      "      if (identical(.ow_kind, \"POSIXct\")) return(.ow_format_iso_datetime(.ow_value, \"UTC\", utc_suffix = TRUE))",
       "      .ow_duration <- as.double(.ow_value, units = attr(.ow_value, \"units\"))",
       "      .ow_number <- .ow_cast_double_text(.ow_duration)",
       "      .ow_number[is.nan(.ow_duration)] <- NA_character_",
@@ -8777,7 +8778,7 @@ openwrangler_r_kernel_agent <- local({
       )
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
-      lines <- c(lines, cast_code_helper_lines())
+      lines <- c(lines, cast_code_helper_lines(frame_contract))
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn") && !is.null(step$inputFormat), logical(1L)))) {
       lines <- c(lines, "  .ow_cast_fixed_date_text <-", paste0("  ", deparse(frame_contract$cast_fixed_date_text, width.cutoff = 500L)))

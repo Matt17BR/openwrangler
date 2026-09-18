@@ -1655,7 +1655,11 @@ are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the th
 `GRP_df` and `indexed_frame` do not.
 
 Display text is independent of `OutDec` and the process time zone. POSIXct with a null or empty zone displays in UTC
-while preserving that original metadata. Explicit bounded row labels follow their source rows through sorting.
+while preserving that original metadata. Default POSIXct display and Convert Type to text round fractional seconds
+to six decimal places before formatting the calendar portion; Convert Type uses UTC with `Z`. Raw values and source
+metadata remain unchanged. Explicit Format Datetime keeps native R directives, including `%OS6` truncation. One Hot
+keeps its existing truncated timestamp labels because they are persistent column names in saved plans.
+Explicit bounded row labels follow their source rows through sorting.
 Aligned plain column-element names are inert metadata, not row or column identity. Compact zero-row frames and
 zero-column sources retain their row count and labels; column lengths must still agree. Custom Code can create the
 first column, and Drop Missing Rows or Drop Duplicates can retain an empty schema. Custom Code output must have a column;

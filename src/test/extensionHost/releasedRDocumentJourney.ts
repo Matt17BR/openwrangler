@@ -636,6 +636,7 @@ export function createReleasedRDocumentJourney({
         parquetPage.page.rows.slice(0, 2).map((row) => row.values[7]?.display),
         ["0", "9223372036854775807"]
       );
+      assert.equal(parquetPage.page.rows[1]?.values[4]?.display, "2041-05-10T11:56:53.685247");
       assert.deepEqual(
         parquetPage.page.rows.map((row) => row.values.slice(8).map((cell) => cell.display)),
         [
