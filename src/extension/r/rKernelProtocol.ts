@@ -54,15 +54,20 @@ const maximumViewValueTextBytes = MAX_VIEW_VALUE_TEXT_CHARACTERS * 4;
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
   "invalid_request",
+  "invalid_source",
   "missing_package",
+  "operation-output-too-large",
   "page_too_large",
   "profile_too_large",
+  "read_in_progress",
   "runtime_error",
   "redo_unavailable",
   "stale_column",
   "stale_revision",
+  "unknown_profile",
   "unknown_session",
   "unknown_variable",
+  "unsupported_library",
   "unsupported_operation",
   "unsupported_frame"
 ] as const);
