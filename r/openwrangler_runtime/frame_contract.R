@@ -2990,13 +2990,20 @@ openwrangler_r_frame_contract <- local({
     exact_profile_integer_text_cell(exact, budget, label)
   }
 
+  integer64_profile_range <- function(values) {
+    native_range <- get("range.integer64", envir = asNamespace("bit64"), inherits = FALSE)
+    integer64_as_character(native_range(values), ensure_integer64_bindings())
+  }
+
   exact_integer_extrema <- function(column, semantics, present_indices, budget, label) {
     if (length(present_indices) == 0L || !semantics$kind %in% c("integer", "integer64")) return(list())
     if (semantics$kind == "integer64") {
       values <- integer64_subset(column, present_indices)
-      ascending <- order_integer64(values, FALSE)
-      minimum_index <- present_indices[[ascending[[1L]]]]
-      maximum_index <- present_indices[[ascending[[length(ascending)]]]]
+      extrema <- integer64_profile_range(values)
+      return(list(
+        exactMin = exact_profile_integer_text_cell(extrema[[1L]], budget, paste0(label, " minimum")),
+        exactMax = exact_profile_integer_text_cell(extrema[[2L]], budget, paste0(label, " maximum"))
+      ))
     } else {
       values <- column[present_indices]
       minimum_index <- present_indices[[which.min(values)]]
@@ -3430,9 +3437,9 @@ openwrangler_r_frame_contract <- local({
           if (kind %in% c("integer", "integer64")) {
             exact_sum <- add_signed_decimal(exact_sum, exact_integer_sum_text(present, kind))
             if (kind == "integer64") {
-              ascending <- order_integer64(present, FALSE)
-              candidate_minimum <- as.character(unname(present[ascending[[1L]]]))
-              candidate_maximum <- as.character(unname(present[ascending[[length(ascending)]]]))
+              extrema <- integer64_profile_range(present)
+              candidate_minimum <- extrema[[1L]]
+              candidate_maximum <- extrema[[2L]]
             } else {
               candidate_minimum <- as.character(min(present))
               candidate_maximum <- as.character(max(present))
@@ -9155,7 +9162,23 @@ openwrangler_r_frame_contract <- local({
       }
       return(total)
     }
-    for (value in as.character(values)) total <- add_signed_decimal(total, value)
+    namespace <- asNamespace("bit64")
+    divide <- get("%/%.integer64", envir = namespace, inherits = FALSE)
+    modulo <- get("%%.integer64", envir = namespace, inherits = FALSE)
+    to_double <- get("as.double.integer64", envir = namespace, inherits = FALSE)
+    subset <- get("[.integer64", envir = namespace, inherits = FALSE)
+    limb_base <- get("as.integer64.character", envir = namespace, inherits = FALSE)("4294967296")
+    # Native floor quotient/remainder preserve every bit. These batches keep
+    # both limb totals below 2^48; scaling the high limb by 2^32 is exact.
+    batch_size <- 65536L
+    for (start in seq.int(1L, length(values), by = batch_size)) {
+      end <- min(length(values), start + batch_size - 1L)
+      batch <- subset(values, seq.int(start, end))
+      high <- sum(to_double(divide(batch, limb_base)))
+      low <- sum(to_double(modulo(batch, limb_base)))
+      batch_total <- add_signed_decimal(sprintf("%.0f", high * 4294967296), sprintf("%.0f", low))
+      total <- add_signed_decimal(total, batch_total)
+    }
     total
   }
 
