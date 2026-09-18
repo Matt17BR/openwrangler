@@ -116,8 +116,8 @@ Required-document, generated-reference and release-document checks still run and
   harnesses do not consume them. Nested tests, unit/cross tests and shared fixtures are outside
   this permission.
 - Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests,
-  `scripts/capture-screenshots.mjs`, `scripts/capture-screenshots-readiness.mjs`, `scripts/compose-readme-media.mjs` and
-  `scripts/ci-docs-only.test.mjs`, enumerated in
+  `scripts/capture-screenshots.mjs`, `scripts/capture-screenshots-readiness.mjs`, `scripts/compose-readme-media.mjs`,
+  `scripts/test-webview-accessibility.mjs` and `scripts/ci-docs-only.test.mjs`, enumerated in
   [`ci-docs-only.mjs`](../scripts/ci-docs-only.mjs). These edits keep `docs_only=false`, so Source runs Vitest, the Node
   script owners and the Node 22 build, and packaged smoke retains both Linux VS Code launches.
 - ESLint, Node 24 type checking, Vitest and the minimum/stable VS Code launches may be omitted only for the allowed
@@ -177,9 +177,10 @@ and editor jobs do not load these tests. Their production modules remain outside
 The CI proof test uses Node, temporary Git histories and controlled workflow guards. Source executes it for every
 change; the native and installed suites do not load it. The production proof script remains outside this permission.
 
-The two capture scripts generate real Python-backed browser fixtures, but the omitted native suites do not consume
-these generators. Their required [local browser acceptance](testing.md) still owns fixture execution, images and
-interactions; retained Source and Linux package checks do not replace it. The compositor reads and crops existing PNGs
+The capture scripts generate real Python-backed browser fixtures; the browser interaction script reads their HTML
+in Chromium. Native and installed-editor suites do not load these entry points, and they are excluded from the VSIX.
+Their required [local browser acceptance](testing.md) still owns fixture execution, images and interactions;
+retained Source and Linux package checks do not execute or replace it. The compositor reads and crops existing PNGs
 offline. It and its outputs are excluded from the VSIX and are not consumed by native or installed-editor checks.
 Composition verification and visual review remain local; CI does not run the compositor or establish image accuracy.
 Media-only omissions give up fresh Python/Spark, R, macOS and Windows packaging, editor and environment observations,
@@ -187,7 +188,7 @@ and Windows filesystem and process checks. Retained Linux checks do not establis
 Shared browser and preflight helpers, including `scripts/public-media-contract.mjs`, remain outside this permission.
 
 These omissions reduce unrelated work for documentation changes, webview edits, private component tests, isolated engine changes,
-release-policy edits, CI proof test edits, local screenshot-tool edits and the allowed installed-harness edits.
+release-policy edits, CI proof test edits, local screenshot and browser-interaction edits, and the allowed installed-harness edits.
 They provide no fresh or transferred test result and can delay discovery of unrelated dependency, editor installation
 or hosted-environment regressions.
 Scheduled R 4.4 qualification does not replace R 4.5 coverage. Release qualification remains separate.
