@@ -2368,7 +2368,25 @@ openwrangler_r_frame_contract <- local({
   }
 
   ascii_fold <- function(value) {
-    chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
+    if (length(value) <= 1L) {
+      return(chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value))
+    }
+    result <- character(length(value))
+    start <- 1
+    while (start <= length(value)) {
+      count <- min(maximum_profile_chunk_rows, length(value) - start + 1L)
+      positions <- seq.int(start, length.out = count)
+      batch <- value[positions]
+      distinct <- unique(batch)
+      result[positions] <- if (length(distinct) == length(batch)) {
+        chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", batch)
+      } else {
+        chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", distinct)[match(batch, distinct)]
+      }
+      start <- start + count
+    }
+    attributes(result) <- attributes(value)
+    result
   }
 
   compare_integer_keys <- function(keys, target, operator) {

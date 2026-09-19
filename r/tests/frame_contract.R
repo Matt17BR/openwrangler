@@ -7834,6 +7834,42 @@ assert_identical(
 
 local({
   runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
+  folded_strings <- 0L
+  assign("chartr", function(old, new, x) {
+    folded_strings <<- folded_strings + length(x)
+    base::chartr(old, new, x)
+  }, runtime)
+  on.exit(rm("chartr", envir = runtime), add = TRUE)
+  values <- rep(c("ALpHa", "beta", "CAF\u00c9", "aLPHa"), length.out = 65541L)
+  values[c(2L, 65537L)] <- NA_character_
+  names(values) <- c("first", rep("", length(values) - 2L), "last")
+  expected <- rep(c("alpha", "beta", "caf\u00c9", "alpha"), length.out = length(values))
+  expected[c(2L, 65537L)] <- NA_character_
+  names(expected) <- names(values)
+  before <- serialize(values, NULL, version = 3L)
+  fold <- get("ascii_fold", runtime, inherits = FALSE)
+  assert_identical(fold(values), expected, "batched ASCII folding changed repeated values, names or missing positions")
+  assert_identical(serialize(values, NULL, version = 3L), before, "ASCII folding changed its input")
+  assert_true(folded_strings <= 10L, "ASCII folding repeated conversion for every occurrence of a value")
+
+  frame <- data.frame(text = unname(values))
+  source_before <- serialize(frame, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  positions <- seq_along(values)
+  expected_rows <- positions[(positions - 1L) %% 4L %in% c(0L, 3L) & !is.na(values)]
+  folded_strings <- 0L
+  page <- openwrangler_r_frame_contract$materialize_view_page(capture,
+    view_query(filters = list(column_filter("r:c:0", "text", "string", list(predicate("contains", "ALP"))))),
+    row_offset = length(expected_rows) - 5L, row_limit = 5L)
+  assert_identical(page$page$totalRows, length(expected_rows), "repeated-text filtering changed its full population")
+  assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", tail(expected_rows, 5L) - 1L),
+    "repeated-text filtering lost source row IDs across its batch boundary")
+  assert_true(folded_strings <= 9L, "contains repeated case conversion for every present source row")
+  assert_identical(serialize(frame, NULL, version = 3L), source_before, "repeated-text filtering changed its source")
+})
+
+local({
+  runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
   native_missing_masks <- get("profile_missing_masks", runtime, inherits = FALSE)
   masked_rows <- 0L
   assign("profile_missing_masks", function(column, ...) {

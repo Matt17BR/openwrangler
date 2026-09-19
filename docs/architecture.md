@@ -1785,6 +1785,9 @@ factor distributions retain exact counts and distinct values within 10,000 keys 
 A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
 fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
+ASCII-insensitive contains predicates and value search fold repeated normalized strings once per batch of at most
+65,536 values, then restore their original positions. The full folded vector remains allocated. Duplicate lookup adds
+work for unique text and can increase temporary heap use. Scalar searches keep the direct conversion path.
 Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
 current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave
 source levels, ordering and encodings unchanged. Live and generated Filter Rows and Conditional Column use normalized
