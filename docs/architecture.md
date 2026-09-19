@@ -1720,6 +1720,7 @@ value selections, stable ties and per-key missing placement share the cleaning F
 may retain a compatible data-table key; explicit sorting clears the data-table key. `NA` and
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
+Native R combines masks incrementally, avoiding lists of every condition and column mask while still evaluating every condition.
 Date value selections and profile keys group positive and negative zero as the same epoch day without changing
 source storage. POSIXct and difftime keys retain their existing signed-zero identities.
 The shared integer64 ordering helper uses canonical decimal text from the verified native converter, then stable radix ordering

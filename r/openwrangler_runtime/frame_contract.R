@@ -2468,11 +2468,11 @@ openwrangler_r_frame_contract <- local({
 
   filter_row_positions <- function(frame, descriptor, resolved) {
     row_count <- descriptor$shape$rows
-    column_masks <- list()
+    rows_mask <- NULL
     for (filter in resolved$filters) {
       column <- frame[[filter$position]]
       semantics <- descriptor$schema[[filter$position]]$semantics
-      conditions <- list()
+      column_mask <- NULL
       value_filter <- filter$valueFilter
       if (!is.null(value_filter) && (
         length(value_filter$selectedKeys) > 0L || isTRUE(value_filter$includeNulls) || isTRUE(value_filter$includeNaN)
@@ -2488,33 +2488,26 @@ openwrangler_r_frame_contract <- local({
         }
         if (isTRUE(value_filter$includeNulls)) current <- current | missing$null
         if (isTRUE(value_filter$includeNaN)) current <- current | missing$nan
-        conditions[[length(conditions) + 1L]] <- current
+        column_mask <- current
       }
       for (predicate in filter$predicates) {
-        conditions[[length(conditions) + 1L]] <- predicate_mask(
+        current <- predicate_mask(
           column,
           descriptor$schema[[filter$position]],
           predicate
         )
+        column_mask <- if (is.null(column_mask)) current else if (identical(filter$logic, "or")) {
+          column_mask | current
+        } else column_mask & current
       }
-      if (length(conditions) > 0L) {
-        combined <- conditions[[1L]]
-        if (length(conditions) > 1L) {
-          for (index in 2:length(conditions)) {
-            combined <- if (identical(filter$logic, "or")) combined | conditions[[index]] else combined & conditions[[index]]
-          }
-        }
-        column_masks[[length(column_masks) + 1L]] <- combined
-      }
-    }
-    if (length(column_masks) == 0L) return(seq_len(row_count))
-    combined <- column_masks[[1L]]
-    if (length(column_masks) > 1L) {
-      for (index in 2:length(column_masks)) {
-        combined <- if (identical(resolved$logic, "or")) combined | column_masks[[index]] else combined & column_masks[[index]]
+      if (!is.null(column_mask)) {
+        rows_mask <- if (is.null(rows_mask)) column_mask else if (identical(resolved$logic, "or")) {
+          rows_mask | column_mask
+        } else rows_mask & column_mask
       }
     }
-    which(combined)
+    if (is.null(rows_mask)) return(seq_len(row_count))
+    which(rows_mask)
   }
 
   resolve_profile_columns <- function(column_references, descriptor) {

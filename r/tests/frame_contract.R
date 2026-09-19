@@ -7893,6 +7893,25 @@ local({
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
     query <- view_query(filters = list(column_filter("r:c:0", "text", "string", list(predicate("contains", "keep")))))
     assert_error(openwrangler_r_frame_contract$materialize_view_page(capture, query, row_limit = 1L), case$code)
+    decisive_frame <- data.frame(gate = c(TRUE, TRUE), text = frame$text[c(1L, 3L)])
+    decisive_before <- serialize(decisive_frame, NULL, version = 3L)
+    decisive_capture <- openwrangler_r_frame_contract$capture_live_frame(function() decisive_frame)
+    for (logic in c("and", "or")) {
+      decisive <- predicate(if (logic == "and") "isNull" else "isNotNull")
+      queries <- list(
+        view_query(filters = list(column_filter("r:c:1", "text", "string",
+          list(decisive, predicate("contains", "keep")), logic = logic))),
+        view_query(filters = list(
+          column_filter("r:c:0", "gate", "boolean", list(decisive)),
+          column_filter("r:c:1", "text", "string", list(predicate("contains", "keep")))
+        ), logic = logic)
+      )
+      for (query in queries) {
+        assert_error(openwrangler_r_frame_contract$materialize_view_page(decisive_capture, query, row_limit = 1L), case$code)
+      }
+    }
+    assert_identical(serialize(decisive_frame, NULL, version = 3L), decisive_before,
+      "a failed compound filter changed its source")
   }
 })
 
@@ -7994,7 +8013,10 @@ outer_or_page <- openwrangler_r_frame_contract$materialize_view_page(
   view_query(
     filters = list(
       column_filter("r:c:0", "text", "string", list(predicate("equals", "beta"))),
-      column_filter("r:c:6", "flag", "boolean", list(predicate("equals", TRUE)))
+      column_filter("r:c:6", "flag", "boolean", list(predicate("equals", TRUE))),
+      column_filter("r:c:1", "amount", "float", value_filter = list(
+        kind = "values", selectedValues = list(), includeNulls = FALSE, includeNaN = FALSE
+      ))
     ),
     logic = "or"
   ),

@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Changed
 
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
+- R compound filters combine row masks incrementally instead of retaining every condition's mask.
 
 ### Fixed
 
