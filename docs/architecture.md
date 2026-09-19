@@ -1720,6 +1720,7 @@ value selections, stable ties and per-key missing placement share the cleaning F
 may retain a compatible data-table key; explicit sorting clears the data-table key. `NA` and
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
+Native R combines masks incrementally, avoiding lists of every condition and column mask while still evaluating every condition.
 Date value selections and profile keys group positive and negative zero as the same epoch day without changing
 source storage. POSIXct and difftime keys retain their existing signed-zero identities.
 The shared integer64 ordering helper uses canonical decimal text from the verified native converter, then stable radix ordering
@@ -1775,6 +1776,8 @@ Integer64 extrema use the package's native range reduction without sorting every
 bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation
 and sums beyond the integer64 range without per-row decimal arithmetic. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
+A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
+fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
 Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
 current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave
@@ -1798,9 +1801,10 @@ a nonempty search scans exactly in bounded chunks and refuses more than 10,000 d
 These memory bounds do not imply that IRkernel can interrupt dispatched work. Dataset-statistics counts and their
 filtered row total come from the same request.
 
-Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating,
-datetime and duration columns compare native values directly. Picker selections use the source value instead of
-reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
+Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Ordinary integer, Date,
+floating, datetime and duration predicates compare native values directly, without formatting source rows as text.
+Integer and Date predicates still convert their bound operand keys numerically. Picker selections use the source value
+instead of reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
 The shared finite-number parser normalizes accepted decimal spellings for the existing jsonlite decoder; it keeps
 native numeric inputs, signed zero and the existing grammar and range checks. Public scalar Fill still accepts
 replacement text, binds double replacements once and emits that bound value through the existing numeric-literal

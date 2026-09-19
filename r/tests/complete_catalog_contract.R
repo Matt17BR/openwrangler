@@ -238,11 +238,13 @@ catalog_cases <- list(
       latin1 <- rawToChar(as.raw(c(99, 97, 102, 233)))
       Encoding(latin1) <- "latin1"
       data.frame(
-        group = c(rep("a", 6L), "b", "a", "a"),
-        text = c(latin1, "caf\u00e9", "drop", "caf\u00e9", "caf\u00e9", NA_character_, rep("caf\u00e9", 3L)),
-        category = factor(c("keep-end", "keep-end", "keep-end", "other-end", "keep-other", NA_character_, rep("keep-end", 3L))),
-        day = structure(c(-1/Inf, rep(0, 6L), 1, NA_real_), class = "Date"),
-        ordinal = 1:9
+        group = c(rep("a", 6L), "b", rep("a", 4L)),
+        text = c(latin1, "caf\u00e9", "drop", "caf\u00e9", "caf\u00e9", NA_character_, rep("caf\u00e9", 5L)),
+        category = factor(c("keep-end", "keep-end", "keep-end", "other-end", "keep-other", NA_character_, rep("keep-end", 5L))),
+        day = structure(c(-1/Inf, rep(0, 6L), 1, NA_real_, 0, 0), class = "Date"),
+        whole = c(10L, .Machine$integer.max, rep(10L, 7L), 2L, 10L),
+        predicate_day = as.Date(c(-1, 2, rep(0, 8L), -2), origin = "1970-01-01"),
+        ordinal = 1:11
       )
     },
     step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(
@@ -257,7 +259,12 @@ catalog_cases <- list(
             list(kind = "predicate", operator = "endsWith", value = "end")))),
         list(column = column_reference(frame, "day"), type = "date",
           predicates = I(list()), valueFilter = list(kind = "values",
-            selectedValues = I(list("1970-01-01")), includeNulls = FALSE, includeNaN = FALSE))
+            selectedValues = I(list("1970-01-01")), includeNulls = FALSE, includeNaN = FALSE)),
+        list(column = column_reference(frame, "whole"), type = "integer",
+          predicates = I(list(list(kind = "predicate", operator = "gte", value = "10")))),
+        list(column = column_reference(frame, "predicate_day"), type = "date",
+          predicates = I(list(list(kind = "predicate", operator = "between",
+            value = "1969-12-31", secondValue = "1970-01-03"))))
       )),
       sort = I(list())
     ))),
@@ -727,6 +734,32 @@ for (library in c("dplyr", "data.table", "collapse")) {
   }
 }
 
+
+local({
+  cases <- list(
+    integer = list(
+      source = function() data.frame(value = c(-.Machine$integer.max, -10L, -1L, 0L, 2L, 10L, .Machine$integer.max, NA_integer_)),
+      step = function(frame, id) step_with(id, "conditionalColumn", list(
+        column = column_reference(frame, "value"), columnType = "integer",
+        predicate = list(kind = "predicate", operator = "gte", value = "10"), newColumn = "matches",
+        resultType = "boolean", trueValue = TRUE, falseValue = FALSE, missingValue = NULL)),
+      verify = function(output, input) assert_identical(output$matches,
+        c(FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NA), "integer Conditional Column compared decimal keys lexically")
+    ),
+    date = list(
+      source = function() data.frame(value = as.Date(c(-366, -10, -1, 0, 2, 10, 366, NA_real_), origin = "1970-01-01")),
+      step = function(frame, id) step_with(id, "conditionalColumn", list(
+        column = column_reference(frame, "value"), columnType = "date",
+        predicate = list(kind = "predicate", operator = "between", value = "1969-12-31", secondValue = "1970-01-03"),
+        newColumn = "matches", resultType = "boolean", trueValue = TRUE, falseValue = FALSE, missingValue = NULL)),
+      verify = function(output, input) assert_identical(output$matches,
+        c(FALSE, FALSE, TRUE, TRUE, TRUE, FALSE, FALSE, NA), "Date Conditional Column changed inclusive epoch bounds")
+    )
+  )
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) run_catalog_case(cases[[index]], "conditionalColumn", 6200L + index, library)
+  }
+})
 
 local({
   previous_locale <- Sys.getlocale("LC_CTYPE")

@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
+- R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
+- R compound filters combine row masks incrementally instead of retaining every condition's mask.
+
 ### Fixed
 
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.

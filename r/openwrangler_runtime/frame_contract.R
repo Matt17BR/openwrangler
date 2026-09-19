@@ -2416,7 +2416,7 @@ openwrangler_r_frame_contract <- local({
     present <- !missing$null & !missing$nan
     present_indices <- which(present)
     native_numeric <- semantics$kind %in% c("double", "datetime", "difftime")
-    keys <- if (native_numeric) NULL else profile_value_keys(column, semantics, present_indices)
+    keys <- if (native_numeric || semantics$kind %in% c("integer", "date")) NULL else profile_value_keys(column, semantics, present_indices)
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
@@ -2435,9 +2435,7 @@ openwrangler_r_frame_contract <- local({
       if (semantics$kind %in% c("integer64", "clock_datetime")) {
         compare_integer_keys(keys, target, comparison_operator)
       } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
-        left <- if (identical(semantics$kind, "double")) column[present_indices] else if (native_numeric) {
-          numeric_profile_values(column, semantics, present_indices)
-        } else suppressWarnings(as.double(keys))
+        left <- if (identical(semantics$kind, "double")) column[present_indices] else numeric_profile_values(column, semantics, present_indices)
         right <- if (native_numeric) target else suppressWarnings(as.double(target))
         switch(
           comparison_operator,
@@ -2470,11 +2468,11 @@ openwrangler_r_frame_contract <- local({
 
   filter_row_positions <- function(frame, descriptor, resolved) {
     row_count <- descriptor$shape$rows
-    column_masks <- list()
+    rows_mask <- NULL
     for (filter in resolved$filters) {
       column <- frame[[filter$position]]
       semantics <- descriptor$schema[[filter$position]]$semantics
-      conditions <- list()
+      column_mask <- NULL
       value_filter <- filter$valueFilter
       if (!is.null(value_filter) && (
         length(value_filter$selectedKeys) > 0L || isTRUE(value_filter$includeNulls) || isTRUE(value_filter$includeNaN)
@@ -2490,33 +2488,26 @@ openwrangler_r_frame_contract <- local({
         }
         if (isTRUE(value_filter$includeNulls)) current <- current | missing$null
         if (isTRUE(value_filter$includeNaN)) current <- current | missing$nan
-        conditions[[length(conditions) + 1L]] <- current
+        column_mask <- current
       }
       for (predicate in filter$predicates) {
-        conditions[[length(conditions) + 1L]] <- predicate_mask(
+        current <- predicate_mask(
           column,
           descriptor$schema[[filter$position]],
           predicate
         )
+        column_mask <- if (is.null(column_mask)) current else if (identical(filter$logic, "or")) {
+          column_mask | current
+        } else column_mask & current
       }
-      if (length(conditions) > 0L) {
-        combined <- conditions[[1L]]
-        if (length(conditions) > 1L) {
-          for (index in 2:length(conditions)) {
-            combined <- if (identical(filter$logic, "or")) combined | conditions[[index]] else combined & conditions[[index]]
-          }
-        }
-        column_masks[[length(column_masks) + 1L]] <- combined
-      }
-    }
-    if (length(column_masks) == 0L) return(seq_len(row_count))
-    combined <- column_masks[[1L]]
-    if (length(column_masks) > 1L) {
-      for (index in 2:length(column_masks)) {
-        combined <- if (identical(resolved$logic, "or")) combined | column_masks[[index]] else combined & column_masks[[index]]
+      if (!is.null(column_mask)) {
+        rows_mask <- if (is.null(rows_mask)) column_mask else if (identical(resolved$logic, "or")) {
+          rows_mask | column_mask
+        } else rows_mask & column_mask
       }
     }
-    which(combined)
+    if (is.null(rows_mask)) return(seq_len(row_count))
+    which(rows_mask)
   }
 
   resolve_profile_columns <- function(column_references, descriptor) {
@@ -3363,35 +3354,41 @@ openwrangler_r_frame_contract <- local({
             if (!is.null(state$text_counts)) {
               first <- !duplicated(text_values)
               keys <- text_values[first]
-              sources <- present_sources[first]
-              counts <- tabulate(match(text_values, keys), nbins = length(keys))
-              new_keys <- character(length(keys))
-              new_sources <- integer(length(keys))
-              new_count <- 0L
-              for (index in seq_along(keys)) {
-                key <- keys[[index]]
-                environment_key <- paste0(":", key)
-                if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
-                  assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
-                } else {
-                  next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
-                  if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
-                      next_bytes > maximum_column_value_distinct_key_bytes) {
-                    state$text_counts <- NULL
-                    state$text_keys <- character()
-                    state$text_first_sources <- integer()
-                    break
+              if (length(keys) > maximum_column_value_distinct_matches) {
+                state$text_counts <- NULL
+                state$text_keys <- character()
+                state$text_first_sources <- integer()
+              } else {
+                sources <- present_sources[first]
+                counts <- tabulate(match(text_values, keys), nbins = length(keys))
+                new_keys <- character(length(keys))
+                new_sources <- integer(length(keys))
+                new_count <- 0L
+                for (index in seq_along(keys)) {
+                  key <- keys[[index]]
+                  environment_key <- paste0(":", key)
+                  if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
+                    assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
+                  } else {
+                    next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
+                    if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
+                        next_bytes > maximum_column_value_distinct_key_bytes) {
+                      state$text_counts <- NULL
+                      state$text_keys <- character()
+                      state$text_first_sources <- integer()
+                      break
+                    }
+                    assign(environment_key, as.double(counts[[index]]), state$text_counts)
+                    state$text_key_bytes <- next_bytes
+                    new_count <- new_count + 1L
+                    new_keys[[new_count]] <- key
+                    new_sources[[new_count]] <- sources[[index]]
                   }
-                  assign(environment_key, as.double(counts[[index]]), state$text_counts)
-                  state$text_key_bytes <- next_bytes
-                  new_count <- new_count + 1L
-                  new_keys[[new_count]] <- key
-                  new_sources[[new_count]] <- sources[[index]]
                 }
-              }
-              if (!is.null(state$text_counts) && new_count != 0L) {
-                state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
-                state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
+                if (!is.null(state$text_counts) && new_count != 0L) {
+                  state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
+                  state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
+                }
               }
             }
           } else if (state$kind == "clock_datetime") {
