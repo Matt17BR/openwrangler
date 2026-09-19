@@ -6,12 +6,15 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Local R files reuse unchanged filtered sort order across grid pages.
+- R text filters and value search reuse case conversion for repeated values within bounded batches.
 - R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
 - R compound filters combine row masks incrementally instead of retaining every condition's mask.
 
 ### Fixed
 
+- Opening a local R file column's unfiltered value picker preserves the grid's cached filter and sort order.
 - Generated R Filter Rows and Conditional Column agree with live integer64 comparisons at the minimum signed 64-bit bound.
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.
 - R Date value selections keep all rows for 1970-01-01, including dates stored as negative zero. Pickers and profiles count those dates together.

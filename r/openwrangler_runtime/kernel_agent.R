@@ -11134,7 +11134,8 @@ openwrangler_r_kernel_agent <- local({
         limit <- whole_number(payload$limit, "request.payload.limit", 10000L)
         if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive")
         session <- get(session_id, envir = sessions, inherits = FALSE)
-        result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit, filter_cache)
+        result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit,
+          if (length(view$filters) == 0L) NULL else filter_cache)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,

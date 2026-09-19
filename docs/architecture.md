@@ -1729,16 +1729,38 @@ Live cache integrity and sort-cache freshness checks compare floating-point stor
 attribute checks. This distinguishes integer64 values and missing sentinels that R's default `identical()` comparison
 treats as equal.
 
+Base R, dplyr, data.table and collapse share these viewing calculations. Library selection changes supported cleaning
+verbs and generated code. The [performance review](https://github.com/Matt17BR/openwrangler/issues/1622) records the
+measurements and alternatives behind the current decisions; opening a source with each library checks compatibility,
+not comparative package speed.
+
+| Calculation     | Current decision                                                                                                                                                                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Filters         | Keep typed native masks and physical row positions. Direct numeric comparisons, incremental mask combination and bounded text-fold reuse remove measured work while preserving the common predicate rules.                                                                                            |
+| Sorts           | Keep stable native radix, exact integer64 and vctrs clock ordering, with bounded managed-file order reuse. Alternative integer64 ranking calls either failed exact-range controls or required additional method ownership and copies. Existing selected-package cleaning adapters are unaffected.     |
+| Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary. Sampled attribution identified drawer-only work, but its remaining inline cost still needs isolation before deciding whether partial summaries justify another request and cache state. |
+
+These choices have costs: text-fold reuse can slow unique-text inputs and increase temporary heap use; sorted reuse
+adds source-order recovery and can retain extra pending-profile vectors. Initial filters and sorts remain synchronous,
+and sort changes reset UI profiling. The measurements do not establish that shared code is fastest for every input.
+
 Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
-value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation;
-sorts still order the selected rows separately. The unsorted integer positions and filter key together may occupy
-at most 64 MiB. A miss releases the old entry before scanning; oversized selections remain usable without retention.
-Empty filters, source-reaching edits or replay, session close and agent disposal release the entry. Invalidation
-precedes execution and cleanup, including their failure paths. Initial opening, inspection and mutation responses
-do not populate it; later reads may reuse a published active draft. The retained capture is already owned by its
-session. The entry's byte bound excludes that frame and row vectors independently retained by pending profiles. The existing
-32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and uncached filter
-selection still runs synchronously.
+value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation.
+The entry holds one integer position vector, in source order or the last requested sort order. Pages with the same
+resolved sort rules reuse that order. Sort changes start from physical capture order so ties remain stable.
+Unsorted pages, profiles and value queries recover source order without replacing the cached sort; that recovery
+adds work and allocates another vector. Pending profiles may each retain a recovered vector until completion.
+The positions, filter key and sort rules together may occupy at most 64 MiB. A filter miss releases the old entry
+before scanning; oversized selections remain usable without retention. Once filter membership is retained, a failed
+sort or over-budget sort metadata leaves that entry intact. This bound excludes the session-owned frame and
+pending-profile vectors.
+Empty page and profile filters release the entry. An auxiliary value lookup with no remaining filters bypasses the
+cache, preserving the grid's existing selection and order; a nonempty lookup uses the usual replacement rules.
+Source-reaching edits or replay, session close and agent disposal also release it before execution or cleanup can
+fail. Initial opening, inspection and mutation responses do not populate it; later reads may reuse a published active draft.
+The existing 32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and
+uncached filtering and sorting still run synchronously. Reuse does not promise a net improvement for every query
+sequence: changing sort also resets UI profiling, and each new profile may need source-order recovery.
 
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
@@ -1779,6 +1801,9 @@ factor distributions retain exact counts and distinct values within 10,000 keys 
 A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
 fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
+ASCII-insensitive contains predicates and value search fold repeated normalized strings once per batch of at most
+65,536 values, then restore their original positions. The full folded vector remains allocated. Duplicate lookup adds
+work for unique text and can increase temporary heap use. Scalar searches keep the direct conversion path.
 Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
 current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave
 source levels, ordering and encodings unchanged. Live and generated Filter Rows and Conditional Column use normalized

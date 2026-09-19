@@ -351,6 +351,9 @@ results, checking exact live agreement, source preservation and no publication o
 Existing frame and row-operation owners check text and factor comparisons under the C locale, including source
 encodings, unused levels, missing values and complete generated results. Factor key preparation retains native
 invalid-code refusal; the catalog checks Filter Rows and Conditional Column across all four cleaning libraries.
+The frame interactive text case bounds repeated-string case conversion across a batch boundary and checks exact
+matches, names and source preservation. Existing kernel row cases own Conditional Column contains agreement;
+catalog Filter Rows retains its all-library contains coverage.
 Library selection extends these existing owners: every supported catalog operation needs live/generated agreement
 for base R, dplyr, data.table and collapse, with expected values and unchanged source. Generated programs must resolve
 their own emitted helpers and dependencies. Focused native cases own package equality, grouping order, duplicate
@@ -379,8 +382,10 @@ integer64 fixture checks exact typed bounds; large integer64 arithmetic and dist
 The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
 Managed file profiling extends these owners with synchronous/continued result equality, fresh native-binding checks
 after a yield, retained-job cleanup and exclusion of mutation or replay from another session.
-The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file filter membership reuse across reads,
-capture and filter identity, byte-bound fallback, source validation and release before execution or cleanup failures.
+The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file membership and sorted-page reuse,
+source-order profiles, stable ties, capture/filter/sort identity, key-inclusive byte bounds, source validation and
+release before execution or cleanup failures. It also checks auxiliary picker retention, empty-view eviction and
+pending membership after replacement.
 The [process transport unit owner](../src/test/rProcessTransport.unit.test.ts) checks page admission, the original deadline,
 stale queued advances, exclusive-request fairness and cleanup of ambiguous begins against the captured child.
 Measure actual queued-page latency, setup, finalization, total work
