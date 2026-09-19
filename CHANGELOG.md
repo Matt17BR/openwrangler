@@ -44,7 +44,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
-- R character filters and Conditional Column accept valid unmarked UTF-8 under the C locale, with matching generated R and unchanged source encodings.
+- R text and factor comparisons accept valid unmarked UTF-8 under the C locale. Viewing filters, Filter Rows and Conditional Column match labels consistently. Generated R preserves those matches and value selections without changing source encodings.
 - Native R refusals retain their original explanation instead of becoming malformed-response errors or triggering unnecessary recovery.
 - Large R integer64 profiles compute exact sums and extrema with less repeated work.
 - R `POSIXct` display, copied cells and Convert Type to text use consistent microsecond rounding, including generated R. This fixes a one-microsecond display error without changing source values, explicit Format Datetime or existing One Hot column names.
