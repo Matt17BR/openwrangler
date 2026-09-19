@@ -2474,12 +2474,12 @@ openwrangler_r_frame_contract <- local({
     for (filter in resolved$filters) {
       column <- frame[[filter$position]]
       semantics <- descriptor$schema[[filter$position]]$semantics
-      missing <- profile_missing_masks(column, semantics)
       conditions <- list()
       value_filter <- filter$valueFilter
       if (!is.null(value_filter) && (
         length(value_filter$selectedKeys) > 0L || isTRUE(value_filter$includeNulls) || isTRUE(value_filter$includeNaN)
       )) {
+        missing <- profile_missing_masks(column, semantics)
         current <- rep(FALSE, row_count)
         present_indices <- which(!missing$null & !missing$nan)
         if (length(value_filter$selectedKeys) > 0L && length(present_indices) > 0L) {
