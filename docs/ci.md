@@ -115,7 +115,8 @@ Required-document, generated-reference and release-document checks still run and
   edits. Each owner qualifies independently.
   Documentation-only changes do not set this omission flag. Other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
-  `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed documentary edits.
+  `r/tests/kernel_agent.R`, `r/tests/frame_contract.R` or `r/tests/complete_catalog_contract.R` files is modified,
+  optionally with the allowed documentary edits.
   Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required.
   Any other edited file requires editor execution.
 - Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
@@ -211,9 +212,10 @@ Missing, contradictory, failed or cancelled results cannot satisfy the check, ev
 otherwise reports success.
 
 The separate `r_editor_omittable` result leaves both platform jobs running. Its Boolean workflow input defaults to false;
-manual dispatch retains editor execution. An omitted editor step reports no fresh editor result. These two R test files
-are excluded from the VSIX and installed harness, but the platform numeric and CSV source cases load `kernel_agent.R`,
-so its source execution remains required. This omission can delay discovery of unrelated Jupyter or hosted-environment
+manual dispatch retains editor execution. An omitted editor step reports no fresh editor result. These R test files
+are excluded from the VSIX and installed harness. The Linux R shard still executes the catalog, and Source checks its
+operation registry. The platform numeric and CSV source cases load `kernel_agent.R`, so source execution remains
+required. This omission can delay discovery of unrelated Jupyter or hosted-environment
 failures; source and package checks do not replace the editor journey.
 
 The installed jobs reuse `released-jupyter.yml` at the same commit as the caller. Manual dispatch remains available for
