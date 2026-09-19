@@ -1737,11 +1737,15 @@ verbs and generated code. The [performance review](https://github.com/Matt17BR/o
 measurements and alternatives behind the current decisions; opening a source with each library checks compatibility,
 not comparative package speed.
 
-| Calculation     | Current decision                                                                                                                                                                                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Filters         | Keep typed native masks and physical row positions. Direct numeric comparisons, incremental mask combination and bounded text-fold reuse remove measured work while preserving the common predicate rules.                                                                                            |
-| Sorts           | Keep stable native radix, exact integer64 and vctrs clock ordering, with bounded managed-file order reuse. Alternative integer64 ranking calls either failed exact-range controls or required additional method ownership and copies. Existing selected-package cleaning adapters are unaffected.     |
-| Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary. Sampled attribution identified drawer-only work, but its remaining inline cost still needs isolation before deciding whether partial summaries justify another request and cache state. |
+| Calculation     | Current decision                                                                                                                                                                                                                                                                                                                        |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Filters         | Keep typed native masks and physical row positions. Direct numeric comparisons, incremental mask combination and bounded text-fold reuse remove measured work while preserving the common predicate rules.                                                                                                                              |
+| Sorts           | Keep stable native radix, exact integer64 and vctrs clock ordering, with bounded managed-file order reuse. Alternative integer64 ranking calls either failed exact-range controls or required additional method ownership and copies. Existing selected-package cleaning adapters are unaffected.                                       |
+| Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary without another request. [Drawer-only attribution](https://github.com/Matt17BR/openwrangler/issues/1622#issuecomment-5738658327) measured the extra reductions without demonstrating a net benefit from partial summaries. |
+
+Exact mean uses bounded vectorized accumulation to preserve numerical cancellation, subnormal and rounding behavior.
+Partial summaries would add completeness tracking, loading and upgrade states, cancellation and view restoration
+rules, and could repeat shared scanning when the drawer opens.
 
 These choices have costs: text-fold reuse can slow unique-text inputs and increase temporary heap use; sorted reuse
 adds source-order recovery and can retain extra pending-profile vectors. Initial filters and sorts remain synchronous,
