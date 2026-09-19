@@ -816,7 +816,10 @@ for (const platform of ["linux", "darwin", "win32"]) {
     assert.equal(install.includes('"nanoparquet"'), false);
     assert.equal(install.includes('"collapse"'), false);
     assert.equal(install.includes('type = "source"'), false);
-    assert.equal(install.includes("-j2"), false);
+    assert.deepEqual(
+      install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
+      [platform === "linux" ? 'Sys.setenv(MAKEFLAGS = "-s -j2")' : 'Sys.setenv(MAKEFLAGS = "-s")']
+    );
     assert.match(install, /dependencies = NA/u);
     const probe = commandCode(prepared.dependencyProbe);
     assert.match(probe, /find\.package\(\.ow_package, lib.loc = \.ow_library, quiet = TRUE\)/u);
@@ -914,10 +917,11 @@ test("notebook roots retain supplemental installs and private dependency refusal
     );
     const serialMake = 'Sys.setenv(MAKEFLAGS = "-s")';
     const parallelMake = 'Sys.setenv(MAKEFLAGS = "-s -j2")';
-    assert.equal(install.split("\n")[0], serialMake);
+    const initialMake = platform === "linux" ? parallelMake : serialMake;
+    assert.equal(install.split("\n")[0], initialMake);
     assert.deepEqual(
       install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
-      platform === "darwin" ? [serialMake, parallelMake] : [serialMake]
+      platform === "darwin" ? [serialMake, parallelMake] : [initialMake]
     );
     if (platform === "darwin") {
       const collapseStart = install.indexOf(`${parallelMake}\nutils::install.packages(\n  "collapse",`);
@@ -953,7 +957,7 @@ test("terminal preparation keeps native R ownership without a kernel on each pla
     assert.equal(install.includes('type = "source"'), false);
     assert.deepEqual(
       install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
-      ['Sys.setenv(MAKEFLAGS = "-s")']
+      [platform === "linux" ? 'Sys.setenv(MAKEFLAGS = "-s -j2")' : 'Sys.setenv(MAKEFLAGS = "-s")']
     );
     assert.equal(install.match(/utils::install\.packages\(/gu)?.length, 2);
     assert.match(install, /dependencies = NA/u);

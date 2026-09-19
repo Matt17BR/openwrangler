@@ -789,7 +789,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform, pa
         ]
       : [];
   return [
-    'Sys.setenv(MAKEFLAGS = "-s")',
+    platform === "linux" ? 'Sys.setenv(MAKEFLAGS = "-s -j2")' : 'Sys.setenv(MAKEFLAGS = "-s")',
     ...(platform === "linux" && repository.includes("/__linux__/")
       ? [
           'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))'
