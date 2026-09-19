@@ -1729,6 +1729,21 @@ Live cache integrity and sort-cache freshness checks compare floating-point stor
 attribute checks. This distinguishes integer64 values and missing sentinels that R's default `identical()` comparison
 treats as equal.
 
+Base R, dplyr, data.table and collapse share these viewing calculations. Library selection changes supported cleaning
+verbs and generated code. The [performance review](https://github.com/Matt17BR/openwrangler/issues/1622) records the
+measurements and alternatives behind the current decisions; opening a source with each library checks compatibility,
+not comparative package speed.
+
+| Calculation     | Current decision                                                                                                                                                                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Filters         | Keep typed native masks and physical row positions. Direct numeric comparisons, incremental mask combination and bounded text-fold reuse remove measured work while preserving the common predicate rules.                                                                                            |
+| Sorts           | Keep stable native radix, exact integer64 and vctrs clock ordering, with bounded managed-file order reuse. Alternative integer64 ranking calls either failed exact-range controls or required additional method ownership and copies. Existing selected-package cleaning adapters are unaffected.     |
+| Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary. Sampled attribution identified drawer-only work, but its remaining inline cost still needs isolation before deciding whether partial summaries justify another request and cache state. |
+
+These choices have costs: text-fold reuse can slow unique-text inputs and increase temporary heap use; sorted reuse
+adds source-order recovery and can retain extra pending-profile vectors. Initial filters and sorts remain synchronous,
+and sort changes reset UI profiling. The measurements do not establish that shared code is fastest for every input.
+
 Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
 value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation.
 The entry holds one integer position vector, in source order or the last requested sort order. Pages with the same
