@@ -1720,6 +1720,8 @@ value selections, stable ties and per-key missing placement share the cleaning F
 may retain a compatible data-table key; explicit sorting clears the data-table key. `NA` and
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
+The shared integer64 ordering helper uses canonical decimal text from the verified native converter, then stable radix ordering
+by sign, digit width and digits. It preserves exact values without per-row decimal normalization or comparison.
 
 Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
 value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation;

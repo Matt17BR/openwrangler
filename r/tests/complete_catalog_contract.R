@@ -214,13 +214,24 @@ catalog_kinds <- c(
 
 catalog_cases <- list(
   sortRows = list(
+    source = function() data.frame(
+      wide = bit64::as.integer64(c(
+        "9223372036854775807", "-9223372036854775807", "9007199254740993",
+        "9007199254740992", "0", "9223372036854775807", NA,
+        "-9007199254740993", "-9007199254740992"
+      )),
+      ordinal = 1:9,
+      row.names = paste0("sort-row-", 1:9)
+    ),
     step = function(frame, id) step_with(id, "sortRows", list(rules = I(list(list(
-      column = column_reference(frame, "number"), direction = "desc", nulls = "last"
+      column = column_reference(frame, "wide"), direction = "desc", nulls = "last"
     ))))),
-    verify = function(output, input) assert_identical(
-      row.names(output), row.names(input)[c(6L, 2L, 3L, 1L, 5L, 4L)],
-      "Sort Rows returned the wrong stable order"
-    )
+    verify = function(output, input) {
+      positions <- c(1L, 6L, 3L, 4L, 5L, 9L, 8L, 2L, 7L)
+      assert_identical(output$ordinal, positions, "Sort Rows returned the wrong exact stable order")
+      assert_frame_identical(output$wide, input$wide[positions], "Sort Rows changed integer64 values or storage")
+      assert_identical(row.names(output), row.names(input)[positions], "Sort Rows changed source row names")
+    }
   ),
   filterRows = list(
     source = function() {

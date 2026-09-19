@@ -1537,7 +1537,7 @@ openwrangler_r_frame_contract <- local({
         text[base::is.na(text)] <- "0"
         negative <- base::startsWith(text, "-")
         digits <- base::ifelse(negative, base::substring(text, 2L), text)
-        padded <- base::paste0(base::vapply(19L - base::nchar(digits), function(n) base::paste(base::rep("0", n), collapse = ""), base::character(1L)), digits)
+        padded <- base::paste0(base::strrep("0", 19L - base::nchar(digits)), digits)
         signed <- base::ifelse(negative, base::chartr("0123456789", "9876543210", padded), padded)
         expanded <- c(expanded, base::list(base::as.integer(!negative), signed))
         ordering <- c(ordering, base::rep.int(directions[[i]], 2L))
@@ -3174,15 +3174,11 @@ openwrangler_r_frame_contract <- local({
 
   order_integer64 <- function(values, decreasing) {
     text <- integer64_as_character(values, ensure_integer64_bindings())
-    normalized <- vapply(
-      text,
-      normalize_integer_text,
-      character(1L),
-      label = "integer64 ordering value",
-      USE.NAMES = FALSE
-    )
-    negative <- startsWith(normalized, "-")
-    digits <- ifelse(negative, substring(normalized, 2L), normalized)
+    if (anyNA(text)) {
+      abort("invalid-view-value", "integer64 ordering value must be a decimal integer")
+    }
+    negative <- startsWith(text, "-")
+    digits <- ifelse(negative, substring(text, 2L), text)
     negative_positions <- which(negative)
     nonnegative_positions <- which(!negative)
 
@@ -3196,23 +3192,11 @@ openwrangler_r_frame_contract <- local({
       )]
     }
 
-    ordered <- if (decreasing) {
+    if (decreasing) {
       c(order_group(nonnegative_positions, TRUE), order_group(negative_positions, FALSE))
     } else {
       c(order_group(negative_positions, TRUE), order_group(nonnegative_positions, FALSE))
     }
-    if (length(ordered) > 1L) {
-      adjacent <- vapply(
-        seq_len(length(ordered) - 1L),
-        function(index) compare_integer_text(normalized[[ordered[[index]]]], normalized[[ordered[[index + 1L]]]]),
-        integer(1L),
-        USE.NAMES = FALSE
-      )
-      if ((decreasing && any(adjacent < 0L)) || (!decreasing && any(adjacent > 0L))) {
-        abort("internal-error", "integer64 ordering disagreed with signed decimal comparison")
-      }
-    }
-    ordered
   }
 
   order_present_values <- function(values, semantics, decreasing) {
