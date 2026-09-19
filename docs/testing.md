@@ -779,6 +779,7 @@ version and architecture in its HTTP user agent. This lets the package server su
 retaining source installation for packages without one. Other Linux distributions and unrecognized host metadata
 use the dated source repositories. The supported binary distributions and required header are described in
 [Posit's binary configuration guide](https://docs.posit.co/rspm/admin/serving-binaries/).
+Linux source builds allow up to two make jobs per package. Package installation remains sequential.
 
 The hosted macOS R job installs Homebrew's current `zeromq` formula before private R preparation. IRkernel's
 `pbdZMQ` dependency discovers that system library during its source build, avoiding bundled ZeroMQ compilation.
