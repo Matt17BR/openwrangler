@@ -2416,7 +2416,7 @@ openwrangler_r_frame_contract <- local({
     present <- !missing$null & !missing$nan
     present_indices <- which(present)
     native_numeric <- semantics$kind %in% c("double", "datetime", "difftime")
-    keys <- if (native_numeric) NULL else profile_value_keys(column, semantics, present_indices)
+    keys <- if (native_numeric || semantics$kind %in% c("integer", "date")) NULL else profile_value_keys(column, semantics, present_indices)
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
@@ -2435,9 +2435,7 @@ openwrangler_r_frame_contract <- local({
       if (semantics$kind %in% c("integer64", "clock_datetime")) {
         compare_integer_keys(keys, target, comparison_operator)
       } else if (descriptor$type %in% c("integer", "float", "date", "datetime", "duration")) {
-        left <- if (identical(semantics$kind, "double")) column[present_indices] else if (native_numeric) {
-          numeric_profile_values(column, semantics, present_indices)
-        } else suppressWarnings(as.double(keys))
+        left <- if (identical(semantics$kind, "double")) column[present_indices] else numeric_profile_values(column, semantics, present_indices)
         right <- if (native_numeric) target else suppressWarnings(as.double(target))
         switch(
           comparison_operator,

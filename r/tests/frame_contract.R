@@ -8019,18 +8019,49 @@ assert_identical(
   "integer64 filtering lost precision"
 )
 
-date_page <- openwrangler_r_frame_contract$materialize_view_page(
-  filter_capture,
-  view_query(filters = list(column_filter(
-    "r:c:3", "date", "date", list(predicate("between", "2026-01-02", "2026-01-05"))
-  ))),
-  column_limit = 7L
-)
-assert_identical(
-  vapply(date_page$page$rows, `[[`, character(1L), "id"),
-  c("r:r:1", "r:r:2", "r:r:4"),
-  "Date filtering changed inclusive bounds"
-)
+local({
+  runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
+  native_keys <- get("profile_value_keys", runtime, inherits = FALSE)
+  formatted_rows <- 0L
+  assign("profile_value_keys", function(column, semantics, indices, ...) {
+    if (semantics$kind %in% c("integer", "date")) formatted_rows <<- formatted_rows + length(indices)
+    native_keys(column, semantics, indices, ...)
+  }, runtime)
+  on.exit(assign("profile_value_keys", native_keys, runtime), add = TRUE)
+  cases <- list(
+    list(operator = "equals", rows = 5L),
+    list(operator = "notEquals", rows = c(1:4, 6:7)),
+    list(operator = "gt", rows = 6:7),
+    list(operator = "gte", rows = 5:7),
+    list(operator = "lt", rows = 1:4),
+    list(operator = "lte", rows = 1:5),
+    list(operator = "between", rows = 3:5),
+    list(operator = "isNull", rows = 8L),
+    list(operator = "isNotNull", rows = 1:7)
+  )
+  for (type in c("integer", "date")) {
+    values <- if (type == "integer") c(-.Machine$integer.max, -10L, -1L, 0L, 2L, 10L, .Machine$integer.max, NA_integer_) else {
+      as.Date(c(-366, -10, -1, 0, 2, 10, 366, NA_real_), origin = "1970-01-01")
+    }
+    frame <- data.frame(value = values)
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    for (case in cases) {
+      bound <- if (case$operator %in% c("isNull", "isNotNull")) predicate(case$operator) else if (case$operator == "between") {
+        predicate("between", if (type == "integer") "-1" else "1969-12-31",
+          if (type == "integer") "2" else "1970-01-03")
+      } else predicate(case$operator, if (type == "integer") "2" else "1970-01-03")
+      formatted_rows <- 0L
+      page <- openwrangler_r_frame_contract$materialize_view_page(capture,
+        view_query(filters = list(column_filter("r:c:0", "value", type, list(bound)))), row_limit = 2L)
+      assert_identical(page$page$totalRows, length(case$rows), "integer or Date filtering changed numeric membership")
+      assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", head(case$rows, 2L) - 1L),
+        "integer or Date filtering changed stable source row identities")
+      assert_true(formatted_rows <= 2L, "integer or Date filtering formatted source keys beyond the bounded page")
+    }
+    assert_identical(serialize(frame, NULL, version = 3L), before, "numeric predicates changed their source")
+  }
+})
 
 datetime_page <- openwrangler_r_frame_contract$materialize_view_page(
   filter_capture,

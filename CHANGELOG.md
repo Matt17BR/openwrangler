@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Changed
+
+- R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
+
 ### Fixed
 
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.

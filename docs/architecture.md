@@ -1798,9 +1798,10 @@ a nonempty search scans exactly in bounded chunks and refuses more than 10,000 d
 These memory bounds do not imply that IRkernel can interrupt dispatched work. Dataset-statistics counts and their
 filtered row total come from the same request.
 
-Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Floating,
-datetime and duration columns compare native values directly. Picker selections use the source value instead of
-reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
+Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Ordinary integer, Date,
+floating, datetime and duration predicates compare native values directly, without formatting source rows as text.
+Integer and Date predicates still convert their bound operand keys numerically. Picker selections use the source value
+instead of reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
 The shared finite-number parser normalizes accepted decimal spellings for the existing jsonlite decoder; it keeps
 native numeric inputs, signed zero and the existing grammar and range checks. Public scalar Fill still accepts
 replacement text, binds double replacements once and emits that bound value through the existing numeric-literal
