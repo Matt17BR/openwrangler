@@ -7819,6 +7819,37 @@ assert_identical(
 )
 
 local({
+  runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
+  native_missing_masks <- get("profile_missing_masks", runtime, inherits = FALSE)
+  masked_rows <- 0L
+  assign("profile_missing_masks", function(column, ...) {
+    masked_rows <<- masked_rows + length(column)
+    native_missing_masks(column, ...)
+  }, runtime)
+  on.exit(assign("profile_missing_masks", native_missing_masks, runtime), add = TRUE)
+  selected <- list(kind = "values", selectedValues = list("Alpha"), includeNulls = TRUE, includeNaN = FALSE)
+  inactive <- list(kind = "values", selectedValues = list(), includeNulls = FALSE, includeNaN = FALSE)
+  cases <- list(
+    list(predicates = list(predicate("contains", "ALP")), values = NULL, rows = c(0L, 2L, 4L), maxPasses = 1L),
+    list(predicates = list(), values = NULL, rows = 0:5, maxPasses = 0L),
+    list(predicates = list(), values = inactive, rows = 0:5, maxPasses = 0L),
+    list(predicates = list(), values = selected, rows = c(0L, 2L, 5L), maxPasses = 1L),
+    list(predicates = list(predicate("contains", "ALP")), values = selected, rows = c(0L, 2L), maxPasses = 2L),
+    list(predicates = list(predicate("isNull")), values = NULL, rows = 5L, maxPasses = 1L)
+  )
+  for (case in cases) {
+    masked_rows <- 0L
+    page <- openwrangler_r_frame_contract$materialize_view_page(filter_capture,
+      view_query(filters = list(column_filter("r:c:0", "text", "string", case$predicates, case$values))),
+      row_limit = 10L, column_limit = 1L)
+    assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", case$rows),
+      "missing-mask ownership changed filtered source row identities")
+    assert_identical(masked_rows <= nrow(filter_frame) * case$maxPasses, TRUE,
+      "filtering repeated a full-column missing-mask calculation")
+  }
+})
+
+local({
   latin1 <- rawToChar(as.raw(c(67, 65, 70, 201)))
   Encoding(latin1) <- "latin1"
   values <- c(NA_character_, latin1, "CAF\u00c9", "xCAF\u00c9", "CAF\u00c9x", "", "drop")
