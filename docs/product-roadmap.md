@@ -38,11 +38,12 @@ the later corrections do not change the displayed public screenshot states.
 The [operation support guide](feature-parity.md#cleaning-operations) records the engine-specific scope of
 Explode List and Extract Struct Fields.
 
-[Open Wrangler 2.7](https://github.com/Matt17BR/openwrangler/milestone/18) selects the
-[R viewing-performance investigation](https://github.com/Matt17BR/openwrangler/issues/1622).
-Assess where the selected R library can reduce viewing costs while preserving results and source ownership.
-Header requests also compute statistics used only in the detail drawer. Material savings from separating those
-requests remain unmeasured and must justify any new request mode.
+The [R viewing-performance investigation](https://github.com/Matt17BR/openwrangler/issues/1622) for
+[Open Wrangler 2.7](https://github.com/Matt17BR/openwrangler/milestone/18) delivered measured improvements to shared
+filtering, sorting and text profiles while retaining exact native semantics. Headers and drawers keep one complete
+summary; the measured extra reductions did not establish a net benefit from partial results. The
+[architecture decision](architecture.md#viewing-and-profiling) records the retained owners and costs.
+These changes are unreleased.
 
 ## Released-product comparison
 
