@@ -354,7 +354,9 @@ invalid-code refusal; the catalog checks Filter Rows and Conditional Column acro
 Library selection extends these existing owners: every supported catalog operation needs live/generated agreement
 for base R, dplyr, data.table and collapse, with expected values and unchanged source. Generated programs must resolve
 their own emitted helpers and dependencies. Focused native cases own package equality, grouping order, duplicate
-names, types, row labels and valid keys; one composed lifecycle per library proves replay and history. Do not repeat
+names, types, row labels and valid keys; one composed lifecycle per library proves replay and history. The catalog also
+checks that every library returns a retained By Example command and replays that changed command in base R. Other
+single-step cases run once per library, preserving their native/generated and source checks. Do not repeat
 unrelated large fixtures or installed catalog journeys once for every library. Measure the added catalog cost against
 the existing phase deadline before accepting the change.
 Host checks own the resource-scoped default, requested/confirmed library, old base saved-plan keys, per-library
