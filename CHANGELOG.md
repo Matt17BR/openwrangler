@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
 - R compound filters combine row masks incrementally instead of retaining every condition's mask.
 

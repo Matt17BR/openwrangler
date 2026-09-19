@@ -1776,6 +1776,8 @@ Integer64 extrema use the package's native range reduction without sorting every
 bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation
 and sums beyond the integer64 range without per-row decimal arithmetic. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
+A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
+fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
 Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
 current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave

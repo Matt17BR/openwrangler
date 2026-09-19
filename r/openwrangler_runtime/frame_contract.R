@@ -3354,35 +3354,41 @@ openwrangler_r_frame_contract <- local({
             if (!is.null(state$text_counts)) {
               first <- !duplicated(text_values)
               keys <- text_values[first]
-              sources <- present_sources[first]
-              counts <- tabulate(match(text_values, keys), nbins = length(keys))
-              new_keys <- character(length(keys))
-              new_sources <- integer(length(keys))
-              new_count <- 0L
-              for (index in seq_along(keys)) {
-                key <- keys[[index]]
-                environment_key <- paste0(":", key)
-                if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
-                  assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
-                } else {
-                  next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
-                  if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
-                      next_bytes > maximum_column_value_distinct_key_bytes) {
-                    state$text_counts <- NULL
-                    state$text_keys <- character()
-                    state$text_first_sources <- integer()
-                    break
+              if (length(keys) > maximum_column_value_distinct_matches) {
+                state$text_counts <- NULL
+                state$text_keys <- character()
+                state$text_first_sources <- integer()
+              } else {
+                sources <- present_sources[first]
+                counts <- tabulate(match(text_values, keys), nbins = length(keys))
+                new_keys <- character(length(keys))
+                new_sources <- integer(length(keys))
+                new_count <- 0L
+                for (index in seq_along(keys)) {
+                  key <- keys[[index]]
+                  environment_key <- paste0(":", key)
+                  if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
+                    assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
+                  } else {
+                    next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
+                    if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
+                        next_bytes > maximum_column_value_distinct_key_bytes) {
+                      state$text_counts <- NULL
+                      state$text_keys <- character()
+                      state$text_first_sources <- integer()
+                      break
+                    }
+                    assign(environment_key, as.double(counts[[index]]), state$text_counts)
+                    state$text_key_bytes <- next_bytes
+                    new_count <- new_count + 1L
+                    new_keys[[new_count]] <- key
+                    new_sources[[new_count]] <- sources[[index]]
                   }
-                  assign(environment_key, as.double(counts[[index]]), state$text_counts)
-                  state$text_key_bytes <- next_bytes
-                  new_count <- new_count + 1L
-                  new_keys[[new_count]] <- key
-                  new_sources[[new_count]] <- sources[[index]]
                 }
-              }
-              if (!is.null(state$text_counts) && new_count != 0L) {
-                state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
-                state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
+                if (!is.null(state$text_counts) && new_count != 0L) {
+                  state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
+                  state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
+                }
               }
             }
           } else if (state$kind == "clock_datetime") {
