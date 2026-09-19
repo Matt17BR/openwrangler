@@ -102,13 +102,34 @@ local({
   # The sole filtered column's picker requests an empty filter view.
   picker_view <- filtered_window()$view
   picker_view$filters <- I(list())
+  before <- scans
+  before_sorts <- sorts
   picker <- send("getColumnValues", list(sessionId = session_id, column = list(id = "r:c:0", name = "label"),
     view = picker_view, search = NULL, limit = 10L))
   assert_identical(picker$kind, "columnValues", "the unfiltered picker failed")
-  assert_identical(is.null(cache$capture) && is.null(cache$sorts), TRUE, "the unfiltered picker retained sorted membership")
-  before <- scans
+  assert_identical(vapply(picker$values, `[[`, character(1L), "value"), c("alpha", "beta", "none"),
+    "the unfiltered picker reused the grid's filtered population")
+  assert_identical(vapply(picker$values, `[[`, integer(1L), "count"), c(1L, 1L, 1L),
+    "the unfiltered picker changed value counts")
+  searched <- send("getColumnValues", list(sessionId = session_id, column = list(id = "r:c:0", name = "label"),
+    view = picker_view, search = "none", limit = 10L))
+  assert_identical(searched$values, picker$values[3L], "the searched picker lost a value outside the grid filter")
+  after_picker <- send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(scans, before, "the auxiliary picker discarded reusable filter membership")
+  assert_identical(sorts, before_sorts, "the auxiliary picker discarded reusable page order")
+  assert_identical(vapply(after_picker$page$page$rows, `[[`, character(1L), "id"), c("r:r:1", "r:r:0"),
+    "the auxiliary picker changed the retained grid order")
+  assert_identical(cache$rows, retained_rows, "the auxiliary picker replaced cached positions")
+  assert_identical(cache$sorts, retained_sorts, "the auxiliary picker replaced cached rules")
+
+  nonempty_picker <- send("getColumnValues", list(sessionId = session_id, column = list(id = "r:c:0", name = "label"),
+    view = filtered_window("none")$view, search = NULL, limit = 10L))
+  assert_identical(nonempty_picker$values, searched$values, "a nonempty auxiliary query changed its population")
+  assert_identical(cache$rows, 3L, "a nonempty auxiliary query did not replace cached membership")
+  empty_summary <- send("getSummary", list(sessionId = session_id, columns = reference, view = picker_view))
+  assert_identical(empty_summary$summaries[[1L]]$totalCount, 4L, "an empty profile reused filtered membership")
+  assert_identical(is.null(cache$capture) && is.null(cache$sorts), TRUE, "an empty profile retained filtered membership")
   send("getPage", list(sessionId = session_id, page = filtered_window()))
-  assert_identical(scans, before + 1L, "the picker did not release the previous filter entry")
 
   # A cache hit must still read and validate the current source's structure.
   data.table::setnames(sources$.ow_csv_source, "value", "changed")

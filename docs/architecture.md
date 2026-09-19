@@ -1739,9 +1739,10 @@ The positions, filter key and sort rules together may occupy at most 64 MiB. A f
 before scanning; oversized selections remain usable without retention. Once filter membership is retained, a failed
 sort or over-budget sort metadata leaves that entry intact. This bound excludes the session-owned frame and
 pending-profile vectors.
-Empty filters, including a picker that removes the only column filter, release the entry. Source-reaching edits or
-replay, session close and agent disposal also release it, before execution or cleanup can fail. Initial opening,
-inspection and mutation responses do not populate it; later reads may reuse a published active draft.
+Empty page and profile filters release the entry. An auxiliary value lookup with no remaining filters bypasses the
+cache, preserving the grid's existing selection and order; a nonempty lookup uses the usual replacement rules.
+Source-reaching edits or replay, session close and agent disposal also release it before execution or cleanup can
+fail. Initial opening, inspection and mutation responses do not populate it; later reads may reuse a published active draft.
 The existing 32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and
 uncached filtering and sorting still run synchronously. Reuse does not promise a net improvement for every query
 sequence: changing sort also resets UI profiling, and each new profile may need source-order recovery.

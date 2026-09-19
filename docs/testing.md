@@ -384,7 +384,8 @@ Managed file profiling extends these owners with synchronous/continued result eq
 after a yield, retained-job cleanup and exclusion of mutation or replay from another session.
 The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file membership and sorted-page reuse,
 source-order profiles, stable ties, capture/filter/sort identity, key-inclusive byte bounds, source validation and
-release before execution or cleanup failures. It also checks picker eviction and pending membership after replacement.
+release before execution or cleanup failures. It also checks auxiliary picker retention, empty-view eviction and
+pending membership after replacement.
 The [process transport unit owner](../src/test/rProcessTransport.unit.test.ts) checks page admission, the original deadline,
 stale queued advances, exclusive-request fairness and cleanup of ambiguous begins against the captured child.
 Measure actual queued-page latency, setup, finalization, total work
