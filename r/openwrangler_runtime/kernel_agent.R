@@ -6083,6 +6083,19 @@ openwrangler_r_kernel_agent <- local({
       if (identical(operator, "between")) return(sprintf("(%s) & (%s)", compare(predicate$valueKey, "gte"), compare(predicate$secondValueKey, "lte")))
       return(compare(predicate$valueKey, operator))
     }
+    if (identical(specification$semanticsKind, "integer64")) {
+      # INT64_MIN is an admitted bound, but bit64 reserves its storage for missing values.
+      minimum <- "-9223372036854775808"
+      if (identical(operator, "between")) {
+        if (identical(predicate$secondValueKey, minimum)) return(sprintf("%s & FALSE", present))
+        if (identical(predicate$valueKey, minimum)) {
+          return(sprintf("%s & %s <= %s", present, values, row_target(predicate$secondValueKey, specification)))
+        }
+      } else if (identical(predicate$valueKey, minimum)) {
+        if (operator %in% c("notEquals", "gt", "gte")) return(present)
+        if (operator %in% c("equals", "lt", "lte")) return(sprintf("%s & FALSE", present))
+      }
+    }
     if (identical(operator, "contains")) {
       folded <- chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", predicate$valueKey)
       return(sprintf(
