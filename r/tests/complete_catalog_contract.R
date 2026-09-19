@@ -709,6 +709,78 @@ for (library in c("dplyr", "data.table", "collapse")) {
   }
 }
 
+
+local({
+  previous_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
+  assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "comparison catalog could not select the C locale")
+  unmarked <- "CAF\u00c9"; Encoding(unmarked) <- "unknown"
+  unused <- paste0("unused-", unmarked); Encoding(unused) <- "unknown"
+  comparison_source <- function() {
+    category <- structure(c(1L, 2L, NA_integer_, 1L, 3L),
+      levels = c(unmarked, "drop", "Alpha", unused), class = "factor")
+    ordinal <- category; class(ordinal) <- c("ordered", "factor")
+    data.table::data.table(category = category, ordinal = ordinal, text = as.character(category), row_id = 1:5)
+  }
+  verify_comparison_result <- function(output, expected) {
+    assert_identical(class(output), class(expected), "comparison changed dataframe classes")
+    assert_identical(names(output), names(expected), "comparison changed column names")
+    assert_identical(row.names(output), row.names(expected), "comparison changed row names")
+    for (name in names(expected)) assert_frame_identical(output[[name]], expected[[name]],
+      "comparison changed values, factor classes, codes or encodings")
+  }
+  cases <- list(
+    character_values = list(source = comparison_source,
+      step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(filters = I(list(
+        list(column = column_reference(frame, "text"), type = "string", predicates = I(list()),
+          valueFilter = list(kind = "values", selectedValues = I(list("CAF\u00c9")), includeNulls = TRUE, includeNaN = FALSE))
+      )), sort = I(list())))),
+      verify = function(output, input) verify_comparison_result(output, input[c(1L, 3L, 4L)])),
+    predicates = list(source = comparison_source,
+      step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(filters = I(list(
+        list(column = column_reference(frame, "category"), type = "string", predicates = I(list(
+          list(kind = "predicate", operator = "contains", value = "af\u00c9")))),
+        list(column = column_reference(frame, "ordinal"), type = "string", predicates = I(list()),
+          valueFilter = list(kind = "values", selectedValues = I(list("CAF\u00c9")), includeNulls = TRUE, includeNaN = FALSE))
+      )), sort = I(list())))),
+      verify = function(output, input) verify_comparison_result(output, input[c(1L, 4L)])),
+    conditional = list(source = comparison_source,
+      step = function(frame, id) step_with(id, "conditionalColumn", list(
+        column = column_reference(frame, "ordinal"), columnType = "string",
+        predicate = list(kind = "predicate", operator = "equals", value = "CAF\u00c9"), newColumn = "matches",
+        resultType = "boolean", trueValue = TRUE, falseValue = FALSE, missingValue = NULL)),
+      verify = function(output, input) {
+        expected <- data.table::copy(input); expected$matches <- c(TRUE, FALSE, NA, TRUE, FALSE)
+        verify_comparison_result(output, expected)
+      })
+  )
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) {
+      kind <- if (names(cases)[[index]] == "conditional") "conditionalColumn" else "filterRows"
+      run_catalog_case(cases[[index]], kind, 6000L + index, library)
+      if (library == "base") for (empty in c(FALSE, TRUE)) {
+        replay <- new.env(parent = baseenv())
+        replay$catalog_frame <- comparison_source()
+        if (empty) replay$catalog_frame <- replay$catalog_frame[0L] else {
+          replay$catalog_frame$category[] <- NA
+          replay$catalog_frame$ordinal[] <- NA
+          replay$catalog_frame$text[] <- NA_character_
+        }
+        before <- frame_bytes(replay$catalog_frame)
+        expected <- if (kind == "conditionalColumn") data.table::copy(replay$catalog_frame) else {
+          replay$catalog_frame[if (names(cases)[[index]] == "predicates") integer() else seq_len(nrow(replay$catalog_frame))]
+        }
+        if (kind == "conditionalColumn") expected$matches <- rep(NA, nrow(expected))
+        eval(parse(text = catalog_generated_code[[kind]]), replay)
+        assert_frame_identical(replay$open_wrangler_result, expected,
+          "generated empty or all-missing comparisons changed results or factor metadata")
+        assert_identical(frame_bytes(replay$catalog_frame), before,
+          "generated empty or all-missing comparison changed source encodings")
+      }
+    }
+  }
+})
+
 # Fill modes have distinct compiler branches. Their small selected-library cases
 # share the catalog live/generated owner; the kernel owner keeps full lifecycles.
 selected_fill_cases <- list(

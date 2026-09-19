@@ -1769,8 +1769,10 @@ bounded native quotient/remainder batches, combining only their totals in decima
 and sums beyond the integer64 range without per-row decimal arithmetic. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
-Character comparison predicates in live and generated Filter Rows and Conditional Column use those normalized values,
-including Latin-1 and unmarked valid UTF-8 under the C locale, while preserving missing positions and source encodings.
+Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
+current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave
+source levels, ordering and encodings unchanged. Live and generated Filter Rows and Conditional Column use normalized
+text for comparisons, including Latin-1 and unmarked valid UTF-8 under the C locale, while preserving missing positions.
 Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
 oversized values retain ordered scalar refusal and the original row labels; this does not change sampling policy.
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
