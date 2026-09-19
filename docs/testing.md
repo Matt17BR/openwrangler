@@ -589,7 +589,11 @@ terminal output, private package-library contents or user data to failure upload
 
 Released-Jupyter Variables timeouts include the last 12 script-load or uncaught-error observations from the captured
 browser context: event order and relative time, `variableView.js` response status and completion/failure, or a standard
-error class with script category and numeric location. Added records contain no messages, stacks or URLs. The current
+error class with script category and numeric location. For Variables errors, the observer also retains up to twelve
+one-based stack locations from the exact throwing script URL, preserving their order and repeated locations. It inspects
+only the first 16,384 UTF-16 code units and 32 lines; unsupported stacks or disagreement with the throw location remain
+null. These locations may identify synchronous throw callers, but do not establish the original update trigger or document
+generation. Added records contain no messages, function names, raw stacks or URLs. The current
 content-document read also reports readiness and up to four timings for its exact Variables script; unavailable reads
 remain null. Timing values are capped at one hour. Context events can belong to an earlier Variables document and do not
 prove that the current script executed or React mounted. These passive diagnostics do not change actions or deadlines.

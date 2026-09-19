@@ -15219,6 +15219,7 @@ interface JupyterVariableLoadEvent {
   readonly errorClass?: string;
   readonly line?: number | null;
   readonly column?: number | null;
+  readonly stackLocations?: readonly { readonly line: number; readonly column: number }[] | null;
 }
 
 interface NotebookRendererButton {
@@ -15288,9 +15289,39 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
   };
   const onWebError = (error: WebError): void => {
     const location = error.location();
-    const name = error.error().name;
+    const observedError = error.error();
+    const name = observedError.name;
     const coordinate = (value: number): number | null =>
       Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
+    const line = coordinate(location.line);
+    const column = coordinate(location.column);
+    const stackLocations = (() => {
+      if (
+        !isVariableViewScript(location.url) ||
+        typeof observedError.stack !== "string" ||
+        line === null ||
+        column === null
+      )
+        return null;
+      const locations: { line: number; column: number }[] = [];
+      const prefix = observedError.stack.slice(0, 16_384);
+      const completeLines =
+        observedError.stack.length > prefix.length ? prefix.slice(0, prefix.lastIndexOf("\n") + 1) : prefix;
+      for (const frame of completeLines.split("\n", 32)) {
+        if (!frame.startsWith("    at ")) continue;
+        const pair = /:(\d+):(\d+)\)?$/u.exec(frame);
+        if (!pair) continue;
+        const framePrefix = frame.slice(7, pair.index);
+        if (framePrefix !== location.url && !framePrefix.endsWith(` (${location.url}`)) continue;
+        const frameLine = coordinate(Number(pair[1]));
+        const frameColumn = coordinate(Number(pair[2]));
+        if (frameLine === null || frameColumn === null || frameLine === 0 || frameColumn === 0) return null;
+        locations.push({ line: frameLine, column: frameColumn });
+        if (locations.length === 12) break;
+      }
+      // V8 stack locations are one-based; unsupported or mismatched stacks remain unknown.
+      return locations[0]?.line === line + 1 && locations[0]?.column === column + 1 ? locations : null;
+    })();
     recordVariableViewEvent({
       kind: "weberror",
       script: location.url ? (isVariableViewScript(location.url) ? "variableView" : "other") : "unavailable",
@@ -15306,8 +15337,9 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
       ].includes(name)
         ? name
         : "other",
-      line: coordinate(location.line),
-      column: coordinate(location.column)
+      line,
+      column,
+      stackLocations
     });
   };
   const rendererResponses: number[] = [];
