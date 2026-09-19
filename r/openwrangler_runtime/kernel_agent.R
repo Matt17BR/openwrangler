@@ -6129,13 +6129,18 @@ openwrangler_r_kernel_agent <- local({
   }
 
   row_uses_character_keys <- function(filter) {
-    identical(filter$semanticsKind, "character") && any(vapply(filter$predicates, function(predicate) {
-      !predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
-    }, logical(1L)))
+    filter$semanticsKind %in% c("character", "factor") &&
+      (length(filter$valueFilter$selectedKeys) > 0L || any(vapply(filter$predicates, function(predicate) {
+        !predicate$operator %in% c("isNull", "isNotNull", "isNaN", "isNotNaN")
+      }, logical(1L))))
   }
 
   row_character_key_lines <- function(filter, variable, null_mask) {
     if (!row_uses_character_keys(filter)) return(character())
+    if (identical(filter$semanticsKind, "factor")) return(c(
+      sprintf("  .ow_text_present <- seq_along(levels(%s))", variable),
+      sprintf("  attr(%s, \"levels\") <- .ow_text_helpers$profile(levels(%s), .ow_text_present)", variable, variable)
+    ))
     c(
       sprintf("  .ow_text_present <- which(!%s)", null_mask),
       sprintf("  %s[.ow_text_present] <- .ow_text_helpers$profile(%s[.ow_text_present], .ow_text_present)", variable, variable)

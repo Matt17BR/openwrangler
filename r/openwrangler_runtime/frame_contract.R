@@ -2655,7 +2655,10 @@ openwrangler_r_frame_contract <- local({
       return(vapply(values, canonical_double_key, character(1L)))
     }
     if (kind == "character") return(profile_text_values(values, indices))
-    if (kind == "factor") return(as.character(values))
+    if (kind == "factor") {
+      attr(values, "levels") <- plain_metadata_storage(semantics$levels)
+      return(as.character(values))
+    }
     numeric_values <- if (kind == "difftime") {
       as.double(values, units = semantics$units)
     } else {

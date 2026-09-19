@@ -781,6 +781,10 @@ selection synchronously, and finishing a profile can require an uninterrupted st
 This improves responsiveness during scans; it does not make the complete calculation faster or bound every page's
 wait. Live notebooks, R terminals and managed R documents keep synchronous native profiling.
 
+R text and factor filters compare normalized Unicode labels, including valid unmarked UTF-8 in the C locale.
+Filter Rows and Conditional Column use the same labels in live execution and generated R, preserving source factor
+levels, ordering and missing values.
+
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
 Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
 `data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes. Preview, history, profiling,

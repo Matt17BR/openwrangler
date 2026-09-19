@@ -7851,6 +7851,62 @@ local({
   }
 })
 
+
+local({
+  previous_locale <- Sys.getlocale("LC_CTYPE")
+  previous_collation <- Sys.getlocale("LC_COLLATE")
+  on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
+  on.exit(Sys.setlocale("LC_COLLATE", previous_collation), add = TRUE)
+  assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "factor comparisons could not select the C locale")
+  assert_identical(Sys.setlocale("LC_COLLATE", "C"), "C", "factor comparisons could not select C collation")
+  unmarked <- "CAF\u00c9"; Encoding(unmarked) <- "unknown"
+  latin1 <- rawToChar(as.raw(c(67, 65, 70, 201, 120))); Encoding(latin1) <- "latin1"
+  unused <- paste0("unused-", unmarked); Encoding(unused) <- "unknown"
+  for (ordered in c(FALSE, TRUE)) {
+    category <- structure(c(1L, 2L, NA_integer_, 1L, 3L),
+      levels = c(unmarked, latin1, "drop", unused), class = if (ordered) c("ordered", "factor") else "factor")
+    frame <- data.frame(category = category)
+    before <- serialize(frame, NULL, version = 3L)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    cases <- list(
+      list(predicates = list(predicate("equals", "CAF\u00c9")), rows = c(1L, 4L)),
+      list(predicates = list(predicate("contains", "af\u00c9")), rows = c(1L, 2L, 4L)),
+      list(predicates = list(predicate("startsWith", "CAF\u00c9")), rows = c(1L, 2L, 4L)),
+      list(predicates = list(predicate("endsWith", "F\u00c9")), rows = c(1L, 4L)),
+      list(predicates = list(predicate("gt", "Z")), rows = 5L),
+      list(predicates = list(predicate("isNull")), rows = 3L),
+      list(predicates = list(), values = list(kind = "values", selectedValues = list("CAF\u00c9"),
+        includeNulls = TRUE, includeNaN = FALSE), rows = c(1L, 3L, 4L))
+    )
+    for (case in cases) {
+      page <- openwrangler_r_frame_contract$materialize_view_page(capture, view_query(filters = list(
+        column_filter("r:c:0", "category", "string", case$predicates, case$values))))
+      assert_identical(vapply(page$page$rows, `[[`, character(1L), "id"), paste0("r:r:", case$rows - 1L),
+        "factor comparison lost locale-normalized source rows")
+    }
+    assert_identical(serialize(frame, NULL, version = 3L), before, "factor comparison changed source encodings or codes")
+    for (codes in list(integer(), c(NA_integer_, NA_integer_))) {
+      frame <- data.frame(category = structure(codes, levels = levels(category), class = class(category)))
+      capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+      for (operator in c("contains", "isNull")) {
+        query <- view_query(filters = list(column_filter("r:c:0", "category", "string",
+          list(if (operator == "contains") predicate(operator, "af\u00c9") else predicate(operator)))))
+        page <- openwrangler_r_frame_contract$materialize_view_page(capture, query)
+        assert_identical(page$page$totalRows, if (operator == "isNull") length(codes) else 0L,
+          "empty or all-missing factor comparison changed null semantics")
+      }
+    }
+    frame <- data.frame(category = category)
+    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+    invisible(openwrangler_r_frame_contract$materialize_view_page(capture, row_limit = 0L))
+    for (invalid_code in c(0L, -1L, 5L)) {
+      frame$category <- structure(c(invalid_code, 2L, NA_integer_, 1L, 3L), levels = levels(category), class = class(category))
+      assert_error(openwrangler_r_frame_contract$materialize_view_page(capture, view_query(filters = list(
+        column_filter("r:c:0", "category", "string", list(predicate("equals", "CAF\u00c9")))))), "malformed factor")
+    }
+  }
+})
+
 null_page <- openwrangler_r_frame_contract$materialize_view_page(
   filter_capture,
   view_query(filters = list(column_filter("r:c:1", "amount", "float", list(predicate("isNull"))))),

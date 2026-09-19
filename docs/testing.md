@@ -348,6 +348,9 @@ budget probes supply the base R context; complete generated programs separately 
 The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
 and ordered input/output refusals. The existing kernel text owner executes the emitted case kernel on multiple batches and failed
 results, checking exact live agreement, source preservation and no publication on failure.
+Existing frame and row-operation owners check text and factor comparisons under the C locale, including source
+encodings, unused levels, missing values and complete generated results. Factor key preparation retains native
+invalid-code refusal; the catalog checks Filter Rows and Conditional Column across all four cleaning libraries.
 Library selection extends these existing owners: every supported catalog operation needs live/generated agreement
 for base R, dplyr, data.table and collapse, with expected values and unchanged source. Generated programs must resolve
 their own emitted helpers and dependencies. Focused native cases own package equality, grouping order, duplicate
