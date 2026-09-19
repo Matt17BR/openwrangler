@@ -3787,6 +3787,7 @@ openwrangler_r_frame_contract <- local({
       cache$capture <- NULL
       cache$key <- NULL
       cache$rows <- integer()
+      cache$sorts <- NULL
     }
     invisible(NULL)
   }
@@ -11294,6 +11295,13 @@ openwrangler_r_frame_contract <- local({
     } else NULL
     if (!is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)) {
       row_positions <- filter_cache$rows
+      if (length(filter_cache$sorts) != 0L) {
+        if (isTRUE(apply_sorts) && identical(filter_cache$sorts, resolved$sorts)) {
+          clear_sort_cache(capture$sortCache)
+          return(list(rows = row_positions, totalRows = length(row_positions), resolved = resolved))
+        }
+        row_positions <- sort.int(row_positions, method = "radix")
+      }
     } else {
       clear_file_filter_cache(filter_cache)
       row_positions <- filter_row_positions(frame, capture$descriptor, resolved)
@@ -11320,6 +11328,14 @@ openwrangler_r_frame_contract <- local({
         resolved$sorts,
         row_positions
       )
+      if (!is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)) {
+        cache_bytes <- as.double(utils::object.size(row_positions)) + as.double(utils::object.size(filter_key)) +
+          as.double(utils::object.size(resolved$sorts))
+        if (cache_bytes <= maximum_file_filter_cache_bytes) {
+          filter_cache$rows <- row_positions
+          filter_cache$sorts <- resolved$sorts
+        }
+      }
     }
     list(rows = row_positions, totalRows = length(row_positions), resolved = resolved)
   }

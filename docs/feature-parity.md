@@ -776,8 +776,10 @@ available without restarting the standalone runtime.
 
 Local R file sessions let grid pages run between batches of large column profiles and Dataset statistics.
 Repeated pages, profiles and value queries reuse one unchanged filtered row selection within the
-[64 MiB retention bound](architecture.md#viewing-and-profiling). Initial or uncached filters still prepare their row
-selection synchronously, and finishing a profile can require an uninterrupted step.
+[64 MiB retention bound](architecture.md#viewing-and-profiling). Pages with the same active filter and sort also
+reuse their order. Unsorted reads and profiles recover source order, adding work and potentially retaining extra
+position vectors for pending profiles. Initial or uncached filtering and sorting still run synchronously,
+and finishing a profile can require an uninterrupted step.
 This improves responsiveness during scans; it does not make the complete calculation faster or bound every page's
 wait. Live notebooks, R terminals and managed R documents keep synchronous native profiling.
 

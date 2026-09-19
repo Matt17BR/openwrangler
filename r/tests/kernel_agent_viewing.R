@@ -4,13 +4,22 @@ local({
   frame_runtime <- environment(openwrangler_r_frame_contract$materialize_view_page)
   native_filter_rows <- get("filter_row_positions", frame_runtime, inherits = FALSE)
   scans <- 0L
+  native_sort_rows <- get("build_sorted_row_positions", frame_runtime, inherits = FALSE)
+  sorts <- 0L
+  assign("build_sorted_row_positions", function(...) {
+    sorts <<- sorts + 1L
+    native_sort_rows(...)
+  }, frame_runtime)
+  on.exit(assign("build_sorted_row_positions", native_sort_rows, frame_runtime), add = TRUE)
   assign("filter_row_positions", function(frame, descriptor, resolved) {
     if (length(resolved$filters) != 0L) scans <<- scans + 1L
     native_filter_rows(frame, descriptor, resolved)
   }, frame_runtime)
   on.exit(assign("filter_row_positions", native_filter_rows, frame_runtime), add = TRUE)
   sources <- new.env(parent = baseenv())
-  sources$.ow_csv_source <- data.table::data.table(label = c("alpha", "beta", "none", NA_character_), value = c(4L, 1L, 9L, 7L))
+  sources$.ow_csv_source <- data.table::data.table(label = c("alpha", "beta", "none", NA_character_),
+    value = c(4L, 1L, 9L, 7L), tied = c(1L, 1L, 2L, 2L))
+  source_before <- serialize(sources$.ow_csv_source, NULL)
   path <- tempfile(fileext = ".csv")
   writeLines("label,value\nalpha,4", path)
   on.exit(unlink(path), add = TRUE)
@@ -38,16 +47,36 @@ local({
   assert_identical(vapply(first$page$page$rows, `[[`, character(1L), "id"), c("r:r:1", "r:r:0"),
     "filtered sorting changed stable source row identities")
   first_scan_count <- scans
+  first_sort_count <- sorts
+  later_window <- filtered_window()
+  later_window$rowOffset <- 1L
+  later_window$columnOffset <- 1L
+  later_window$columnLimit <- 1L
+  later <- send("getPage", list(sessionId = session_id, page = later_window))
+  assert_identical(vapply(later$page$page$rows, `[[`, character(1L), "id"), "r:r:0",
+    "a later projected page changed the filtered order")
+  assert_identical(sorts, first_sort_count, "a repeated managed page rebuilt the same filtered order")
   repeated <- send("getPage", list(sessionId = session_id, page = filtered_window(direction = "desc")))
   assert_identical(vapply(repeated$page$page$rows, `[[`, character(1L), "id"), c("r:r:0", "r:r:1"),
     "changing sort reused the previous row order")
   assert_identical(scans, first_scan_count, "repeated managed filtering rescanned source values")
+  assert_identical(sorts, first_sort_count + 1L, "changed sort rules reused an incompatible order")
+  tied_window <- filtered_window()
+  tied_window$view$sorts[[1L]]$column <- list(id = "r:c:2", name = "tied")
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  tied <- send("getPage", list(sessionId = session_id, page = tied_window))
+  assert_identical(vapply(tied$page$page$rows, `[[`, character(1L), "id"), c("r:r:0", "r:r:1"),
+    "sort ties inherited the previous view order instead of capture order")
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  retained_sort_count <- sorts
   reference <- I(list(list(id = "r:c:1", name = "value")))
   view <- filtered_window()$view
   summary <- send("getSummary", list(sessionId = session_id, columns = reference, view = view))
   assert_identical(summary$summaries[[1L]]$totalCount, 2L, "the profile changed cached membership")
   assert_identical(summary$summaries[[1L]]$numeric$min, 1L, "the cached profile minimum changed")
   assert_identical(summary$summaries[[1L]]$numeric$max, 4L, "the cached profile maximum changed")
+  assert_identical(vapply(summary$summaries[[1L]]$topValues, `[[`, character(1L), "value"), c("4", "1"),
+    "a sorted page changed profile first-occurrence order")
   stats <- send("getDatasetStats", list(sessionId = session_id, view = view))
   assert_identical(stats$totalRows, 2L, "dataset statistics changed cached membership")
   values <- send("getColumnValues", list(sessionId = session_id, column = reference[[1L]], view = view, search = NULL, limit = 10L))
@@ -57,6 +86,29 @@ local({
   assert_identical(send("beginDatasetStats", list(sessionId = session_id, statsId = "01234567-0123-4123-8123-012345678902",
     view = view))$kind, "datasetStatsComplete", "continued statistics did not use the filtered view")
   assert_identical(scans, first_scan_count, "page and profile owners did not share filtered membership")
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(sorts, retained_sort_count, "sort-ignoring reads discarded reusable page order")
+
+  retained_rows <- cache$rows
+  retained_sorts <- cache$sorts
+  tracked_sort_rows <- get("build_sorted_row_positions", frame_runtime, inherits = FALSE)
+  assign("build_sorted_row_positions", function(...) stop("expected sorting failure"), frame_runtime)
+  failed_sort <- send("getPage", list(sessionId = session_id, page = filtered_window(direction = "desc")))
+  assign("build_sorted_row_positions", tracked_sort_rows, frame_runtime)
+  assert_identical(failed_sort$kind, "error", "the sort failure fixture did not fail")
+  assert_identical(cache$rows, retained_rows, "a failed sort replaced cached positions")
+  assert_identical(cache$sorts, retained_sorts, "a failed sort replaced cached rules")
+
+  # The sole filtered column's picker requests an empty filter view.
+  picker_view <- filtered_window()$view
+  picker_view$filters <- I(list())
+  picker <- send("getColumnValues", list(sessionId = session_id, column = list(id = "r:c:0", name = "label"),
+    view = picker_view, search = NULL, limit = 10L))
+  assert_identical(picker$kind, "columnValues", "the unfiltered picker failed")
+  assert_identical(is.null(cache$capture) && is.null(cache$sorts), TRUE, "the unfiltered picker retained sorted membership")
+  before <- scans
+  send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(scans, before + 1L, "the picker did not release the previous filter entry")
 
   # A cache hit must still read and validate the current source's structure.
   data.table::setnames(sources$.ow_csv_source, "value", "changed")
@@ -79,7 +131,7 @@ local({
   send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
   assert_identical(scans, before + 1L, "empty membership was not cached")
   send("getPage", list(sessionId = session_id, page = page_window()))
-  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L && is.null(cache$sorts), TRUE,
     "an unfiltered read retained the previous filter owner")
   send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
   assert_identical(scans, before + 2L, "an empty query did not release membership")
@@ -99,6 +151,16 @@ local({
   }
   assert_identical(scans, before + 2L, "over-budget membership incorrectly reused a cache entry")
   assign("maximum_file_filter_cache_bytes", maximum_bytes, frame_runtime)
+  send("getPage", list(sessionId = session_id, page = page_window(filters = list(text_filter("a")))))
+  membership_rows <- cache$rows
+  assign("maximum_file_filter_cache_bytes", as.numeric(object.size(cache$rows)) + as.numeric(object.size(cache$key)), frame_runtime)
+  bounded_sort <- send("getPage", list(sessionId = session_id, page = filtered_window()))
+  assert_identical(vapply(bounded_sort$page$page$rows, `[[`, character(1L), "id"), c("r:r:1", "r:r:0"),
+    "sort-rule budget fallback changed row order")
+  assert_identical(cache$rows, membership_rows, "sort-rule metadata displaced admitted membership")
+  assert_identical(is.null(cache$sorts), TRUE, "over-budget sort rules were retained")
+  assign("maximum_file_filter_cache_bytes", maximum_bytes, frame_runtime)
+  assert_identical(serialize(sources$.ow_csv_source, NULL), source_before, "cached viewing changed source storage")
 
   # Custom Code can call an ambient callback that changes shared values before it fails.
   sources$mutate_source <- function() data.table::set(sources$.ow_csv_source, i = 3L, j = "label", value = "gamma")
@@ -137,7 +199,7 @@ local({
     native_preflight(response)
   }, agent_runtime)
   assert_identical(send("closeSession", list(sessionId = second_session_id))$kind, "error", "the close preflight fixture did not fail")
-  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L && is.null(cache$sorts), TRUE,
     "failed close preflight retained the agent's filter owner")
   assign("preflight_response", native_preflight, agent_runtime)
   send("closeSession", list(sessionId = second_session_id))
@@ -151,7 +213,7 @@ local({
   exports$dispose <- native_dispose
   assign("export_lifecycle", exports, agent_environment)
   assert_identical(inherits(disposal, "error"), TRUE, "the export cleanup fixture did not fail")
-  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L, TRUE,
+  assert_identical(is.null(cache$capture) && is.null(cache$key) && length(cache$rows) == 0L && is.null(cache$sorts), TRUE,
     "failed export cleanup retained the agent's filter owner")
 
   # In-flight jobs retain their own fixed membership when later pages replace it.
@@ -167,13 +229,23 @@ local({
   pending_send("openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window(row_limit = 1L)))
   summary_id <- "01234567-0123-4123-8123-012345678903"
   stats_id <- "01234567-0123-4123-8123-012345678904"
-  pending_view <- page_window(filters = list(text_filter("a")))$view
+  pending_window <- filtered_window(direction = "desc")
+  pending_view <- pending_window$view
   before <- scans
+  assert_identical(pending_send("getPage", list(sessionId = session_id, page = pending_window))$page$page$rows[[1L]]$id,
+    "r:r:200000", "the pending fixture did not establish descending page order")
   assert_identical(pending_send("beginSummary", list(sessionId = session_id, summaryId = summary_id, columns = reference,
     view = pending_view))$kind, "summaryPending", "the membership fixture did not yield its summary")
   assert_identical(pending_send("beginDatasetStats", list(sessionId = session_id, statsId = stats_id,
     view = pending_view))$kind, "datasetStatsPending", "the membership fixture did not yield its dataset statistics")
   assert_identical(scans, before + 1L, "concurrent profile begins rescanned identical membership")
+  pending_owner <- environment(pending_agent$dispose)
+  expected_rows <- seq.int(1L, 200001L, by = 2L)
+  assert_identical(get(summary_id, get("pending_summaries", pending_owner))$calculation$row_positions,
+    expected_rows, "the pending summary retained value-sorted positions")
+  assert_identical(get(stats_id, get("pending_stats", pending_owner))$calculation$view$rows,
+    expected_rows, "pending statistics retained value-sorted positions")
+  assert_identical(cache$rows, rev(expected_rows), "profile setup replaced reusable page order")
   refused <- pending_send("previewStep", list(sessionId = session_id, revision = 0L,
     step = list(id = "blocked-rename", kind = "renameColumn", params = list(column = reference[[1L]], newName = "changed")),
     page = page_window(row_limit = 1L)))
@@ -184,7 +256,7 @@ local({
     page = page_window(filters = list(text_filter("b")), row_limit = 1L)))
   assert_identical(other_membership$page$page$rows[[1L]]$id, "r:r:1", "the replacement filter changed source row identity")
   pending_send("getPage", list(sessionId = session_id, page = page_window(row_limit = 1L)))
-  assert_identical(is.null(cache$capture), TRUE, "the pending jobs prevented empty-view cache release")
+  assert_identical(is.null(cache$capture) && is.null(cache$sorts), TRUE, "the pending jobs prevented empty-view cache release")
   repeat {
     summary <- pending_send("continueSummary", list(sessionId = session_id, summaryId = summary_id, revision = 0L))
     if (!identical(summary$kind, "summaryPending")) break

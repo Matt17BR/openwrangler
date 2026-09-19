@@ -1730,15 +1730,21 @@ attribute checks. This distinguishes integer64 values and missing sentinels that
 treats as equal.
 
 Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
-value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation;
-sorts still order the selected rows separately. The unsorted integer positions and filter key together may occupy
-at most 64 MiB. A miss releases the old entry before scanning; oversized selections remain usable without retention.
-Empty filters, source-reaching edits or replay, session close and agent disposal release the entry. Invalidation
-precedes execution and cleanup, including their failure paths. Initial opening, inspection and mutation responses
-do not populate it; later reads may reuse a published active draft. The retained capture is already owned by its
-session. The entry's byte bound excludes that frame and row vectors independently retained by pending profiles. The existing
-32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and uncached filter
-selection still runs synchronously.
+value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation.
+The entry holds one integer position vector, in source order or the last requested sort order. Pages with the same
+resolved sort rules reuse that order. Sort changes start from physical capture order so ties remain stable.
+Unsorted pages, profiles and value queries recover source order without replacing the cached sort; that recovery
+adds work and allocates another vector. Pending profiles may each retain a recovered vector until completion.
+The positions, filter key and sort rules together may occupy at most 64 MiB. A filter miss releases the old entry
+before scanning; oversized selections remain usable without retention. Once filter membership is retained, a failed
+sort or over-budget sort metadata leaves that entry intact. This bound excludes the session-owned frame and
+pending-profile vectors.
+Empty filters, including a picker that removes the only column filter, release the entry. Source-reaching edits or
+replay, session close and agent disposal also release it, before execution or cleanup can fail. Initial opening,
+inspection and mutation responses do not populate it; later reads may reuse a published active draft.
+The existing 32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and
+uncached filtering and sorting still run synchronously. Reuse does not promise a net improvement for every query
+sequence: changing sort also resets UI profiling, and each new profile may need source-order recovery.
 
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.

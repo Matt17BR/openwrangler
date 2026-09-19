@@ -379,8 +379,9 @@ integer64 fixture checks exact typed bounds; large integer64 arithmetic and dist
 The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
 Managed file profiling extends these owners with synchronous/continued result equality, fresh native-binding checks
 after a yield, retained-job cleanup and exclusion of mutation or replay from another session.
-The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file filter membership reuse across reads,
-capture and filter identity, byte-bound fallback, source validation and release before execution or cleanup failures.
+The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file membership and sorted-page reuse,
+source-order profiles, stable ties, capture/filter/sort identity, key-inclusive byte bounds, source validation and
+release before execution or cleanup failures. It also checks picker eviction and pending membership after replacement.
 The [process transport unit owner](../src/test/rProcessTransport.unit.test.ts) checks page admission, the original deadline,
 stale queued advances, exclusive-request fairness and cleanup of ambiguous begins against the captured child.
 Measure actual queued-page latency, setup, finalization, total work
