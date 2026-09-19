@@ -2056,7 +2056,8 @@ export async function prepareJupyterAcceptanceREnvironment(
   const packageEntries = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS).filter(([packageName]) => {
     if (packageName === "dplyr") return purpose === CORE_R_JUPYTER_SELECTOR;
     if (purpose === "source-contracts") return ["jsonlite", "bit64"].includes(packageName);
-    if (["readxl", "bit64"].includes(packageName)) return notebook;
+    if (packageName === "readxl" || packageName === "nanoparquet") return notebook && platform === "win32";
+    if (packageName === "bit64") return notebook;
     if (focusedNotebook && ["Rcpp", "collapse"].includes(packageName)) return false;
     if (
       purpose === "interactive-terminal" &&
