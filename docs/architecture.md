@@ -1805,6 +1805,9 @@ Numeric filter operands and typed temporal payloads retain their finite native R
 floating, datetime and duration predicates compare native values directly, without formatting source rows as text.
 Integer and Date predicates still convert their bound operand keys numerically. Picker selections use the source value
 instead of reparsing display text; datetime keys retain epoch seconds and duration keys retain the column's units.
+Integer64 predicates admit the mathematical `INT64_MIN` bound even though bit64 reserves that storage for missing
+values. Generated Filter Rows and Conditional Column resolve comparisons at that bound without constructing a bit64
+missing operand. Exact clock timestamps retain their separate present `INT64_MIN` tick and comparison path.
 The shared finite-number parser normalizes accepted decimal spellings for the existing jsonlite decoder; it keeps
 native numeric inputs, signed zero and the existing grammar and range checks. Public scalar Fill still accepts
 replacement text, binds double replacements once and emits that bound value through the existing numeric-literal

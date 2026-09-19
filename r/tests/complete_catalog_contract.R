@@ -762,6 +762,41 @@ local({
 })
 
 local({
+  verify_bound_result <- function(output, expected) {
+    assert_frame_identical(names(output), names(expected), "integer64 bound changed column names or encodings")
+    assert_frame_identical(class(output), class(expected), "integer64 bound changed dataframe classes")
+    assert_frame_identical(.row_names_info(output, 0L), .row_names_info(expected, 0L), "integer64 bound changed row names")
+    assert_frame_identical(sort(names(attributes(output))), sort(names(attributes(expected))),
+      "integer64 bound changed dataframe attribute names")
+    for (index in seq_along(expected)) assert_frame_identical(output[[index]], expected[[index]],
+      "integer64 bound changed values, exact bits or column metadata")
+  }
+  source <- function() data.frame(key = 1:8, value = bit64::as.integer64(c(
+    "-9223372036854775807", "-9223372036854775806", "-1", "0", "1",
+    "9223372036854775806", "9223372036854775807", NA_character_)))
+  cases <- list(
+    filterRows = list(source = source,
+      step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(filters = I(list(
+        list(column = column_reference(frame, "value"), type = "integer", predicates = I(list(
+          list(kind = "predicate", operator = "between", value = "-9223372036854775808", secondValue = "9223372036854775807"))))
+      )), sort = I(list())))),
+      verify = function(output, input) verify_bound_result(output, input[1:7, , drop = FALSE])),
+    conditionalColumn = list(source = source,
+      step = function(frame, id) step_with(id, "conditionalColumn", list(
+        column = column_reference(frame, "value"), columnType = "integer",
+        predicate = list(kind = "predicate", operator = "gt", value = "-9223372036854775808"), newColumn = "matches",
+        resultType = "boolean", trueValue = TRUE, falseValue = FALSE, missingValue = NULL)),
+      verify = function(output, input) {
+        expected <- input; expected$matches <- c(rep(TRUE, 7L), NA)
+        verify_bound_result(output, expected)
+      })
+  )
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) run_catalog_case(cases[[index]], names(cases)[[index]], 6300L + index, library)
+  }
+})
+
+local({
   previous_locale <- Sys.getlocale("LC_CTYPE")
   on.exit(Sys.setlocale("LC_CTYPE", previous_locale), add = TRUE)
   assert_identical(Sys.setlocale("LC_CTYPE", "C"), "C", "comparison catalog could not select the C locale")

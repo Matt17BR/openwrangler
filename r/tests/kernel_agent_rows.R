@@ -72,6 +72,66 @@ for (operator in c("isNull", "isNotNull", "isNaN", "isNotNaN")) {
 conditional_roundtrip(bit64::as.integer64(c("9007199254740992", "9007199254740993", NA_character_)), "integer",
   list(kind = "predicate", operator = "equals", value = "9007199254740993"),
   "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), c(FALSE, TRUE, NA))
+local({
+  minimum <- "-9223372036854775808"
+  maximum <- "9223372036854775807"
+  values <- bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "-1", "0", "1",
+    "9223372036854775806", maximum, NA_character_))
+  sources <- new.env(parent = baseenv())
+  sources$frame <- data.frame(key = seq_along(values), value = values, row.names = paste0("bound-", seq_along(values)))
+  before <- serialize(sources$frame, NULL, version = 3L)
+  owner <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, sources)
+  on.exit(owner$dispose(), add = TRUE)
+  session <- "76767676-7676-4676-8676-767676767676"
+  opened <- dispatch_with(owner, "openSession", list(sessionId = session, variableName = "frame", page = page_window()))
+  assert_identical(opened$kind, "page", "integer64 bound session did not open")
+  outcomes <- c(equals = FALSE, notEquals = TRUE, gt = TRUE, gte = TRUE, lt = FALSE, lte = FALSE)
+  cases <- lapply(names(outcomes), function(operator) list(
+    predicate = list(kind = "predicate", operator = operator, value = minimum),
+    expected = c(rep(unname(outcomes[[operator]]), 7L), NA)))
+  names(cases) <- names(outcomes)
+  cases$minimum_lower <- list(predicate = list(kind = "predicate", operator = "between", value = minimum, secondValue = "0"),
+    expected = c(TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, NA))
+  cases$minimum_upper <- list(predicate = list(kind = "predicate", operator = "between", value = "0", secondValue = minimum),
+    expected = c(rep(FALSE, 7L), NA))
+  cases$both_minimum <- list(predicate = list(kind = "predicate", operator = "between", value = minimum, secondValue = minimum),
+    expected = c(rep(FALSE, 7L), NA))
+  cases$maximum <- list(predicate = list(kind = "predicate", operator = "equals", value = maximum),
+    expected = c(rep(FALSE, 6L), TRUE, NA))
+  revision <- 0L
+  for (name in names(cases)) {
+    case <- cases[[name]]
+    step <- list(id = paste0("bound-", name), kind = "conditionalColumn", params = list(
+      column = list(id = "r:c:1", name = "value"), columnType = "integer", predicate = case$predicate,
+      newColumn = "result", resultType = "boolean", trueValue = TRUE, falseValue = FALSE, missingValue = NULL))
+    latest_full_capture <<- NULL
+    preview <- dispatch_with(owner, "previewStep", list(sessionId = session, revision = revision, step = step, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", paste("integer64 bound did not preview:", name))
+    live <- get("snapshot", envir = latest_full_capture, inherits = FALSE)
+    assert_identical(live$result, case$expected, paste("integer64 bound changed live branches:", name))
+    generated <- new.env(parent = baseenv()); generated$frame <- unserialize(before)
+    eval(parse(text = preview$code), generated)
+    assert_identical(identical(generated$open_wrangler_result, live, num.eq = FALSE, single.NA = FALSE), TRUE,
+      paste("generated integer64 bound changed frame values or metadata:", name))
+    assert_identical(serialize(generated$frame, NULL, version = 3L), before, "generated integer64 bound changed its source")
+    if (name %in% c("equals", "gt")) for (empty in c(FALSE, TRUE)) {
+      replay <- new.env(parent = baseenv()); replay$frame <- unserialize(before)
+      if (empty) replay$frame <- replay$frame[integer(), , drop = FALSE] else replay$frame$value[] <- bit64::NA_integer64_
+      replay_before <- serialize(replay$frame, NULL, version = 3L)
+      expected <- replay$frame; expected$result <- rep(NA, nrow(expected))
+      eval(parse(text = preview$code), replay)
+      assert_identical(identical(replay$open_wrangler_result, expected, num.eq = FALSE, single.NA = FALSE), TRUE,
+        "generated true/false integer64 bound changed empty or missing output shape")
+      assert_identical(serialize(replay$frame, NULL, version = 3L), replay_before,
+        "generated empty/missing integer64 bound changed its source")
+    }
+    discarded <- dispatch_with(owner, "discardDraft", list(sessionId = session, revision = preview$revision, page = page_window()))
+    assert_identical(discarded$kind, "planUpdated", "integer64 bound draft did not discard")
+    revision <- discarded$revision
+    assert_identical(serialize(sources$frame, NULL, version = 3L), before, "integer64 bound preview changed its source")
+  }
+  assert_identical(dispatch_with(owner, "closeSession", list(sessionId = session))$kind, "closed", "integer64 bound session did not close")
+})
 conditional_roundtrip(c(TRUE, FALSE, NA), "boolean", list(kind = "predicate", operator = "equals", value = TRUE),
   "string", list(trueValue = NULL, falseValue = " ", missingValue = "missing"), c(NA_character_, " ", "missing"))
 conditional_roundtrip(character(), "string", list(kind = "predicate", operator = "contains", value = "NaN"),
