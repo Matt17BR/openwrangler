@@ -769,8 +769,8 @@ require the exact private IRkernel readiness probe; terminal preparation creates
 All editor purposes retain the exact native R executable and private library environment. Notebook setup, restart
 and replacement checks compare the reported collapse version with the version selected by preparation. The remote
 container retains its separate pinned package version.
-Editor libraries include Arrow 23.0.1.1 and clock 0.7.4 from the existing primary snapshot, plus nanoparquet 0.5.1
-from the existing supplemental snapshot for file metadata and zero-column export. Linux source locks use Arrow 25.0.0
+Editor libraries include Arrow 23.0.1.1 and clock 0.7.4 from the existing primary snapshot. Windows notebook and core
+preparation also include nanoparquet 0.5.1 from the existing supplemental snapshot for Parquet file inputs. Linux source locks use Arrow 25.0.0
 and clock 0.7.4 from their existing snapshot. These packages are installed in the selected private R library, not bundled
 in the VSIX. CSV-only product use does not require Arrow or clock.
 
@@ -825,8 +825,9 @@ of the confirmed plan followed by public grid navigation. A tiny CP1252 CSV uses
 header, quote and CR controls after its encoding is automatically detected, retaining quoted CRLF bytes; its saved options/plan restore through the public custom editor and its generated program executes
 in the original R notebook kernel with exact PID equality. The same branch opens the existing Parquet, JSONL, XLSX and BIFF fixtures and selects
 the nonfirst XLSX worksheet through the real picker. Exact native cells, source bytes, an unrelated sentinel and owned
-session/private-root cleanup remain asserted. Default notebook preparation includes pinned readxl and bit64 for these
-file inputs; focused, terminal and source-only package sets stay unchanged. This adds small file launches and reader
+session/private-root cleanup remain asserted. Windows notebook and core preparation include pinned readxl for Excel and
+nanoparquet for Parquet file inputs. Notebook and core preparation retain bit64 on every platform. Categorical, value and pivot-wider journeys
+skip the separate document and file stages. Other editor preparations omit both file readers; source-only package sets stay unchanged. This adds small file launches and reader
 preparation within the existing profile and phase deadline; hosted checkpoints must establish the actual additional cost. Its original hosted run records phase-relative checkpoints;
 polling can miss quick transitions, so these are not exact per-action timings.
 The Linux core catalog retains the Dense Rank form,

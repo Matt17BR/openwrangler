@@ -1,3 +1,8 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type * as vscode from "vscode";
+import type { JupyterServerCollection } from "@vscode/jupyter-extension";
+import type { Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertReleasedNativeREditorTooling,
@@ -10,6 +15,116 @@ import {
   RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE,
   RELEASED_R_REPRESENTATIVE_COVERAGE
 } from "./extensionHost/releasedRAcceptanceCoverage";
+import { createReleasedRJupyterExtensionJourney } from "./extensionHost/releasedRJupyterExtensionJourney";
+import { cleanupAcceptanceTemporaryDirectory } from "./extensionHost/acceptanceTemporaryDirectory";
+import { RELEASED_JUPYTER_R_SETUP_RESULT } from "./extensionHost/releasedDocumentFixtures";
+import type { TestApi, ExtensionApi } from "./extensionHost/extensionHostTestApi";
+
+const notebookApi = vi.hoisted(() => ({
+  configuration: { inspect: vi.fn(() => undefined), update: vi.fn(async () => {}) },
+  open: vi.fn(),
+  show: vi.fn(async () => ({})),
+  extension: { packageJSON: { version: "test-version" }, activate: vi.fn(async () => ({})) }
+}));
+vi.mock("vscode", () => ({
+  Uri: { file: (fsPath: string) => ({ fsPath }) },
+  extensions: { getExtension: () => notebookApi.extension },
+  workspace: { getConfiguration: () => notebookApi.configuration, openNotebookDocument: notebookApi.open },
+  window: { showNotebookDocument: notebookApi.show },
+  ViewColumn: { One: 1 },
+  ConfigurationTarget: { Workspace: 2 }
+}));
+vi.mock("./extensionHost/acceptanceTemporaryDirectory", async () => {
+  const { rmSync } = await import("node:fs");
+  return {
+    // These routing tests use local temporary files even when selecting a Windows journey.
+    cleanupAcceptanceTemporaryDirectory: vi.fn((directory: string) => rmSync(directory, { recursive: true }))
+  };
+});
+
+type NotebookJourneyDependencies = Parameters<typeof createReleasedRJupyterExtensionJourney>[0];
+function notebookJourney(platform: NodeJS.Platform, phase: "jupyter-r" | "jupyter-r-remote" = "jupyter-r") {
+  const notebook = { cellAt: () => ({ outputs: [] }) } as unknown as vscode.NotebookDocument;
+  notebookApi.open.mockReset().mockImplementation(async (uri: vscode.Uri) => {
+    Object.assign(notebook, { uri });
+    expect(existsSync(uri.fsPath)).toBe(true);
+    return notebook;
+  });
+  notebookApi.configuration.update.mockClear();
+  vi.mocked(cleanupAcceptanceTemporaryDirectory).mockClear();
+  const testing = { diagnostics: () => ({ sessionCount: 0 }) } as TestApi;
+  const extension = { packageJSON: {} } as vscode.Extension<ExtensionApi>;
+  const workbench = {} as Page;
+  const base = { sessionId: "notebook-base" } as NonNullable<ReturnType<TestApi["activeSession"]>>;
+  const remote = { dispose: vi.fn() } as unknown as JupyterServerCollection;
+  const dependencies = {
+    platform,
+    RELEASED_JUPYTER_EXTENSION_VERSION: "test-version",
+    RELEASED_JUPYTER_R_KERNEL_CELL: 0,
+    RELEASED_JUPYTER_R_SETUP_CELL: 1,
+    assertReleasedRPrivateLibrary: vi.fn(),
+    assertReleasedRRuntimeBinding: vi.fn(async () => {}),
+    assertReleasedRSetupVersions: vi.fn(),
+    bestEffortReleasedJupyterCleanup: vi.fn(async () => {}),
+    connectToEditorWorkbench: vi.fn(async () => workbench),
+    executeReleasedNotebookCell: vi.fn(async () => {}),
+    exerciseReleasedRCollapseFrameSessions: vi.fn(async () => {}),
+    exerciseReleasedRDocumentJourney: vi.fn<NotebookJourneyDependencies["exerciseReleasedRDocumentJourney"]>(
+      async () => {}
+    ),
+    exerciseReleasedREditingCoverage: vi.fn(async () => {}),
+    exerciseReleasedREditingModeTransition: vi.fn(async () => {}),
+    exerciseReleasedRGridJourney: vi.fn(async () => {}),
+    exerciseReleasedRKernelLifecycle: vi.fn(async () => {}),
+    exerciseReleasedRKernelRestartExtension: vi.fn(async () => {}),
+    exerciseReleasedRNativeFrameSessions: vi.fn(async () => {}),
+    exerciseReleasedRNativeFramesExtension: vi.fn(async () => {}),
+    exerciseReleasedRNotebookMedia: vi.fn(async () => base),
+    exerciseReleasedRVariableDiscovery: vi.fn(async () => base),
+    getLastAcceptanceProgressCheckpoint: () => undefined,
+    notebookCellOutputText: () => RELEASED_JUPYTER_R_SETUP_RESULT,
+    recordAcceptanceProgress: vi.fn(),
+    recordReleasedRAcceptanceSection: vi.fn(),
+    registerReleasedRemoteJupyterServer: vi.fn(() => remote),
+    releasedJupyterKernelTarget: () => ({
+      name: "r-test",
+      label: "R test",
+      routeLabels: [],
+      ...(phase === "jupyter-r-remote"
+        ? {
+            remote: { baseUrl: { fsPath: "unused" } as vscode.Uri, token: "", runId: "test-run", hostname: "test-host" }
+          }
+        : {})
+    }),
+    releasedNotebookJsonResult: () => ({
+      rows: 1_205,
+      columns: 25,
+      pid: 4321,
+      remoteRunId: "test-run",
+      hostname: "test-host"
+    }),
+    selectReleasedJupyterKernel: vi.fn(async () => {})
+  } satisfies NotebookJourneyDependencies;
+  const run = createReleasedRJupyterExtensionJourney(dependencies);
+  return {
+    dependencies,
+    testing,
+    workbench,
+    base,
+    notebook,
+    run: (coverage: Parameters<typeof run>[3]) => run(testing, extension, phase, coverage),
+    assertCleanup() {
+      expect(dependencies.bestEffortReleasedJupyterCleanup).toHaveBeenCalledExactlyOnceWith(testing, notebook, phase);
+      expect(notebookApi.configuration.update.mock.calls.slice(-2)).toEqual([
+        ["notebookStartMode", undefined, 2],
+        ["notebookPreviewProvider", undefined, 2]
+      ]);
+      expect(cleanupAcceptanceTemporaryDirectory).toHaveBeenCalledExactlyOnceWith(dirname(notebook.uri.fsPath));
+      expect(existsSync(dirname(notebook.uri.fsPath))).toBe(false);
+      expect(remote.dispose).toHaveBeenCalledTimes(phase === "jupyter-r-remote" ? 1 : 0);
+    }
+  };
+}
 
 const rCommands = ["r.runSelection", "r.runSource", "r.knitRmdToHtml"];
 const quartoCommands = ["quarto.runCurrentCell", "quarto.renderDocument", "quarto.preview"];
@@ -76,6 +191,67 @@ describe("released native R editor tooling", () => {
     expect(releasedRAcceptanceCoverageProfile({ ...request, platform: "darwin" })).toEqual(
       RELEASED_R_PLATFORM_LIFECYCLE_COVERAGE
     );
+  });
+
+  for (const platform of ["darwin", "win32"] as const) {
+    it.each(["categorical-operations", "value-operations", "pivot-wider"] as const)(
+      `keeps focused %s editing without document or file stages on ${platform}`,
+      async (selector) => {
+        const fixture = notebookJourney(platform);
+        const coverage = releasedRAcceptanceCoverageProfile({
+          editor: "vscode",
+          phase: "jupyter-r",
+          platform,
+          selector
+        });
+        await fixture.run(coverage);
+        expect(fixture.dependencies.exerciseReleasedREditingCoverage).toHaveBeenCalledExactlyOnceWith(
+          fixture.testing,
+          fixture.workbench,
+          fixture.base,
+          fixture.notebook,
+          fixture.notebook.uri.fsPath,
+          dirname(fixture.notebook.uri.fsPath),
+          "jupyter-r",
+          coverage,
+          undefined
+        );
+        fixture.assertCleanup();
+        expect(fixture.dependencies.exerciseReleasedRDocumentJourney).not.toHaveBeenCalled();
+      }
+    );
+  }
+
+  it.each([
+    ["darwin", "vscode", "jupyter-r", undefined, "document-and-file"],
+    ["darwin", "cursor", "jupyter-r", undefined, "document"],
+    ["darwin", "vscode", "jupyter-r", "core-operations", "document"],
+    ["win32", "vscode", "jupyter-r", undefined, "file"],
+    ["win32", "cursor", "jupyter-r", undefined, "file"],
+    ["win32", "vscode", "jupyter-r", "core-operations", "file"],
+    ["linux", "vscode", "jupyter-r", undefined, undefined],
+    ["linux", "vscode", "jupyter-r-remote", undefined, undefined]
+  ] as const)("retains ordinary %s %s %s %s stage %s", async (platform, editor, phase, selector, entry) => {
+    const fixture = notebookJourney(platform, phase);
+    const coverage = releasedRAcceptanceCoverageProfile({ editor, phase, platform, selector });
+    await fixture.run(coverage);
+    const document = fixture.dependencies.exerciseReleasedRDocumentJourney;
+    if (entry === undefined) expect(document).not.toHaveBeenCalled();
+    else {
+      const directory = dirname(fixture.notebook.uri.fsPath);
+      expect(document.mock.calls).toEqual([
+        entry === "file"
+          ? [
+              fixture.testing,
+              fixture.workbench,
+              join(directory, "R files café"),
+              entry,
+              { document: fixture.notebook, processId: 4321 }
+            ]
+          : [fixture.testing, fixture.workbench, directory, entry]
+      ]);
+    }
+    fixture.assertCleanup();
   });
 
   it("requires only pinned R tooling for the explicit terminal scope", async () => {

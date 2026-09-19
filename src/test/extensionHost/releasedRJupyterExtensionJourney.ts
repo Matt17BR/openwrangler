@@ -35,6 +35,7 @@ interface ReleasedJupyterKernelTarget {
 }
 
 interface ReleasedRJupyterExtensionJourneyDependencies {
+  readonly platform?: NodeJS.Platform;
   readonly RELEASED_JUPYTER_EXTENSION_VERSION: string;
   readonly RELEASED_JUPYTER_R_KERNEL_CELL: number;
   readonly RELEASED_JUPYTER_R_SETUP_CELL: number;
@@ -176,6 +177,7 @@ interface ReleasedRJupyterExtensionJourneyDependencies {
 }
 
 export function createReleasedRJupyterExtensionJourney({
+  platform = process.platform,
   RELEASED_JUPYTER_EXTENSION_VERSION,
   RELEASED_JUPYTER_R_KERNEL_CELL,
   RELEASED_JUPYTER_R_SETUP_CELL,
@@ -235,9 +237,7 @@ export function createReleasedRJupyterExtensionJourney({
     const notebookUri = vscode.Uri.file(notebookPath);
     const kernelTarget = releasedJupyterKernelTarget(phase);
     const screenshotOutput =
-      phase === "jupyter-r" && process.platform === "linux"
-        ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
-        : undefined;
+      phase === "jupyter-r" && platform === "linux" ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS : undefined;
     writeReleasedRNotebook(notebookPath, phase, releasedJupyterKernelTarget(phase), coverage.focusedEditing);
     const configuration = vscode.workspace.getConfiguration("openWrangler");
     const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
@@ -324,9 +324,9 @@ export function createReleasedRJupyterExtensionJourney({
 
       await exerciseReleasedRCollapseFrameSessions(testing, workbench, notebook, phase, coverage);
 
-      if (phase === "jupyter-r" && process.platform === "darwin") {
+      if (phase === "jupyter-r" && platform === "darwin" && coverage.focusedEditing === "none") {
         assert.equal(
-          supportsRscriptExecution(process.platform),
+          supportsRscriptExecution(platform),
           true,
           "The ordinary macOS R gate requires the product's direct-document transport."
         );
@@ -341,8 +341,8 @@ export function createReleasedRJupyterExtensionJourney({
         recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
       }
 
-      if (phase === "jupyter-r" && process.platform === "win32") {
-        assert.equal(supportsRFileExecution(), true, "The Windows R gate requires the owned file transport.");
+      if (phase === "jupyter-r" && platform === "win32" && coverage.focusedEditing === "none") {
+        assert.equal(supportsRFileExecution(platform), true, "The Windows R gate requires the owned file transport.");
         recordReleasedRAcceptanceSection(phase, coverage, "file", "start");
         await exerciseReleasedRDocumentJourney(testing, workbench, path.join(directory, "R files café"), "file", {
           document: notebook,

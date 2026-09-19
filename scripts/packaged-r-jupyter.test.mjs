@@ -44,6 +44,7 @@ const notebookPackages = [
   "readxl",
   "bit64"
 ];
+const nonWindowsNotebookPackages = notebookPackages.filter((name) => name !== "readxl" && name !== "nanoparquet");
 const editorPackages = [
   "IRkernel",
   "jsonlite",
@@ -55,7 +56,6 @@ const editorPackages = [
   "tibble",
   "data.table",
   "collapse",
-  "nanoparquet",
   "arrow",
   "clock"
 ];
@@ -422,12 +422,15 @@ test("qualified selected R installs the exact acquired macOS collapse binary and
     }
   ]);
   const versions = {
-    ...Object.fromEntries(notebookPackages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]])),
+    ...Object.fromEntries(nonWindowsNotebookPackages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]])),
     collapse: "2.1.8"
   };
-  assert.deepEqual(preparedPackageInputs(prepared), { packages: notebookPackages, versions });
+  assert.deepEqual(preparedPackageInputs(prepared), { packages: nonWindowsNotebookPackages, versions });
   assert.deepEqual(prepared.packageVersions, versions);
-  assert.equal(prepared.packageRecord, notebookPackages.map((name) => `${name}=${versions[name]}`).join("\n"));
+  assert.equal(
+    prepared.packageRecord,
+    nonWindowsNotebookPackages.map((name) => `${name}=${versions[name]}`).join("\n")
+  );
   assert.equal(R_ACCEPTANCE_PACKAGE_VERSIONS.collapse, "2.1.7");
   assert.equal(
     resolveEditorAcceptanceJupyterEnvironment(prepared.jupyterEnvironment, fixture.root)
@@ -603,23 +606,20 @@ test("qualified binary preparation refuses acquisition and archive ownership fai
 for (const [scope, selection, packages] of [
   ["default", {}, editorPackages],
   ["literate", { purpose: "literate-documents" }, editorPackages],
-  ["notebook", { purpose: "notebook" }, notebookPackages],
-  ["core-operations", { purpose: "core-operations" }, [...notebookPackages, "dplyr"]],
+  ["notebook", { purpose: "notebook" }, nonWindowsNotebookPackages],
+  ["core-operations", { purpose: "core-operations" }, [...nonWindowsNotebookPackages, "dplyr"]],
   ...["value-operations", "categorical-operations", "pivot-wider"].map((purpose) => [
     purpose,
     { purpose },
-    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "nanoparquet", "arrow", "clock"]
+    ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "arrow", "clock"]
   ]),
-  [
-    "terminal",
-    { purpose: "interactive-terminal" },
-    ["jsonlite", "rlang", "tibble", "data.table", "nanoparquet", "arrow", "clock"]
-  ]
+  ["terminal", { purpose: "interactive-terminal" }, ["jsonlite", "rlang", "tibble", "data.table", "arrow", "clock"]]
 ]) {
   test(`prepared R dependency inputs and receipt agree for ${scope}`, async (t) => {
     const fixture = provisioning(t);
     const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
       ...fixture.options,
+      platform: "linux",
       ...selection
     });
     const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
@@ -632,7 +632,7 @@ for (const [scope, selection, packages] of [
       const install = commandCode(prepared.dependencyInstall);
       assert.equal(prepared.packageVersions.dplyr, "1.2.1");
       assert.match(prepared.supplementalRepository, /\/2026-06-01$/u);
-      assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet", "dplyr"\)/u);
+      assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "dplyr"\)/u);
       assert.match(install, /\.ow_core_packages <- setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
     }
     for (const value of [prepared, prepared.packages, prepared.packageVersions]) assert.ok(Object.isFrozen(value));
@@ -665,7 +665,8 @@ for (const [scope, selection, packages] of [
     assert.equal(prepared.dependencyInstall.options.timeoutMs, 1_200_000);
     assert.ok(Object.isFrozen(R_ACCEPTANCE_PACKAGE_VERSIONS));
     assert.equal(prepared.packages.includes("bit64"), scope === "notebook" || scope === "core-operations");
-    assert.equal(prepared.packages.includes("readxl"), scope === "notebook" || scope === "core-operations");
+    assert.equal(prepared.packages.includes("readxl"), false);
+    assert.equal(prepared.packages.includes("nanoparquet"), false);
     await assert.rejects(
       prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, fixture.options),
       /new contained private environment/u
@@ -895,47 +896,70 @@ test("invalid literate tooling scope fails before artifact or command work", asy
   }
 });
 
-test("notebook roots retain supplemental installs and private dependency refusals on each platform", async (t) => {
+test("notebook and core roots retain only their platform readers and private dependency refusals", async (t) => {
   for (const platform of ["linux", "darwin", "win32"]) {
-    const fixture = provisioning(t);
-    const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
-      ...fixture.options,
-      purpose: "notebook",
-      platform
-    });
-    const repositories = rAcceptanceRepositories(platform);
-    assert.equal(prepared.repository, repositories.repository);
-    assert.equal(prepared.supplementalRepository, repositories.supplementalRepository);
-    const install = commandCode(prepared.dependencyInstall);
-    assert.match(install, /\.ow_supplemental_packages <- c\("collapse", "nanoparquet"\)/u);
-    assert.equal(install.includes('type = "source"'), platform === "darwin");
-    assert.match(
-      install,
-      platform === "darwin"
-        ? /\.ow_binary_supplemental_packages <- c\("nanoparquet"\)/u
-        : /\.ow_binary_supplemental_packages <- c\("collapse", "nanoparquet"\)/u
-    );
-    const serialMake = 'Sys.setenv(MAKEFLAGS = "-s")';
-    const parallelMake = 'Sys.setenv(MAKEFLAGS = "-s -j2")';
-    const initialMake = platform === "linux" ? parallelMake : serialMake;
-    assert.equal(install.split("\n")[0], initialMake);
-    assert.deepEqual(
-      install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
-      platform === "darwin" ? [serialMake, parallelMake] : [initialMake]
-    );
-    if (platform === "darwin") {
-      const collapseStart = install.indexOf(`${parallelMake}\nutils::install.packages(\n  "collapse",`);
-      assert.notEqual(collapseStart, -1);
-      assert.equal(install.slice(0, collapseStart).match(/utils::install\.packages\(/gu)?.length, 2);
-      assert.equal(install.slice(collapseStart).match(/utils::install\.packages\(/gu)?.length, 1);
+    for (const purpose of ["notebook", "core-operations"]) {
+      const fixture = provisioning(t);
+      const prepared = await prepareJupyterAcceptanceREnvironment(fixture.directory, fixture.rscript, {
+        ...fixture.options,
+        purpose,
+        platform
+      });
+      const packages = [
+        ...(platform === "win32" ? notebookPackages : nonWindowsNotebookPackages),
+        ...(purpose === "core-operations" ? ["dplyr"] : [])
+      ];
+      const versions = Object.fromEntries(packages.map((name) => [name, R_ACCEPTANCE_PACKAGE_VERSIONS[name]]));
+      assert.deepEqual(preparedPackageInputs(prepared), { packages, versions });
+      assert.deepEqual(prepared.packages, packages);
+      assert.deepEqual(prepared.packageVersions, versions);
+      assert.equal(prepared.packageRecord, packages.map((name) => `${name}=${versions[name]}`).join("\n"));
+      const repositories = rAcceptanceRepositories(platform);
+      assert.equal(prepared.repository, repositories.repository);
+      assert.equal(prepared.supplementalRepository, repositories.supplementalRepository);
+      const install = commandCode(prepared.dependencyInstall);
+      const supplemental = [
+        "collapse",
+        ...(platform === "win32" ? ["nanoparquet"] : []),
+        ...(purpose === "core-operations" ? ["dplyr"] : [])
+      ];
+      assert.ok(
+        install.includes(
+          `.ow_supplemental_packages <- c(${supplemental.map((name) => JSON.stringify(name)).join(", ")})`
+        )
+      );
+      assert.equal(install.includes('type = "source"'), platform === "darwin");
+      const binarySupplemental = supplemental.filter((name) => platform !== "darwin" || name !== "collapse");
+      assert.ok(
+        install.includes(
+          `.ow_binary_supplemental_packages <- c(${binarySupplemental.map((name) => JSON.stringify(name)).join(", ")})`
+        )
+      );
+      const serialMake = 'Sys.setenv(MAKEFLAGS = "-s")';
+      const parallelMake = 'Sys.setenv(MAKEFLAGS = "-s -j2")';
+      const initialMake = platform === "linux" ? parallelMake : serialMake;
+      assert.equal(install.split("\n")[0], initialMake);
+      assert.deepEqual(
+        install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
+        platform === "darwin" ? [serialMake, parallelMake] : [initialMake]
+      );
+      if (platform === "darwin") {
+        const collapseStart = install.indexOf(`${parallelMake}\nutils::install.packages(\n  "collapse",`);
+        assert.notEqual(collapseStart, -1);
+        assert.equal(
+          install.slice(0, collapseStart).match(/utils::install\.packages\(/gu)?.length,
+          purpose === "core-operations" ? 2 : 1
+        );
+        assert.equal(install.slice(collapseStart).match(/utils::install\.packages\(/gu)?.length, 1);
+      }
+      assert.match(install, /dependencies = NA/u);
+      const probe = commandCode(prepared.dependencyProbe);
+      assert.match(probe, /find\.package\(.ow_package, lib.loc = .ow_library, quiet = TRUE\)/u);
+      assert.match(probe, /loadNamespace\(.ow_package, lib.loc = .ow_library\)/u);
+      for (const status of [10, 11, 12, 13, 14, 15, 16, 17]) assert.ok(probe.includes(`status = ${status}L`));
+      for (const factory of ["qDF", "qTBL", "qDT", "fgroup_by", "findex_by"])
+        assert.ok(probe.includes(`collapse::${factory}(`));
     }
-    assert.match(install, /dependencies = NA/u);
-    const probe = commandCode(prepared.dependencyProbe);
-    assert.match(probe, /find\.package\(.ow_package, lib.loc = .ow_library, quiet = TRUE\)/u);
-    assert.match(probe, /loadNamespace\(.ow_package, lib.loc = .ow_library\)/u);
-    for (const status of [10, 11, 12, 13, 14, 15, 16, 17]) assert.ok(probe.includes(`status = ${status}L`));
-    for (const factory of ["qDF", "qTBL", "qDT", "fgroup_by", "findex_by"])
-      assert.ok(probe.includes(`collapse::${factory}(`));
   }
 });
 
@@ -948,9 +972,11 @@ test("terminal preparation keeps native R ownership without a kernel on each pla
       platform
     });
     const install = commandCode(prepared.dependencyInstall);
-    assert.match(install, /\.ow_supplemental_packages <- c\("nanoparquet"\)/u);
-    assert.match(install, /\.ow_binary_supplemental_packages <- c\("nanoparquet"\)/u);
+    assert.match(install, /\.ow_supplemental_packages <- c\(\)/u);
+    assert.match(install, /\.ow_binary_supplemental_packages <- c\(\)/u);
     assert.equal(install.includes('"collapse"'), false);
+    assert.equal(install.includes('"nanoparquet"'), false);
+    assert.equal(install.includes('"readxl"'), false);
     assert.equal(install.includes('"Rcpp"'), false);
     assert.equal(install.includes('"IRkernel"'), false);
     assert.equal(install.includes('"rmarkdown"'), false);
@@ -959,7 +985,7 @@ test("terminal preparation keeps native R ownership without a kernel on each pla
       install.split("\n").filter((line) => line.startsWith("Sys.setenv(MAKEFLAGS")),
       [platform === "linux" ? 'Sys.setenv(MAKEFLAGS = "-s -j2")' : 'Sys.setenv(MAKEFLAGS = "-s")']
     );
-    assert.equal(install.match(/utils::install\.packages\(/gu)?.length, 2);
+    assert.equal(install.match(/utils::install\.packages\(/gu)?.length, 1);
     assert.match(install, /dependencies = NA/u);
     const probe = commandCode(prepared.dependencyProbe);
     assert.equal(probe.includes("collapse::"), false);
