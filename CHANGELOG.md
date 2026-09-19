@@ -4,7 +4,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
-## [2.6.0] - 2026-09-18
+## [2.6.0] - 2026-09-19
 
 ### Added
 
@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Local R files serve grid pages between batches of large column profiles and Dataset statistics, and reuse unchanged filtered row selections within documented memory bounds. Initial or uncached filtering and profile finalization remain synchronous.
 - The engine picker identifies Python and R choices consistently and shows whether a choice switches the current tab, opens a new tab or creates an editing copy.
 - R Parquet import and export require `arrow`; imports and zero-column exports also need `nanoparquet`. Exact timestamp columns also require `clock`.
 - Auto can open supported local files in R when no compatible Python interpreter or file engine is available.
@@ -43,6 +44,9 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R character filters and Conditional Column accept valid unmarked UTF-8 under the C locale, with matching generated R and unchanged source encodings.
+- Native R refusals retain their original explanation instead of becoming malformed-response errors or triggering unnecessary recovery.
+- Large R integer64 profiles compute exact sums and extrema with less repeated work.
 - R `POSIXct` display, copied cells and Convert Type to text use consistent microsecond rounding, including generated R. This fixes a one-microsecond display error without changing source values, explicit Format Datetime or existing One Hot column names.
 - R Parquet export refuses durations that cannot convert exactly from their R units to nanoseconds, including sub-nanosecond values, NaN, infinity and overflow, instead of changing them silently.
 - Applying a cleaning step preserves new grid selections and keyboard focus instead of clearing them with a delayed view restoration. Opening Code Preview also keeps the current selection.
