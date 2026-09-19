@@ -22,6 +22,7 @@ const arrowFormulaHelper = "python/openwrangler_runtime/engines/_pandas_arrow_fo
 const arrowFormulaTests = ["python/tests/test_operation_edges.py", "python/tests/test_session_transactions.py"];
 const pandasFilterTests = ["python/tests/test_pandas_engine.py", "python/tests/test_filter_logic.py"];
 const screenshot = "docs/images/acceptance/operation-dialog-dark-1280.png";
+const performanceReport = "docs/performance/2026-09-17-release-preparation/notebook-samples.json";
 const mediaCompositor = "scripts/compose-readme-media.mjs";
 const browserInteractions = "scripts/test-webview-accessibility.mjs";
 const importPromptFile = "src/extension/files/importOptions.ts";
@@ -174,7 +175,7 @@ test("proves documentary additions, edits and removals", async (context) => {
   }
 });
 
-test("keeps all owners for documentary additions, removals or report data mixed with otherwise omittable source", async (context) => {
+test("keeps all owners for documentary additions or removals mixed with otherwise omittable source", async (context) => {
   for (const { file, added = false, document = "docs/testing.md", status = "D" } of [
     { file: "python/openwrangler_runtime/engines/pandas_engine.py" },
     { file: "python/tests/added.py", added: true },
@@ -186,10 +187,10 @@ test("keeps all owners for documentary additions, removals or report data mixed 
     { file: browserInteractions, document: "docs/new.md", status: "A" },
     { file: importPromptFile },
     { file: importPromptFile, document: "docs/new.md", status: "A" },
-    { file: importPromptFile, document: "docs/performance/result.json", status: "M" },
+    { file: screenshot, document: performanceReport, status: "A" },
+    { file: screenshot, document: performanceReport, status: "D" },
     { file: "python/tests/existing.py", document: "docs/new.md", status: "A" },
     { file: "r/tests/kernel_agent.R", document: "docs/performance/result.json", status: "A" },
-    { file: "src/test/webview.component.test.tsx", document: "docs/performance/result.json", status: "M" },
     { file: "python/tests/added.py", added: true, document: "docs/performance/result.json" }
   ]) {
     await context.test(`${file}, added=${added}, ${status} ${document}`, (child) => {
@@ -207,7 +208,8 @@ test("proves existing component test edits while retaining Source execution", (c
     "src/test/appColumnProjection.component.test.tsx",
     "src/test/appShortcuts.component.test.tsx",
     "src/test/filterSummary.component.test.tsx",
-    "src/test/webview.component.test.tsx"
+    "src/test/webview.component.test.tsx",
+    performanceReport
   ];
   const cwd = repository(context, files);
   for (const file of files) write(cwd, file);
@@ -329,6 +331,11 @@ test("proves existing script and media edits while retaining Source and package 
     [mediaCompositor],
     [screenshot],
     [
+      "docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png",
+      performanceReport,
+      "docs/performance/2026-09-17-release-preparation/review.md"
+    ],
+    [
       mediaCompositor,
       screenshot,
       "docs/images/editor-acceptance/vscode-explore-dark.png",
@@ -360,7 +367,7 @@ test("proves existing script and media edits while retaining Source and package 
   }
 });
 
-test("proves existing Python source and Markdown edits only for native R", async (context) => {
+test("proves existing Python source and documentary edits only for native R", async (context) => {
   const cases = [
     ["python/openwrangler_runtime/protocol.py"],
     ["python/openwrangler_runtime/session.py"],
@@ -377,7 +384,8 @@ test("proves existing Python source and Markdown edits only for native R", async
       "src/test/webview.component.test.tsx",
       "README.md",
       "CHANGELOG.md",
-      "docs/architecture.md"
+      "docs/architecture.md",
+      performanceReport
     ]
   ];
   for (const [caseIndex, files] of cases.entries()) {
@@ -521,7 +529,7 @@ test("proves added regular Python source only for native R", async (context) => 
 
 test("proves Python omissions with selective native R source checks", async (context) => {
   const cases = [
-    { added: [], modified: [screenshot, "r/openwrangler_runtime/frame_contract.R"], checkCli: true },
+    { added: [], modified: [screenshot, performanceReport, "r/openwrangler_runtime/frame_contract.R"], checkCli: true },
     { added: [], modified: [mediaCompositor, screenshot, "r/tests/kernel_agent.R"] },
     { added: [], modified: [mediaCompositor, screenshot, "src/test/extensionHost/index.ts"] },
     {
@@ -970,6 +978,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
         browserInteractions,
         webview,
         screenshot,
+        performanceReport,
         ...hostSourceFiles
       ]);
       for (const hostSource of hostSourceFiles) write(cwd, hostSource);
@@ -979,6 +988,7 @@ test("requires full owners for runtime, metadata, fixture, workflow and script c
       write(cwd, browserInteractions);
       write(cwd, webview);
       write(cwd, screenshot);
+      write(cwd, performanceReport);
       write(cwd, "README.md");
       write(cwd, "CHANGELOG.md");
       write(cwd, "CONTRIBUTING.md");

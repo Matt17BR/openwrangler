@@ -72,9 +72,11 @@ The scope-only job uses Node and Git without installing npm dependencies or rest
 Unless explicitly allowed below, omissions require modifications to existing files; additions, deletions, moves
 and mode changes require full checks. The runtime-source exceptions allow additions only.
 The allowed Markdown paths are `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` and `docs/**/*.md`.
-Modifications to existing Markdown files qualify on their own or with the permitted source edits below.
-Markdown additions and removals, and JSON additions, modifications and removals under `docs/performance/**`, qualify
-only when the entire diff consists of these documentary files; any source or other companion change requires full checks.
+Modifications to existing Markdown files and JSON reports under `docs/performance/**` qualify on their own or with
+the permitted source and media edits below. A report refresh with modified screenshots retains Source, CodeQL and
+Linux package checks, including the installed-editor smoke tests.
+Additions and removals of these documentary files qualify only when the entire diff consists of documentary files;
+any source or other companion change requires full checks.
 Such documentation-only changes may omit Python, R and Windows execution. Literal moves between allowed documentary
 paths qualify as removals and additions or modifications. Moving code into documentation still requires full checks:
 the proof reads both the source removal and destination change without rename detection.
@@ -82,11 +84,11 @@ Required-document, generated-reference and release-document checks still run and
 
 - Python may be omitted for additions or edits to `.R` files under `r/openwrangler_runtime/` or `r/tests/`; edits to
   existing top-level `src/test/extensionHost/*.ts`, `scripts/editor-acceptance.mjs` or
-  `scripts/editor-acceptance-artifact.test.mjs` files; and modifications to allowed Markdown files.
+  `scripts/editor-acceptance-artifact.test.mjs` files; and modifications to allowed documentary files.
   The installed-harness edits retain all R and Windows execution. Nested harness files
   and other scripts are outside this permission.
 - The Python worker may also be omitted for modifications to existing files under `src/webviews/` and the existing
-  `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and Markdown
+  `src/test/progressiveProfilingLifecycle.unit.test.tsx` owner, optionally with the allowed component-test and documentary
   edits. Platform R jobs, Source and packaged smoke remain required; their numeric source step follows the next scope.
 - Python, R and Windows execution may be omitted for modifications to existing `docs/images/**/*.png` files, alone or
   with edits eligible for those omissions. These images are excluded from the VSIX and are not inputs to the omitted
@@ -94,7 +96,7 @@ Required-document, generated-reference and release-document checks still run and
   VS Code launches. Other image paths remain outside this permission. Screenshot changes still require
   [local browser acceptance](testing.md#direct-source-checks); this omission does not qualify their visual content.
 - The Linux R workers, platform R numeric and CSV source step and Windows filesystem and process job may also be
-  omitted for modifications to existing `src/webviews/` files, optionally with the allowed component-test and Markdown edits. This additional omission does
+  omitted for modifications to existing `src/webviews/` files, optionally with the allowed component-test and documentary edits. This additional omission does
   not extend to the lifecycle unit test, installed harness, scripts or runtime source.
   Both platform R jobs still run their cleanup, package and installed-editor checks.
 - The same Python, Linux R source, platform numeric and CSV source and Windows source omissions apply to modifications
@@ -105,19 +107,19 @@ Required-document, generated-reference and release-document checks still run and
   files remain outside this permission. Source still runs both TypeScript programs, its full Vitest suite and the Node
   script checks; package verification and installed VS Code and R journeys remain required.
 - R source and installed-editor execution may be omitted for additions or edits to `.py` files under
-  `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed Markdown files.
+  `python/openwrangler_runtime/` or `python/tests/`, and modifications to allowed documentary files.
 - Native Spark may be omitted for modifications to one or more of the existing
   `python/openwrangler_runtime/engines/_pandas_arrow_formula_helpers.py`, `pandas_engine.py` and `duckdb_engine.py`
   files, or `python/tests/test_operation_edges.py`, `test_operations.py`, `test_session_transactions.py`, `test_duckdb_engine.py`,
-  `test_split_text_columns.py`, `test_pandas_engine.py` and `test_filter_logic.py`, optionally with the allowed Markdown
+  `test_split_text_columns.py`, `test_pandas_engine.py` and `test_filter_logic.py`, optionally with the allowed documentary
   edits. Each owner qualifies independently.
   Documentation-only changes do not set this omission flag. Other inputs keep native Spark execution required.
 - Only the macOS and Windows editor steps may be omitted when at least one of the existing
-  `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed Markdown edits.
+  `r/tests/kernel_agent.R` or `r/tests/frame_contract.R` files is modified, optionally with the allowed documentary edits.
   Both Linux shards and platform source, artifact-cleanup, package and harness checks remain required.
   Any other edited file requires editor execution.
 - Python, R and Windows execution may be omitted for edits to existing top-level `src/test/*.component.test.tsx`
-  files, optionally with the allowed Markdown edits. Source still runs these component tests; the native and installed
+  files, optionally with the allowed documentary edits. Source still runs these component tests; the native and installed
   harnesses do not consume them. Nested tests, unit/cross tests and shared fixtures are outside
   this permission.
 - Python, R and Windows execution may also be omitted for edits to the existing release-policy scripts and tests,

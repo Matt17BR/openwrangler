@@ -123,7 +123,7 @@ export function proveRuntimeOmissions({ cwd = process.cwd(), env = process.env }
       /^docs\/[^\p{Cc}]+\.md$/u.test(path);
     const reportData = /^docs\/performance\/[^\p{Cc}]+\.json$/u.test(path);
     if ((markdown || reportData) && (modified || added || deleted)) {
-      documentationOnlyRequired ||= !modified || reportData;
+      documentationOnlyRequired ||= !modified;
       continue;
     }
     const pythonSource = /^python\/(?:openwrangler_runtime|tests)\/[^\p{Cc}]+\.py$/u.test(path);
