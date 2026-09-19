@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R refuses a Parquet import when file replacement changes a timestamp's timezone meaning between the metadata and data reads.
 - Opening a local R file column's unfiltered value picker preserves the grid's cached filter and sort order.
 - Generated R Filter Rows and Conditional Column agree with live integer64 comparisons at the minimum signed 64-bit bound.
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.

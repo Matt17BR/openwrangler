@@ -728,9 +728,11 @@ local({
     precise_path <- file.path(root, "precise.parquet")
     array <- arrow::Array$create(ticks)$cast(arrow::int64())
     arrow::write_parquet(arrow::Table$create(
-      local = array$cast(arrow::timestamp("ns")), utc = array$cast(arrow::timestamp("ns", "UTC")),
+      local = array$cast(arrow::timestamp("ns")), utc = array$cast(arrow::timestamp("ns", "Europe/Berlin")),
       amount = seq_along(ticks), text = c("alpha", "beta", "gamma", "delta", NA_character_, "x", "y")
     ), precise_path, use_dictionary = TRUE, chunk_size = 2L)
+    assert_identical(arrow::read_parquet(precise_path, as_data_frame = FALSE)$utc$type$timezone(), "Europe/Berlin",
+      "the precise timestamp fixture did not restore its named Arrow timezone")
     expected <- data.frame(local = local, utc = clock::as_sys_time(local), amount = seq_along(ticks), text = c("alpha", "beta", "gamma", "delta", NA_character_, "x", "y"))
     for (library in c("base", "dplyr")) {
       code <- check_file(list(path = precise_path, format = "parquet"), expected, library = library, text_sibling = TRUE)
@@ -966,6 +968,17 @@ local({
       assign("read_parquet_metadata", function(...) changed, envir = namespace)
       lockBinding("read_parquet_metadata", namespace)
       check_parquet_refusal(c('column 1 "quoted\\\"\\n', paste0("physical=", case$physical), "converted=INT_8", case$reason))
+    }
+    for (adjusted in c(FALSE, TRUE)) {
+      ticks <- arrow::Array$create(c("0", NA_character_))$cast(arrow::int64())
+      arrow::write_parquet(arrow::Table$create(first_column = ticks$cast(arrow::timestamp("ns", if (adjusted) "UTC" else ""))), legacy_path)
+      changed <- original(legacy_path)
+      changed$schema$logical_type[[2L]]$is_adjusted_to_utc <- !adjusted
+      unlockBinding("read_parquet_metadata", namespace)
+      assign("read_parquet_metadata", function(...) changed, envir = namespace)
+      lockBinding("read_parquet_metadata", namespace)
+      check_parquet_refusal(c('column 1 "first_column"', "physical=INT64", paste0("isAdjustedToUTC=", !adjusted),
+        "Arrow timestamp metadata disagrees with the Parquet annotation"))
     }
   })
   excel_path <- normalizePath("fixtures/r-file-input.xlsx")
