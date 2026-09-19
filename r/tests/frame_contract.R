@@ -9542,40 +9542,44 @@ wide_sort_frame <- data.frame(
     "-10",
     "10",
     "9223372036854775807",
-    NA
+    NA,
+    "9007199254740993",
+    "9007199254740992",
+    "-9007199254740992",
+    "-9007199254740993"
   ))
 )
 wide_sort_capture <- openwrangler_r_frame_contract$capture_frame(wide_sort_frame)
 wide_sort_ascending <- openwrangler_r_frame_contract$materialize_view_page(
   wide_sort_capture,
   view_query(sorts = list(sort_rule("r:c:0", "wide", "asc", "last"))),
-  row_limit = 7L,
+  row_limit = nrow(wide_sort_frame),
   column_limit = 1L
 )
 assert_identical(
   vapply(wide_sort_ascending$page$rows, `[[`, integer(1L), "rowNumber"),
-  0:6,
+  0:10,
   "integer64 ascending rows were not numbered in logical order"
 )
 assert_identical(
   vapply(wide_sort_ascending$page$rows, `[[`, character(1L), "id"),
-  sprintf("r:r:%d", c(1L, 3L, 2L, 4L, 0L, 5L, 6L)),
+  sprintf("r:r:%d", c(1L, 10L, 9L, 3L, 2L, 4L, 8L, 7L, 0L, 5L, 6L)),
   "integer64 ascending order lost precision or stability"
 )
 wide_sort_descending <- openwrangler_r_frame_contract$materialize_view_page(
   wide_sort_capture,
   view_query(sorts = list(sort_rule("r:c:0", "wide", "desc", "first"))),
-  row_limit = 7L,
+  row_limit = nrow(wide_sort_frame),
   column_limit = 1L
 )
 assert_identical(
   vapply(wide_sort_descending$page$rows, `[[`, integer(1L), "rowNumber"),
-  0:6,
+  0:10,
   "integer64 descending rows were not numbered in logical order"
 )
 assert_identical(
   vapply(wide_sort_descending$page$rows, `[[`, character(1L), "id"),
-  sprintf("r:r:%d", c(6L, 0L, 5L, 4L, 2L, 3L, 1L)),
+  sprintf("r:r:%d", c(6L, 0L, 5L, 7L, 8L, 4L, 2L, 3L, 9L, 10L, 1L)),
   "integer64 descending order lost precision, null placement, or stability"
 )
 
