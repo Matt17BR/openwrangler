@@ -654,8 +654,9 @@ run_catalog_case <- function(case, kind, index, library = "base") {
   assert_true(!is.null(saved_step), sprintf("%s did not retain a replayable step", kind))
   assert_identical(dispatch("closeSession", list(sessionId = original_session))$kind, "closed", sprintf("%s did not close", kind))
 
-  # The composed lifecycle below owns selected-library replay and history.
-  if (identical(library, "base")) {
+  # The composed lifecycle below owns replay and history for every library.
+  # By Example also replays its returned command, which differs from the submitted examples.
+  if (identical(library, "base") && identical(kind, "byExample")) {
     replay_session <- session_id(index, replay = TRUE)
     replay_open <- dispatch("openSession", list(
       sessionId = replay_session, variableName = variable_name, page = page_window()
