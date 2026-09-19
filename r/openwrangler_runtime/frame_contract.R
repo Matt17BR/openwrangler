@@ -2664,6 +2664,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       as.double(values)
     }
+    if (kind == "date") numeric_values[numeric_values == 0] <- 0
     vapply(numeric_values, exact_double, character(1L), USE.NAMES = FALSE)
   }
 

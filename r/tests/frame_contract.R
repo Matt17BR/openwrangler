@@ -6971,6 +6971,20 @@ assert_identical(base_summaries[[4L]]$text$maxLength, 5L, "UTF-8 text maximum le
 assert_identical(base_summaries[[6L]]$rawType, "ordered factor", "ordered-factor profile metadata changed")
 assert_identical(base_summaries[[7L]]$visualization$min, "2026-01-01", "Date profile minimum changed")
 assert_identical(base_summaries[[7L]]$visualization$max, "2026-01-03", "Date profile maximum changed")
+local({
+  source <- data.frame(day = structure(c(-1/Inf, 0, 1, NA_real_), class = "Date"))
+  before <- serialize(source, NULL, version = 3L)
+  capture <- openwrangler_r_frame_contract$capture_frame(source)
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+  assert_identical(summary$nullCount, 1L, "Date signed-zero profile changed missing count")
+  assert_identical(summary$distinctCount, 2L, "Date signed-zero profile split the epoch day")
+  assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), c("1970-01-01", "1970-01-02"),
+    "Date signed-zero profile duplicated or changed day labels")
+  assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), c(2L, 1L),
+    "Date signed-zero profile changed day counts")
+  assert_identical(serialize(source, NULL, version = 3L), before, "Date profiling changed source bits")
+  assert_identical(serialize(capture$snapshot, NULL, version = 3L), before, "Date profiling changed captured bits")
+})
 assert_identical(
   base_summaries[[8L]]$visualization$min,
   "2026-01-01T12:00:00.000000",
@@ -8095,37 +8109,53 @@ for (case in literal_contract$rejected) {
   }
 }
 
-signed_zero_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = c(-0, 0, 1)))
-signed_zero_values <- openwrangler_r_frame_contract$materialize_column_values(
-  signed_zero_capture,
-  list(id = "r:c:0", name = "value"),
-  limit = 10L
-)
-zero_value_index <- match("0", vapply(signed_zero_values$values, `[[`, character(1L), "value"))
-assert_true(!is.na(zero_value_index), "column values omitted the grouped zero value")
-zero_value <- signed_zero_values$values[[zero_value_index]]
-assert_identical(zero_value$count, 2L, "column values did not group signed zero")
-assert_identical(zero_value$selectionValue$cell$raw, 0, "the grouped zero token retained a negative sign")
-signed_zero_page <- openwrangler_r_frame_contract$materialize_view_page(
-  signed_zero_capture,
-  view_query(filters = list(column_filter(
-    "r:c:0",
-    "value",
-    "float",
-    value_filter = list(
-      kind = "values",
-      selectedValues = list(zero_value$selectionValue),
-      includeNulls = FALSE,
-      includeNaN = FALSE
+for (case in list(
+  list(values = c(-1/Inf, 0, 1), type = "float", display = "0", raw = 0),
+  list(values = structure(c(-1/Inf, 0, 1, NA_real_), class = "Date"),
+    type = "date", display = "1970-01-01", raw = "1970-01-01")
+)) {
+  signed_zero_source <- data.frame(value = case$values)
+  signed_zero_before <- serialize(signed_zero_source, NULL, version = 3L)
+  assert_identical(1/as.double(signed_zero_source$value)[1:2], c(-Inf, Inf), "signed-zero fixture lost its source bits")
+  signed_zero_capture <- openwrangler_r_frame_contract$capture_frame(signed_zero_source)
+  for (search in list(NULL, case$display)) {
+    signed_zero_values <- openwrangler_r_frame_contract$materialize_column_values(
+      signed_zero_capture,
+      list(id = "r:c:0", name = "value"),
+      search = search,
+      limit = 10L
     )
-  ))),
-  column_limit = 1L
-)
-assert_identical(
-  vapply(signed_zero_page$page$rows, `[[`, character(1L), "id"),
-  c("r:r:0", "r:r:1"),
-  "the grouped zero token did not select both signed zeros"
-)
+    zero_value_index <- match(case$display, vapply(signed_zero_values$values, `[[`, character(1L), "value"))
+    assert_true(!is.na(zero_value_index), "column values omitted the grouped zero value")
+    zero_value <- signed_zero_values$values[[zero_value_index]]
+    assert_identical(zero_value$count, 2L, "column values did not group signed zero")
+    assert_identical(zero_value$selectionValue$cell$raw, case$raw, "the grouped zero token retained a negative sign")
+    signed_zero_page <- openwrangler_r_frame_contract$materialize_view_page(
+      signed_zero_capture,
+      view_query(filters = list(column_filter(
+        "r:c:0",
+        "value",
+        case$type,
+        value_filter = list(
+          kind = "values",
+          selectedValues = list(zero_value$selectionValue),
+          includeNulls = FALSE,
+          includeNaN = FALSE
+        )
+      ))),
+      column_limit = 1L
+    )
+    assert_identical(
+      vapply(signed_zero_page$page$rows, `[[`, character(1L), "id"),
+      c("r:r:0", "r:r:1"),
+      "the grouped zero token did not select both signed zeros"
+    )
+  }
+  assert_identical(serialize(signed_zero_source, NULL, version = 3L), signed_zero_before,
+    "signed-zero value selection changed source bits")
+  assert_identical(serialize(signed_zero_capture$snapshot, NULL, version = 3L), signed_zero_before,
+    "signed-zero value selection changed captured bits")
+}
 
 numeric_value_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(score = c(1200, 8, 7)))
 numeric_values <- openwrangler_r_frame_contract$materialize_column_values(

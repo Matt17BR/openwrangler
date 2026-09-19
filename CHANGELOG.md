@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.
+- R Date value selections keep all rows for 1970-01-01, including dates stored as negative zero. Pickers and profiles count those dates together.
 
 ## [2.6.0] - 2026-09-19
 
