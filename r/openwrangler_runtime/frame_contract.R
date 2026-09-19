@@ -10726,7 +10726,10 @@ openwrangler_r_frame_contract <- local({
       }
       all(vapply(
         names(expected),
-        function(field) identical(get(field, envir = environment, inherits = FALSE), expected[[field]]),
+        function(field) identical(
+          get(field, envir = environment, inherits = FALSE), expected[[field]],
+          num.eq = FALSE, single.NA = FALSE
+        ),
         logical(1L)
       ))
     }
@@ -11206,7 +11209,10 @@ openwrangler_r_frame_contract <- local({
     if (length(cache$columns) != length(resolved)) return(FALSE)
     all(vapply(
       seq_along(resolved),
-      function(index) identical(frame[[resolved[[index]]$position]], cache$columns[[index]]),
+      function(index) identical(
+        frame[[resolved[[index]]$position]], cache$columns[[index]],
+        num.eq = FALSE, single.NA = FALSE
+      ),
       logical(1L)
     ))
   }

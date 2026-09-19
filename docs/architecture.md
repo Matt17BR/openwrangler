@@ -1722,6 +1722,9 @@ may retain a compatible data-table key; explicit sorting clears the data-table k
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
 The shared integer64 ordering helper uses canonical decimal text from the verified native converter, then stable radix ordering
 by sign, digit width and digits. It preserves exact values without per-row decimal normalization or comparison.
+Live cache integrity and sort-cache freshness checks compare floating-point storage exactly and retain normal
+attribute checks. This distinguishes integer64 values and missing sentinels that R's default `identical()` comparison
+treats as equal.
 
 Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
 value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation;

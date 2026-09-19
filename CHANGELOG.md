@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Fixed
+
+- Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.
+
 ## [2.6.0] - 2026-09-19
 
 ### Added
