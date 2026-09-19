@@ -8161,8 +8161,9 @@ openwrangler_r_kernel_agent <- local({
       value <- if (base::inherits(type, "Timestamp")) {
         unit <- c("s", "ms", "us", "ns")[[type$unit() + 1L]]
         if (!unit %in% c("ms", "us", "ns")) refuse("timestamp unit must be milliseconds, microseconds or nanoseconds")
-        if (!base::startsWith(kinds[[index]], "timestamp-")) refuse("Arrow timestamp metadata disagrees with the Parquet annotation")
         adjusted <- base::isTRUE(fields$logical_type[[index]]$is_adjusted_to_utc)
+        if (!base::startsWith(kinds[[index]], "timestamp-") ||
+            !base::identical(base::nzchar(type$timezone()), adjusted)) refuse("Arrow timestamp metadata disagrees with the Parquet annotation")
         ticks <- column$cast(arrow::int64())
         # Keep existing exactly representable UTC timestamps as POSIXct. Other
         # timestamps need a native clock type before any conversion to double.

@@ -217,7 +217,9 @@ Use the existing owners to choose a focused source check:
   and missing-sentinel checks, field diagnostics and unchanged source bytes. Their SQL is recorded in the existing
   kernel owner; tests do not require DuckDB. The native dependency locks include readxl for this owner.
   The same lifecycle owner checks exact civil/UTC Parquet timestamps, nulls, signed nanosecond endpoints and adjacent
-  ticks through base/dplyr cleaning, generated R and export/reopen. Frame controls own clock storage, query and export
+  ticks through base/dplyr cleaning, generated R and export/reopen. It also checks restored named-zone admission and
+  refuses disagreement between footer and decoded UTC/civil meaning in live and generated loading.
+  Frame controls own clock storage, query and export
   behavior; host controls own exact strings and filters after precision/meaning changes. The Windows installed file journey
   adds two timestamp columns to its existing three-row Parquet fixture and checks one rendered timestamp via End
   navigation, without adding another session or operation sequence.

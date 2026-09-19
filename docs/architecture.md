@@ -1602,6 +1602,9 @@ from silently wrapping dates outside that representation's range.
 UTC-adjusted millisecond and microsecond timestamps retain the existing POSIXct path when their magnitude is below
 2^51 ticks and they pass a tick round trip. Other millisecond/microsecond timestamps and all nanosecond timestamps
 use `clock` 0.7.4 or newer: unadjusted values remain `clock_naive_time`, and adjusted values become `clock_sys_time`.
+Arrow's decoded timezone presence must agree with the footer's UTC-adjusted flag; disagreements are refused in both
+live and generated loading. This checks timestamp interpretation across the two reads, without making file loading
+atomic against concurrent writes.
 The reader converts Arrow timestamp text directly to clock storage and verifies exact original ticks and nulls.
 It never first converts these values through POSIXct doubles or integer64 missing sentinels. Nanosecond timestamps
 retain the full signed 64-bit range, including a present minimum value. Named timezone metadata is not restored;
