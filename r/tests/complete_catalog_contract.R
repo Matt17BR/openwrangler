@@ -238,10 +238,11 @@ catalog_cases <- list(
       latin1 <- rawToChar(as.raw(c(99, 97, 102, 233)))
       Encoding(latin1) <- "latin1"
       data.frame(
-        group = c(rep("a", 6L), "b"),
-        text = c(latin1, "caf\u00e9", "drop", "caf\u00e9", "caf\u00e9", NA_character_, "caf\u00e9"),
-        category = factor(c("keep-end", "keep-end", "keep-end", "other-end", "keep-other", NA_character_, "keep-end")),
-        ordinal = 1:7
+        group = c(rep("a", 6L), "b", "a", "a"),
+        text = c(latin1, "caf\u00e9", "drop", "caf\u00e9", "caf\u00e9", NA_character_, rep("caf\u00e9", 3L)),
+        category = factor(c("keep-end", "keep-end", "keep-end", "other-end", "keep-other", NA_character_, rep("keep-end", 3L))),
+        day = structure(c(-1/Inf, rep(0, 6L), 1, NA_real_), class = "Date"),
+        ordinal = 1:9
       )
     },
     step = function(frame, id) step_with(id, "filterRows", list(filterModel = list(
@@ -253,13 +254,18 @@ catalog_cases <- list(
           predicates = I(list(list(kind = "predicate", operator = "contains", value = "AF\u00e9")))),
         list(column = column_reference(frame, "category"), type = "string",
           predicates = I(list(list(kind = "predicate", operator = "startsWith", value = "keep"),
-            list(kind = "predicate", operator = "endsWith", value = "end"))))
+            list(kind = "predicate", operator = "endsWith", value = "end")))),
+        list(column = column_reference(frame, "day"), type = "date",
+          predicates = I(list()), valueFilter = list(kind = "values",
+            selectedValues = I(list("1970-01-01")), includeNulls = FALSE, includeNaN = FALSE))
       )),
       sort = I(list())
     ))),
     verify = function(output, input) {
       assert_identical(output$group, c("a", "a"), "Filter Rows returned the wrong groups")
       assert_identical(output$ordinal, 1:2, "Filter Rows changed normalized text or factor matches")
+      assert_frame_identical(data.frame(day = output$day), data.frame(day = input$day[1:2]),
+        "Filter Rows changed selected Date bits")
     }
   ),
   dropMissingRows = list(
