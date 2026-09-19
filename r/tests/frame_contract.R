@@ -9130,34 +9130,45 @@ assert_error(
   "invalid-capture"
 )
 
-sort_cache_attack_frame <- data.frame(value = c(30L, 10L, 20L))
-sort_cache_attack_reads <- 0L
-sort_cache_attack_capture <- NULL
-sort_cache_attack_reader <- function() {
-  sort_cache_attack_reads <<- sort_cache_attack_reads + 1L
-  if (sort_cache_attack_reads == 2L) {
-    sort_cache <- sort_cache_attack_capture$sortCache
-    sort_cache$rowPositions <- c(2L, 2L, 1L)
+for (sort_cache_attack_kind in c("rowPositions", "columns")) {
+  sort_cache_attack_frame <- data.frame(value = bit64::as.integer64(c(
+    "9223372036854775807", "9223372036854775806", "0"
+  )))
+  sort_cache_attack_reads <- 0L
+  sort_cache_attack_capture <- NULL
+  sort_cache_attack_reader <- function() {
+    sort_cache_attack_reads <<- sort_cache_attack_reads + 1L
+    if (sort_cache_attack_reads == 2L) {
+      sort_cache <- sort_cache_attack_capture$sortCache
+      if (identical(sort_cache_attack_kind, "rowPositions")) {
+        sort_cache$rowPositions <- c(2L, 2L, 1L)
+      } else {
+        sort_cache_attack_frame$value <<- bit64::as.integer64(c(
+          "9223372036854775806", "9223372036854775807", "0"
+        ))
+        sort_cache$columns <- list(sort_cache_attack_frame$value[])
+      }
+    }
+    sort_cache_attack_frame
   }
-  sort_cache_attack_frame
-}
-sort_cache_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(sort_cache_attack_reader)
-sort_cache_attack_view <- view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last")))
-invisible(openwrangler_r_frame_contract$materialize_view_page(
-  sort_cache_attack_capture,
-  sort_cache_attack_view,
-  row_limit = 3L,
-  column_limit = 1L
-))
-assert_error(
-  openwrangler_r_frame_contract$materialize_view_page(
+  sort_cache_attack_capture <- openwrangler_r_frame_contract$capture_live_frame(sort_cache_attack_reader)
+  sort_cache_attack_view <- view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last")))
+  invisible(openwrangler_r_frame_contract$materialize_view_page(
     sort_cache_attack_capture,
     sort_cache_attack_view,
     row_limit = 3L,
     column_limit = 1L
-  ),
-  "invalid-capture"
-)
+  ))
+  assert_error(
+    openwrangler_r_frame_contract$materialize_view_page(
+      sort_cache_attack_capture,
+      sort_cache_attack_view,
+      row_limit = 3L,
+      column_limit = 1L
+    ),
+    "invalid-capture"
+  )
+}
 
 live_state_attack_frame <- data.frame(value = 1:3)
 live_state_attack_replacement <- data.frame(value = c(99L, 99L, 99L))
@@ -9508,31 +9519,51 @@ assert_identical(
 )
 
 mutable_table_source <- new.env(parent = emptyenv())
-mutable_table_source$frame <- data.table::data.table(order_key = c(3L, 1L, 2L), payload = letters[1:3])
+mutable_table_source$frame <- data.table::data.table(
+  order_key = bit64::as.integer64(c("9223372036854775807", "9223372036854775806", "0", NA_character_)),
+  payload = letters[1:4]
+)
 mutable_table_capture <- openwrangler_r_frame_contract$capture_live_frame(function() mutable_table_source$frame)
-invisible(openwrangler_r_frame_contract$materialize_view_page(
-  mutable_table_capture,
-  mutable_rule,
-  row_limit = 3L,
-  column_limit = 1L
-))
-mutable_table_source$frame[1L, order_key := 0L]
-mutable_table_page <- openwrangler_r_frame_contract$materialize_view_page(
-  mutable_table_capture,
-  mutable_rule,
-  row_limit = 3L,
-  column_limit = 1L
+assert_mutable_table_sort <- function(expected_ids, expected_builds, context) {
+  source_before <- serialize(mutable_table_source$frame, NULL, version = 3L)
+  page <- openwrangler_r_frame_contract$materialize_view_page(
+    mutable_table_capture,
+    mutable_rule,
+    row_limit = 4L,
+    column_limit = 1L
+  )
+  assert_identical(
+    vapply(page$page$rows, function(row) row$id, character(1L)),
+    expected_ids,
+    paste(context, "returned stale source row IDs")
+  )
+  assert_identical(
+    openwrangler_r_frame_contract$capture_metrics(mutable_table_capture)$sortOrderBuilds,
+    expected_builds,
+    paste(context, "did not reuse or rebuild its cached order correctly")
+  )
+  assert_identical(
+    serialize(mutable_table_source$frame, NULL, version = 3L),
+    source_before,
+    paste(context, "changed its source")
+  )
+}
+assert_mutable_table_sort(c("r:r:2", "r:r:1", "r:r:0", "r:r:3"), 1, "the initial live integer64 sort")
+assert_mutable_table_sort(c("r:r:2", "r:r:1", "r:r:0", "r:r:3"), 1, "an unchanged live integer64 sort")
+data.table::set(
+  mutable_table_source$frame,
+  i = 1:2,
+  j = "order_key",
+  value = bit64::as.integer64(c("9223372036854775806", "9223372036854775807"))
 )
-assert_identical(
-  vapply(mutable_table_page$page$rows, function(row) row$values[[1L]]$display, character(1L)),
-  c("0", "1", "2"),
-  "a by-reference data.table mutation reused a stale sort order"
+assert_mutable_table_sort(c("r:r:2", "r:r:0", "r:r:1", "r:r:3"), 2, "a by-reference integer64 extrema swap")
+data.table::set(
+  mutable_table_source$frame,
+  i = 3:4,
+  j = "order_key",
+  value = bit64::as.integer64(c(NA_character_, "0"))
 )
-assert_identical(
-  openwrangler_r_frame_contract$capture_metrics(mutable_table_capture)$sortOrderBuilds,
-  2,
-  "a by-reference data.table mutation did not rebuild its cached order"
-)
+assert_mutable_table_sort(c("r:r:3", "r:r:0", "r:r:1", "r:r:2"), 3, "a by-reference integer64 zero/missing swap")
 
 wide_sort_frame <- data.frame(
   wide = bit64::as.integer64(c(
