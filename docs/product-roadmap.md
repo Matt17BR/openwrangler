@@ -10,10 +10,10 @@ records delivered changes. This page records release priorities and proposals th
 [defined ordinary-frame scope](feature-parity.md#first-stable-r-notebook-scope) in IRkernel notebooks
 in desktop VS Code on Linux, macOS and Windows.
 
-[Open Wrangler 2.6](https://github.com/Matt17BR/openwrangler/milestone/16) is the next selected release. Main includes
+[Open Wrangler 2.6.0](https://github.com/Matt17BR/openwrangler/releases/tag/v2.6.0) was released on 19 September 2026. It includes
 the native capture correction for [DuckDB row consistency](https://github.com/Matt17BR/openwrangler/issues/1487),
 including explicit notebook connection selection and its [capture costs](feature-parity.md#sessions-and-generated-code).
-The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed on main.
+The [macOS import-options focus](https://github.com/Matt17BR/openwrangler/issues/1482) issue is fixed.
 Custom-backed [step inspection](https://github.com/Matt17BR/openwrangler/issues/1526) now reuses its input/output pair
 in Pandas, Polars, DuckDB and native R.
 R profiles now provide [exact numeric histograms and low-cardinality categorical counts](https://github.com/Matt17BR/openwrangler/issues/1553)
@@ -23,22 +23,18 @@ The [Jupyter Variables failure](https://github.com/Matt17BR/openwrangler/issues/
 [documented support limitation](feature-parity.md#sessions-and-generated-code).
 
 The [native R file options, plan reuse and Windows execution](https://github.com/Matt17BR/openwrangler/pull/1571)
-and [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/pull/1572) are merged on main.
-Local R file support remains Preview. The milestone links the required outcomes and records the release decision.
+and [bounded R List and Struct workflow](https://github.com/Matt17BR/openwrangler/pull/1572) shipped in 2.6.
+Local R file support remains Preview. The [completed milestone](https://github.com/Matt17BR/openwrangler/milestone/16)
+records the delivered scope.
 
-[R cleaning library selection](https://github.com/Matt17BR/openwrangler/issues/1583) is implemented on main:
+[R cleaning library selection](https://github.com/Matt17BR/openwrangler/issues/1583) is available in 2.6:
 base R, dplyr, data.table and collapse drive built-in cleaning and matching generated code.
-The selected implementation and source-preserving copy and recovery checks are complete. Stable publication still
-requires matching native current/minimum results and the final candidate
-[qualification checks](releasing.md#release-candidate).
 
 The [public media and performance refresh](https://github.com/Matt17BR/openwrangler/issues/1554) delivered reviewed
 screenshots and comparison results. The
 [large R file responsiveness corrections](https://github.com/Matt17BR/openwrangler/issues/1616) are verified and merged.
 The final file and R measurements are recorded in the [latest comparison](#released-product-comparison);
 the later corrections do not change the displayed public screenshot states.
-The remaining release gate is one immutable 2.6.0 candidate under [Releasing](releasing.md#release-candidate).
-Qualification and publication remain separate; no release date or automatic publication is promised.
 The [operation support guide](feature-parity.md#cleaning-operations) records the engine-specific scope of
 Explode List and Extract Struct Fields.
 
@@ -54,7 +50,7 @@ The latest reviewed [dated report](performance/2026-09-19-release-preparation/re
 package prepared for Open Wrangler 2.6 and Microsoft Data Wrangler through public interfaces in an isolated local
 VS Code instance. It records paired CSV routes and native R managed-document observations, with setup failures and
 measurement limits. Earlier notebook, DuckDB and Spark results retain their original source attribution in the linked
-prior report. The comparison precedes immutable release qualification. For every stable release, rerun the advertised comparison
+prior report. The comparison preceded immutable release qualification. For every stable release, rerun the advertised comparison
 on the final integrated product and refresh public screenshots under
 the [stable-release checklist](releasing.md#stable-release-media-and-comparison-checklist). Preserve earlier dated
 reports and update this pointer when the new results are reviewed and merged. The retired
@@ -62,7 +58,7 @@ reports and update this pointer when the new results are reviewed and merged. Th
 
 ## Workbench design
 
-[The selected workbench improvements](https://github.com/Matt17BR/openwrangler/issues/1397) belong to 2.6. They retain native navigation and cleaning history
+[The selected workbench improvements](https://github.com/Matt17BR/openwrangler/issues/1397) shipped in 2.6. They retain native navigation and cleaning history
 beside the central grid, the column-profile drawer, modal operation settings and native Code Preview. Draft and
 inspection actions stay beside their result. Compared alternatives added scrolling or obscured useful context without
 demonstrating a task advantage. At narrow widths, open native sidebars and Code Preview reduce the data area and require
@@ -78,10 +74,10 @@ unselected. The implemented improvements do not establish that direction or auth
 
 ## Feature proposals
 
-These proposals remain outside the selected 2.6 scope and unscheduled. Further examples and practical constraints are
+These proposals remain unscheduled. Further examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is implemented on main; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
+- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is available in 2.6; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
 - [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Browse a DuckDB database](https://github.com/Matt17BR/openwrangler/issues/1387): base-table viewing supports multiple tables in one runtime; database views remain a proposal. See the [current limits](feature-parity.md#duckdb-experimental-file-support).
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
