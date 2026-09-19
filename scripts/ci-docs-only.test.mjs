@@ -234,11 +234,19 @@ test("proves existing component test edits while retaining Source execution", (c
   );
 });
 
-test("proves the two existing R test edits can omit only installed editor execution", async (context) => {
+test("proves the existing R test owners can omit only installed editor execution", async (context) => {
   for (const [caseIndex, files] of [
     ["r/tests/kernel_agent.R"],
     ["r/tests/frame_contract.R"],
-    ["r/tests/kernel_agent.R", "r/tests/frame_contract.R", "README.md", "CHANGELOG.md", "docs/testing.md"]
+    ["r/tests/complete_catalog_contract.R"],
+    [
+      "r/tests/kernel_agent.R",
+      "r/tests/frame_contract.R",
+      "r/tests/complete_catalog_contract.R",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/testing.md"
+    ]
   ].entries()) {
     await context.test(files.join(", "), (child) => {
       const cwd = repository(child, files);
@@ -558,12 +566,12 @@ test("proves Python omissions with selective native R source checks", async (con
         "CHANGELOG.md"
       ]
     },
-    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R"] },
+    { added: [], modified: ["r/openwrangler_runtime/frame_contract.R", "r/tests/complete_catalog_contract.R"] },
     { added: [], modified: [browserInteractions, "r/openwrangler_runtime/frame_contract.R"] },
     { added: [], modified: [browserInteractions, "src/webviews/grid/DataGrid.tsx"] },
     { added: ["r/openwrangler_runtime/helper.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: [] },
-    { added: ["r/tests/kernel_agent.R"], modified: [] },
+    { added: ["r/tests/complete_catalog_contract.R"], modified: [] },
     { added: ["r/tests/new_contract.R"], modified: ["CHANGELOG.md"] },
     { added: [], modified: ["src/test/extensionHost/releasedRCoreEditing.ts"] },
     { added: [], modified: ["src/test/extensionHost/releasedRRowReduction.ts"] },

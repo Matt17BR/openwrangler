@@ -28,7 +28,11 @@ const runtimeOmissionScriptFiles = new Set([
   "scripts/verify-canonical-release-artifact.test.mjs"
 ]);
 
-const rEditorOmissionTestFiles = new Set(["r/tests/kernel_agent.R", "r/tests/frame_contract.R"]);
+const rEditorOmissionTestFiles = new Set([
+  "r/tests/kernel_agent.R",
+  "r/tests/frame_contract.R",
+  "r/tests/complete_catalog_contract.R"
+]);
 const hostSourceOmissionFiles = new Set([
   "src/extension/nativeViews.ts",
   "src/extension/nativeViewsExportOptions.ts",
