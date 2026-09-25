@@ -105,7 +105,17 @@ def test_pandas_row_views_read_exactly_like_their_materialized_rows(index_name: 
         same(lambda target, column=column: engine.column_values(target, column))
 
 
-@pytest.mark.parametrize("dtype", ["str", pd.StringDtype("pyarrow"), pd.ArrowDtype(pa.string())])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(
+            "str",
+            marks=pytest.mark.skipif(pd.Series(dtype="str").dtype == object, reason='Pandas 2 stores "str" as objects'),
+        ),
+        pd.StringDtype("pyarrow"),
+        pd.ArrowDtype(pa.string()),
+    ],
+)
 def test_pandas_arrow_text_fast_paths_match_row_wise_semantics(dtype: Any) -> None:
     series = _chunked(TEXT * 3, dtype)
     for ascending in (True, False):

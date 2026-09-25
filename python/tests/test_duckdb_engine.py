@@ -1378,7 +1378,12 @@ def test_duckdb_parquet_sorted_views_keep_source_tie_order_and_unordered_aggrega
 
         unsorted = engine.filter_view(source, {**model, "sort": []})
         assert engine.shape(view) == engine.shape(unsorted)
-        assert engine.summaries(view) == engine.summaries(unsorted)
+        expected_summaries = engine.summaries(unsorted)
+        for summary in expected_summaries:
+            if "std" in summary.get("numeric", {}):
+                # Parallel variance may round its last bit differently under another plan.
+                summary["numeric"]["std"] = pytest.approx(summary["numeric"]["std"], rel=1e-12)
+        assert engine.summaries(view) == expected_summaries
         assert engine.header_stats(view) == engine.header_stats(unsorted)
         assert engine.missing_count(view, 0) == engine.missing_count(unsorted, 0) == 18
         assert engine.column_values(view, "key") == engine.column_values(unsorted, "key")
