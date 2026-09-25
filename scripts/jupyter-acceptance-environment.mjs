@@ -59,7 +59,7 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
-  fsspec: "2026.7.0",
+  fsspec: "2026.9.0",
   pytz: "2026.3.post1",
   pyspark: "4.2.0",
   py4j: "0.10.9.9",

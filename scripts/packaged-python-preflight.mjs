@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PYTHON_NOTEBOOKS_PROFILE } from "./packaged-python-jupyter.mjs";
@@ -8,6 +8,9 @@ export const ACCEPTANCE_PYTHON_INTERPRETER_ERROR = "OW_ACCEPTANCE_PYTHON_INTERPR
 export const ACCEPTANCE_PYTHON_DEPENDENCY_ERROR = "OW_ACCEPTANCE_PYTHON_DEPENDENCIES";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const FSSPEC_VERSION = JSON.parse(
+  readFileSync(join(root, "python", "runtime-dependencies.json"), "utf8")
+).dependencies.find((dependency) => dependency.distribution === "fsspec").exactVersion;
 const INTERPRETER_FAILURE_EXIT = 10;
 const DEPENDENCY_FAILURE_EXIT = 20;
 const PROFILES = Object.freeze({
@@ -49,7 +52,7 @@ const PROBE_SOURCE = [
   "for name in sys.argv[1:]:",
   "    try:",
   "        importlib.import_module(name)",
-  '        if name == "fsspec" and importlib.metadata.version(name) != "2026.7.0": raise ValueError',
+  `        if name == "fsspec" and importlib.metadata.version(name) != ${JSON.stringify(FSSPEC_VERSION)}: raise ValueError`,
   `    except BaseException: raise SystemExit(${DEPENDENCY_FAILURE_EXIT})`
 ].join("\n");
 

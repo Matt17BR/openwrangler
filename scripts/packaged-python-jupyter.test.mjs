@@ -33,7 +33,7 @@ const notebookVersions = {
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
-  fsspec: "2026.7.0",
+  fsspec: "2026.9.0",
   pytz: "2026.3.post1"
 };
 
