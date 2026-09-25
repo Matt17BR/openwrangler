@@ -1897,7 +1897,6 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     ACCEPTANCE_TARGET: "${{ inputs.target }}",
     OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
     OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
     OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
     VSCODE_TEST_VERSION: "stable"
