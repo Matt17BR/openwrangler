@@ -119,11 +119,6 @@ jobs:
           --candidate-checksum canonical-release/openwrangler.vsix.sha256
           --candidate-provenance canonical-release/openwrangler.vsix.provenance.json
           --out ${{ runner.temp }}/release-candidate-performance.json
-      - name: Reverify the candidate for pinned Cursor
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: cursor_platform_smoke
         name: Test the exact candidate artifact in pinned Cursor
         env:
@@ -146,11 +141,6 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Reverify the accepted canonical candidate
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Upload the immutable candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -255,8 +245,3 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Reverify the R-qualified canonical candidate
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release

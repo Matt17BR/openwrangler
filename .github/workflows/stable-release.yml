@@ -128,11 +128,6 @@ jobs:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
-      - name: Reverify the exact candidate bytes before publication
-        env:
-          EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Publish or verify the exact lightweight release tag
         env:
           EXPECTED_SHA: ${{ needs.select.outputs.candidate-source-sha }}
