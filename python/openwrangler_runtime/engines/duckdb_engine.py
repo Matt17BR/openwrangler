@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from glob import escape as escape_glob
 from inspect import getsource
-from math import inf, isfinite, isinf, isnan, nextafter
+from math import frexp, inf, isfinite, isinf, isnan, ldexp, nextafter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from textwrap import indent
@@ -197,6 +197,7 @@ class DuckDBSqlPlan:
     unordered_sql: str | None = None
     # Rows are read in ascending private row-ID order, so the ID is a stable sort tie-break.
     row_id_order: bool = False
+    unordered_row_id_order: bool = False
 
     @property
     def columns(self) -> list[str]:
@@ -807,9 +808,13 @@ class DuckDBEngine(DataFrameEngine):
             column_type = _semantic_type(type_by_column[column])
             if column_type not in VIEW_COMPARABLE_TYPES:
                 raise EngineError(f"DuckDB view sorting is unavailable for {column_type} columns.")
-        row_id = self._row_id_column(frame) if getattr(frame, "row_id_order", False) else None
+        row_id_order = getattr(frame, "row_id_order", False)
+        row_id = self._row_id_column(frame) if row_id_order else None
         query = _filter_query(self._columns(frame), model, tiebreak=row_id)
-        return self._relation(frame, query)
+        view = self._relation(frame, query)
+        if row_id_order and isinstance(view, DuckDBSqlPlan) and _sort_clause(set(self._columns(frame)), model) is None:
+            return replace(view, row_id_order=True)
+        return view
 
     def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
         view = self.apply_filter_model(frame, model)
@@ -817,7 +822,15 @@ class DuckDBEngine(DataFrameEngine):
         available = set(self._columns(source))
         if _sort_clause(available, model) is None:
             return view
-        return replace(view, unordered_sql=_compose_sql(source.sql, _filter_query(available, {**model, "sort": []})))
+        unordered_sql = _compose_sql(source.sql, _filter_query(available, {**model, "sort": []}))
+        if isinstance(view, DuckDBSqlPlan):
+            return replace(
+                view, unordered_sql=unordered_sql, unordered_row_id_order=getattr(source, "row_id_order", False)
+            )
+        return replace(view, unordered_sql=unordered_sql)
+
+    def unsorted_view(self, view: Any) -> Any | None:
+        return _unordered_view(view) if getattr(view, "unordered_sql", None) is not None else None
 
     def page(
         self,
@@ -923,6 +936,13 @@ class DuckDBEngine(DataFrameEngine):
             return []
 
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        # Equal counts keep first-occurrence order.
+        row_id = self._row_id_column(frame) if getattr(frame, "row_id_order", False) else None
+        if row_id is not None:
+            first_source, first_position = "ow", _quote_ident(row_id)
+        else:
+            first_position = _quote_ident(_unique_internal(self._columns(frame), "__ow_position"))
+            first_source = f"(SELECT *, row_number() OVER () AS {first_position} FROM ow) AS ow_positions"
         summaries: list[dict[str, Any]] = []
         with self._terminal_connection(frame) as (connection, source_sql):
             pending_histograms: list[tuple[dict[str, Any], float, float, list[str], int | None]] = []
@@ -950,13 +970,20 @@ class DuckDBEngine(DataFrameEngine):
                     )
                 elif semantic_type in {"integer", "float", "decimal"}:
                     finite = _finite_predicate(identifier, raw_type)
+                    # DuckDB raises instead of returning a non-finite variance.
+                    std_input = (
+                        f"{finite} AND system.main.abs({identifier}) < 1e100"
+                        if raw_type in {"FLOAT", "DOUBLE"}
+                        else valid
+                    )
                     metric_fields.extend(
                         [
                             ("minimum", f"system.main.min({identifier}) FILTER (WHERE {valid})"),
                             ("maximum", f"system.main.max({identifier}) FILTER (WHERE {valid})"),
                             ("mean", f"system.main.avg({identifier}) FILTER (WHERE {valid})"),
                             ("median", f"system.main.median({identifier}) FILTER (WHERE {valid})"),
-                            ("std", f"system.main.stddev_samp({identifier}) FILTER (WHERE {valid})"),
+                            ("std", f"system.main.stddev_samp({identifier}) FILTER (WHERE {std_input})"),
+                            ("std_excluded", f"system.main.count(*) FILTER (WHERE {valid} AND NOT ({std_input}))"),
                             ("sum", f"system.main.sum({identifier}) FILTER (WHERE {valid})"),
                             ("finite_minimum", f"system.main.min({identifier}) FILTER (WHERE {finite})"),
                             ("finite_maximum", f"system.main.max({identifier}) FILTER (WHERE {finite})"),
@@ -1007,11 +1034,10 @@ class DuckDBEngine(DataFrameEngine):
                     if output is not None or map_cardinality
                     else "value_count"
                 )
-                order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
                 top_query = (
-                    f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM ow "
+                    f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM {first_source} "
                     f"WHERE {valid} GROUP BY {identifier} "
-                    f"ORDER BY {count_name} DESC, {order} ASC LIMIT 10"
+                    f"ORDER BY {count_name} DESC, system.main.min({first_position}) ASC LIMIT 10"
                 )
                 if output is not None or map_cardinality:
                     extra = f", system.main.cardinality({identifier})" if map_cardinality else ""
@@ -1058,6 +1084,24 @@ class DuckDBEngine(DataFrameEngine):
                         "median": _finite_float(metrics["median"]),
                         "std": _finite_float(metrics["std"]),
                     }
+                    finite_count = int(metrics["finite_count"] or 0)
+                    if metrics["std_excluded"]:
+                        numeric_summary["std"] = None
+                    if metrics["std_excluded"] and finite_count == total_count - null_count - nan_count > 1:
+                        # Only huge finite values were excluded. A power-of-two scale is exact, and the
+                        # squared-deviation total must stay finite as it does for Pandas and Polars.
+                        magnitude = max(abs(float(metrics["finite_minimum"])), abs(float(metrics["finite_maximum"])))
+                        scale = ldexp(1.0, frexp(magnitude)[1])
+                        scaled = _execute_rows(
+                            connection,
+                            source_sql,
+                            f"SELECT system.main.stddev_samp({identifier} / {scale!r}) "
+                            f"FILTER (WHERE {_finite_predicate(identifier, raw_type)}) FROM ow",
+                        )[0][0]
+                        if scaled is not None:
+                            std = float(scaled) * scale
+                            if isfinite(std * std * (finite_count - 1)):
+                                numeric_summary["std"] = std
                     native_sum = metrics["sum"]
                     if total_count - null_count - nan_count == 0:
                         native_sum = _duckdb_numeric_zero(semantic_type, raw_type)
@@ -4092,7 +4136,17 @@ def _sort_clause(available: set[str], model: Mapping[str, Any]) -> str | None:
 def _unordered_view(frame: Any) -> Any:
     """Order-independent reads skip a sorted view's full sort."""
     unordered_sql = getattr(frame, "unordered_sql", None)
-    return frame if unordered_sql is None else replace(frame, sql=unordered_sql, unordered_sql=None)
+    if unordered_sql is None:
+        return frame
+    if isinstance(frame, DuckDBSqlPlan):
+        return replace(
+            frame,
+            sql=unordered_sql,
+            unordered_sql=None,
+            row_id_order=frame.unordered_row_id_order,
+            unordered_row_id_order=False,
+        )
+    return replace(frame, sql=unordered_sql, unordered_sql=None)
 
 
 def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_type: str | None) -> str:

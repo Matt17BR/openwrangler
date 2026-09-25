@@ -418,6 +418,20 @@ def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any
         engine.close()
 
 
+def test_top_value_ties_follow_first_occurrence_on_batched_and_singleton_plans(spark_session: Any) -> None:
+    functions = import_module("pyspark.sql.functions")
+    keys = ["c", "a", "b", "a", "c", "b", None]
+    source = spark_session.createDataFrame([(key, rank) for rank, key in enumerate(keys)], "key string, rank long")
+    # A non-binary collation keeps its column on the singleton plan.
+    engine, frame = _open_engine(source.withColumn("folded", functions.collate("key", "UTF8_LCASE")))
+    try:
+        summaries = engine.summaries(frame)
+        for summary in (summaries[0], summaries[2]):
+            assert [(item["value"], item["count"]) for item in summary["topValues"]] == [("c", 2), ("a", 2), ("b", 2)]
+    finally:
+        engine.close()
+
+
 def test_numeric_summaries_publish_typed_zero_for_all_missing_domains(spark_session: Any) -> None:
     frame = spark_session.createDataFrame(
         [(None, None, None), (None, None, None)],

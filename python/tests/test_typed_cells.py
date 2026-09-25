@@ -334,6 +334,9 @@ def test_integer_value_counts_keep_native_success_and_wide_first_labels(offset: 
                 assert actual.index.dtype == object and actual.dtype == np.dtype("int64")
                 assert actual.name == "count" and actual.index.name == "value"
             else:
+                if sort:
+                    # Equal counts keep first occurrence, which Pandas 2 does not promise.
+                    native = source.value_counts(dropna=True, sort=False).sort_values(ascending=False, kind="stable")
                 pd.testing.assert_series_equal(actual, native)
             if offset:
                 assert all(

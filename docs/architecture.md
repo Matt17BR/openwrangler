@@ -439,6 +439,10 @@ merely because another resource has the same URI, variable name, or display labe
 
 ## Engine boundaries and capabilities
 
+Profiles, dataset statistics and value choices read the filtered rows in data order, so a viewing sort never changes
+them; a committed Sort Rows step does. Equal top-value counts keep the first occurrence in that order in every engine,
+and unused categories never count as top values. Value choices break equal counts by ascending label.
+
 Python CSV/TSV readers own whitespace, empty fields and record parsing. Pandas maps only its native `EmptyDataError`
 to an empty dataframe; Polars disables the native empty-input exception. DuckDB validates the file and options in its
 native reader before a four-byte check adapts a zero-byte or single-UTF-8-BOM file to the existing zero-column plan.
@@ -1261,7 +1265,12 @@ caching remain disabled.
 Parquet sources take their private row identity from DuckDB's `file_row_number`, unless the file already has a column
 of that name. A window row number would serialize every later scan. When row IDs follow source order, viewing sorts
 break ties by row ID; other sorts keep a window tie-break. Counts, profiles, statistics and value choices read the
-filtered relation without its sort.
+filtered relation without its sort. Top-value ties use the row ID when it follows source order and a window position
+otherwise.
+
+DuckDB's sample deviation raises instead of overflowing, so the profile first omits doubles of magnitude 1e100 or more.
+When only such finite values were omitted, it rescales the column by an exact power of two and keeps the deviation
+unless its squared total overflows, matching Pandas and Polars.
 
 File Custom Code is an explicit capture boundary. Its result must belong to the supplied `df` connection, have
 addressable visible columns and use no reserved row-identity names. It is evaluated once, with a stored row ordinal,
@@ -1332,7 +1341,6 @@ scalar projection reads cardinality after the existing slice or grouped limit; t
 Declared compound Union members use native key/value lists and do not need this dictionary check, even when inactive.
 Maps nested inside other containers remain outside this check. Union values can still lose temporal precision or
 selected-member distinctions during fetch. Complex-value selection and comparisons remain unavailable.
-The existing profile/choice tie-order cast can still refuse timestamps near the lower nanosecond endpoint.
 
 SQL byte literals use native hexadecimal decoding in live and generated code. Text literals containing NUL
 additionally decode those bytes as UTF-8. Both functions resolve from DuckDB's built-in catalog so caller macros

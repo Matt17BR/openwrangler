@@ -784,6 +784,7 @@ class PySparkEngine(DataFrameEngine):
         profile_plans: list[dict[str, Any]],
     ) -> None:
         remaining_transport_bytes = PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT
+        row_id = self._row_id_column(frame)
         batch_ranges = _summary_terminal_batch_ranges([plan["displayDecoder"] is not None for plan in profile_plans])
         for batch_start, batch_end in batch_ranges:
             batch = profile_plans[batch_start:batch_end]
@@ -792,12 +793,17 @@ class PySparkEngine(DataFrameEngine):
 
             if len(batch) == 1:
                 plan = batch[0]
-                top_frame = _summary_top_value_frame(functions, frame, plan)
+                top_frame = _summary_top_value_frame(functions, frame, plan, row_id)
                 top_rows, consumed_transport_bytes = self._guarded_profile_rows(
                     functions,
                     top_frame,
                     functions.col("__ow_value"),
                     remaining_transport_bytes,
+                    order_expressions=(
+                        functions.desc("count"),
+                        functions.asc("__ow_first"),
+                        functions.asc(functions.col("__ow_value").cast("string")),
+                    ),
                 )
             else:
                 combined = _summary_top_value_batch_frame(
@@ -805,6 +811,7 @@ class PySparkEngine(DataFrameEngine):
                     frame,
                     batch,
                     batch_start,
+                    row_id,
                 )
                 top_rows, consumed_transport_bytes = self._guarded_profile_rows(
                     functions,
@@ -816,6 +823,7 @@ class PySparkEngine(DataFrameEngine):
                     order_expressions=(
                         functions.asc("__ow_profile_index"),
                         functions.desc("count"),
+                        functions.asc("__ow_first"),
                         functions.asc("__ow_sort_value"),
                     ),
                 )
@@ -1357,22 +1365,33 @@ def _append_summary_metric(
     metric_expressions.append(expression.alias(alias))
 
 
-def _summary_top_value_frame(functions: Any, frame: Any, plan: Mapping[str, Any]) -> Any:
+def _summary_top_value_frame(functions: Any, frame: Any, plan: Mapping[str, Any], row_id: str | None) -> Any:
     return (
         frame.where(plan["validExpression"])
         .select(
             plan["groupedValueExpression"].alias("__ow_group_key"),
             plan["displayValueExpression"].alias("__ow_display_value"),
+            _profile_first_expression(functions, row_id),
         )
         .groupBy("__ow_group_key")
         .agg(
             functions.count(functions.lit(1)).alias("count"),
             functions.min("__ow_display_value").alias("__ow_value"),
+            functions.min("__ow_first").alias("__ow_first"),
         )
-        .orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
+        .orderBy(
+            functions.desc("count"),
+            functions.asc("__ow_first"),
+            functions.asc(functions.col("__ow_value").cast("string")),
+        )
         .limit(10)
-        .select("count", "__ow_value")
+        .select("count", "__ow_value", "__ow_first")
     )
+
+
+def _profile_first_expression(functions: Any, row_id: str | None) -> Any:
+    """Row IDs follow data order, so their minimum orders equal counts by first occurrence."""
+    return (functions.col(row_id) if row_id is not None else functions.lit(None).cast("long")).alias("__ow_first")
 
 
 def _summary_top_value_batch_frame(
@@ -1380,6 +1399,7 @@ def _summary_top_value_batch_frame(
     frame: Any,
     batch: list[dict[str, Any]],
     profile_start: int,
+    row_id: str | None,
 ) -> Any:
     """Build one source scan for at most four exact per-column top-value plans."""
 
@@ -1402,12 +1422,15 @@ def _summary_top_value_batch_frame(
             )
         )
 
-    exploded = frame.select(functions.explode(functions.array(*entries)).alias("__ow_profile"))
+    exploded = frame.select(
+        functions.explode(functions.array(*entries)).alias("__ow_profile"), _profile_first_expression(functions, row_id)
+    )
     long_values = exploded.where(functions.col("__ow_profile.__ow_valid")).select(
         functions.col("__ow_profile.__ow_profile_index").alias("__ow_profile_index"),
         functions.col("__ow_profile.__ow_group_key").alias("__ow_group_key"),
         functions.col("__ow_profile.__ow_encoded_value").alias("__ow_encoded_value"),
         functions.col("__ow_profile.__ow_sort_value").alias("__ow_sort_value"),
+        "__ow_first",
     )
     representative = functions.min(
         functions.struct(
@@ -1418,21 +1441,24 @@ def _summary_top_value_batch_frame(
     grouped = long_values.groupBy("__ow_profile_index", "__ow_group_key").agg(
         functions.count(functions.lit(1)).alias("count"),
         representative,
+        functions.min("__ow_first").alias("__ow_first"),
     )
     ordered = grouped.select(
         "__ow_profile_index",
         "count",
         functions.col("__ow_representative.__ow_encoded_value").alias("__ow_encoded_value"),
         functions.col("__ow_representative.__ow_sort_value").alias("__ow_sort_value"),
+        "__ow_first",
     )
     top_per_profile = Window.partitionBy("__ow_profile_index").orderBy(
         functions.desc("count"),
+        functions.asc("__ow_first"),
         functions.asc("__ow_sort_value"),
     )
     return (
         ordered.withColumn("__ow_profile_rank", functions.row_number().over(top_per_profile))
         .where(functions.col("__ow_profile_rank") <= functions.lit(10))
-        .select("__ow_profile_index", "count", "__ow_encoded_value", "__ow_sort_value")
+        .select("__ow_profile_index", "count", "__ow_encoded_value", "__ow_sort_value", "__ow_first")
     )
 
 
