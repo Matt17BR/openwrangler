@@ -23,6 +23,10 @@ updates:
           - patch
     ignore:
       - dependency-name: "@types/vscode"
+      # Types must match the oldest supported extension host's Node.js major.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
   - package-ecosystem: pip
     directory: /python
     rebase-strategy: disabled
