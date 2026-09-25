@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from decimal import Decimal
@@ -59,6 +60,7 @@ from .base import (
     bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
+    counted_value,
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
@@ -70,6 +72,7 @@ from .base import (
     generated_view_value_helper_lines,
     infer_semantic_type,
     is_internal_row_id_label,
+    narrow_float_cell,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -425,6 +428,54 @@ def _polars_query_text(expression: Any, dtype: Any) -> Any:
     return expression.cast(pl.String)
 
 
+def _polars_display_text(expression: Any, dtype: Any) -> Any:
+    """Native text spelled exactly like the published cell display."""
+    import polars as pl
+
+    text = _polars_query_text(expression, dtype)
+    if isinstance(dtype, pl.Datetime):
+        # Whole seconds drop the fraction; others keep six digits unless nanoseconds remain.
+        digits = _POLARS_TIME_UNIT_DIGITS[dtype.time_unit]
+        text = text.str.replace(r"\." + "0" * digits, "")
+        if digits == 3:
+            text = text.str.replace(r"\.(\d{3})", ".${1}000")
+        elif digits == 9:
+            text = text.str.replace(r"\.(\d{6})000", ".${1}")
+    elif dtype.is_float():
+        # Python writes 1e-05 and 1e-06 in exponent form and positions every value below 1e16.
+        text = text.str.replace(r"e([+-])(\d)$", "e${1}0${2}")
+        for zeros in (4, 5):
+            exponent = f"e-0{zeros + 1}"
+            text = text.str.replace(rf"^(-?)0\.0{{{zeros}}}([1-9])$", "${1}${2}" + exponent)
+            text = text.str.replace(rf"^(-?)0\.0{{{zeros}}}([1-9])(\d+)$", "${1}${2}.${3}" + exponent)
+        parts = text.str.extract_groups(r"^(-?)(\d)(?:\.(\d+))?e\+(1[3-5])$")
+        digits = parts.struct[1] + parts.struct[2].fill_null("")
+        for exponent in (13, 14, 15):
+            positional = parts.struct[0] + digits.str.pad_end(exponent + 1, "0") + pl.lit(".0")
+            text = pl.when(parts.struct[3] == str(exponent)).then(positional).otherwise(text)
+        text = (
+            pl.when(expression.is_infinite())
+            .then(pl.when(expression > 0).then(pl.lit("Infinity")).otherwise(pl.lit("-Infinity")))
+            .otherwise(text)
+        )
+    return text
+
+
+def _polars_with_display_label(frame: Any, column: str, dtype: Any, name: str) -> Any:
+    """Adds each row's cell display text, rewriting only the float text that Python spells differently."""
+    import polars as pl
+
+    value = _ow_polars_col(frame, column)
+    if not dtype.is_float():
+        return frame.with_columns(_polars_display_text(value, dtype).alias(name))
+    frame = frame.with_columns(_polars_query_text(value, dtype).alias(name))
+    native = pl.col(name)
+    differs = native.str.contains("e", literal=True) | native.str.starts_with("0.0000")
+    differs = differs | native.str.starts_with("-0.0000") | value.is_infinite()
+    rewritten = frame.filter(differs).with_columns(_polars_display_text(value, dtype).alias(name))
+    return pl.concat([frame.filter(~differs), rewritten])
+
+
 def _polars_has_temporal(dtype: Any) -> bool:
     import polars as pl
 
@@ -513,6 +564,8 @@ def _polars_query_cell(value: Any, dtype: Any) -> dict[str, Any]:
     import polars as pl
 
     if not isinstance(dtype, (pl.Duration, pl.Datetime)):
+        if dtype == pl.Float32:
+            return narrow_float_cell(value)
         if isinstance(dtype, (pl.List, pl.Array, pl.Struct)) and _polars_has_temporal(dtype):
             value = _polars_nested_temporal_value(value, dtype)
         return normalize_cell(value)
@@ -523,7 +576,7 @@ def _polars_query_cell(value: Any, dtype: Any) -> dict[str, Any]:
     if is_duration:
         raw = duration_seconds_raw(value["ticks"], 10**digits)
     else:
-        # Keep portable selection keys in Python ISO form without boxing away native precision.
+        # Every engine shows Python ISO text: no zero fraction, otherwise six or nine digits.
         prefix, remainder = value["text"].split(".", 1)
         fraction, offset = remainder[:digits], remainder[digits:]
         if int(fraction) == 0:
@@ -536,7 +589,7 @@ def _polars_query_cell(value: Any, dtype: Any) -> dict[str, Any]:
     return {
         "kind": "duration" if is_duration else "datetime",
         "raw": raw,
-        "display": value["text"],
+        "display": value["text"] if is_duration else raw,
         "isNull": False,
         "isNaN": False,
     }
@@ -1063,8 +1116,8 @@ class PolarsEngine(DataFrameEngine):
                     minimum, maximum = (
                         series.to_frame()
                         .select(
-                            _polars_query_text(pl.col(series.name).min(), series.dtype).alias("min"),
-                            _polars_query_text(pl.col(series.name).max(), series.dtype).alias("max"),
+                            _polars_display_text(pl.col(series.name).min(), series.dtype).alias("min"),
+                            _polars_display_text(pl.col(series.name).max(), series.dtype).alias("max"),
                         )
                         .row(0)
                     )
@@ -1137,8 +1190,8 @@ class PolarsEngine(DataFrameEngine):
             elif semantic_type in {"datetime", "date"}:
                 minimum, maximum = expression.min(), expression.max()
                 if semantic_type == "datetime":
-                    minimum = _polars_query_text(minimum, schema[column])
-                    maximum = _polars_query_text(maximum, schema[column])
+                    minimum = _polars_display_text(minimum, schema[column])
+                    maximum = _polars_display_text(maximum, schema[column])
                 metric_expressions.extend(
                     [
                         minimum.alias(f"{prefix}min"),
@@ -1339,14 +1392,10 @@ class PolarsEngine(DataFrameEngine):
             for item in row["top"]:
                 if item["__ow_top_value"] is None:
                     continue
-                cell = _polars_query_cell(item["__ow_top_value"], dtype)
+                cell = _polars_query_cell(counted_value(item["__ow_top_value"]), dtype)
                 top_values.append(
                     {
-                        "value": (
-                            cell["display"]
-                            if semantic_type in {"list", "struct"} or isinstance(dtype, (pl.Duration, pl.Datetime))
-                            else str(item["__ow_top_value"])
-                        ),
+                        "value": cell["display"],
                         "count": int(item[count_name]),
                         "selectionValue": typed_cell_selection_value(cell, semantic_type),
                     }
@@ -1386,15 +1435,10 @@ class PolarsEngine(DataFrameEngine):
             for row in rows:
                 if row[value_name] is None:
                     continue
-                cell = _polars_query_cell(row[value_name], series.dtype)
+                cell = _polars_query_cell(counted_value(row[value_name]), series.dtype)
                 top_values.append(
                     {
-                        "value": (
-                            cell["display"]
-                            if semantic_type in {"list", "struct"}
-                            or isinstance(series.dtype, (pl.Duration, pl.Datetime))
-                            else str(row[value_name])
-                        ),
+                        "value": cell["display"],
                         "count": int(row[count_name]),
                         "selectionValue": typed_cell_selection_value(cell, semantic_type),
                     }
@@ -1539,30 +1583,41 @@ class PolarsEngine(DataFrameEngine):
         if column_type == "float":
             expression = expression.drop_nans()
         series_df = df.select(expression)
+        count_name = "count_" if column == "count" else "count"
+        label_name = "label_" if column == "label" else "label"
+        counts = series_df.group_by(_ow_polars_columns(series_df, [column])).len(name=count_name)
+        if search and isinstance(counts, pl.LazyFrame):
+            # Grouping first keeps the optimizer from spelling every row before the filter.
+            counts = counts.collect(engine="streaming")
+        elif not search:
+            # Only values tied with or above the last listed count need a label for the tie-break.
+            counts = counts.filter(pl.col(count_name) >= pl.col(count_name).top_k(limit + 1).min())
+        counts = _polars_with_display_label(counts, column, dtype, label_name)
+        label = pl.col(label_name)
+        if column_type == "float":
+            # Counting merges signed zeros under the label 0.0.
+            zero = _ow_polars_col(counts, column) == 0
+            counts = counts.with_columns(pl.when(zero).then(pl.lit("0.0")).otherwise(label).alias(label_name))
         if search:
             needle = str(search).translate(_ASCII_TO_LOWER)
+            searched = label
             if isinstance(dtype, pl.Datetime):
-                needle = needle.replace(" ", "t")
-            series_df = series_df.filter(
-                _polars_query_text(_ow_polars_col(df, column), dtype)
-                .str.replace_many(_ASCII_LOWER_REPLACEMENTS)
-                .str.contains(needle, literal=True)
+                # Labels separate the time with ISO T; either separator finds them.
+                needle = re.sub(r"(?<![a-z])t(?![a-z])", " ", needle)
+                searched = searched.str.replace("T", " ", literal=True)
+            counts = counts.filter(
+                searched.str.replace_many(_ASCII_LOWER_REPLACEMENTS).str.contains(needle, literal=True)
             )
-        count_name = "count_" if column == "count" else "count"
-        counts = (
-            series_df.group_by(_ow_polars_columns(series_df, [column]))
-            .len(name=count_name)
-            .sort([pl.col(count_name), _polars_query_text(_ow_polars_col(df, column), dtype)], descending=[True, False])
-            .head(limit + 1)
-        )
+        ranking = [pl.col(count_name), label]
+        counts = counts.top_k(limit + 1, by=ranking, reverse=[False, True]).sort(ranking, descending=[True, False])
         if isinstance(counts, pl.LazyFrame):
             counts = counts.collect(engine="streaming")
         counts = _polars_prepare_temporal_cells(counts, {column: dtype})
         values = []
         for row in counts.head(limit).iter_rows(named=True):
-            cell = _polars_query_cell(row[column], dtype)
+            cell = _polars_query_cell(counted_value(row[column]), dtype)
             item: dict[str, Any] = {
-                "value": cell["display"] if _polars_has_temporal(dtype) else str(row[column]),
+                "value": cell["display"],
                 "count": int(row[count_name]),
             }
             selection = typed_cell_selection_value(cell, column_type)

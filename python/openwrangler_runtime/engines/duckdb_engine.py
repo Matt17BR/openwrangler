@@ -64,6 +64,7 @@ from .base import (
     bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
+    counted_value,
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
@@ -73,6 +74,7 @@ from .base import (
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     is_internal_row_id_label,
+    narrow_float_cell,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -1046,7 +1048,7 @@ class DuckDBEngine(DataFrameEngine):
                 top_values = []
                 for row in top_rows:
                     value, count = row[:2]
-                    cell = _duckdb_query_cell(value, raw_type, row[2] if map_cardinality else None)
+                    cell = _duckdb_query_cell(counted_value(value), raw_type, row[2] if map_cardinality else None)
                     item = {"value": cell["display"], "count": int(count)}
                     if raw_type == "TIMESTAMP_NS":
                         item["selectionValue"] = typed_cell_selection_value(cell, semantic_type)
@@ -1266,17 +1268,22 @@ class DuckDBEngine(DataFrameEngine):
         raw_type = types[column]
         identifier = _quote_ident(column)
         conditions = [_valid_predicate(identifier, types[column])]
+        label = _duckdb_display_text(identifier, raw_type)
+        if column_type == "float":
+            # Counting merges signed zeros under the label 0.0.
+            label = f"CASE WHEN {identifier} = 0 THEN '0.0' ELSE {label} END"
+        match = None
         if search:
-            text = (
-                _duckdb_timestamp_ns_text(identifier)
-                if raw_type == "TIMESTAMP_NS"
-                else f"CAST({identifier} AS VARCHAR)"
-            )
-            if raw_type == "TIMESTAMP_NS" and " " in str(search):
+            needle = str(search).translate(_ASCII_TO_LOWER)
+            text = label
+            if column_type == "datetime":
+                # Labels separate the time with ISO T; either separator finds them.
+                # A T inside a word, as in infinity, stays literal.
+                needle = re.sub(r"(?<![a-z])t(?![a-z])", " ", needle)
                 text = f"system.main.replace({text}, 'T', ' ')"
-            conditions.append(
-                f"system.main.contains(system.main.translate({text}, {_sql_literal(_ASCII_UPPER)}, "
-                f"{_sql_literal(_ASCII_LOWER)}), {_sql_literal(str(search).translate(_ASCII_TO_LOWER))})"
+            match = (
+                f"system.main.contains(system.main.translate({text}, "
+                f"{_sql_literal(_ASCII_UPPER)}, {_sql_literal(_ASCII_LOWER)}), {_sql_literal(needle)})"
             )
         output, map_cardinality = _duckdb_query_output(identifier, raw_type)
         count_name = (
@@ -1284,12 +1291,22 @@ class DuckDBEngine(DataFrameEngine):
             if output is not None or map_cardinality
             else "value_count"
         )
-        order = identifier if raw_type == "TIMESTAMP_NS" else f"CAST({identifier} AS VARCHAR)"
+        order = label if column_type == "float" else f"CAST({identifier} AS VARCHAR)"
+        if raw_type == "TIMESTAMP_NS":
+            order = identifier
+        ranking = f"ORDER BY {count_name} DESC, {order} ASC LIMIT {int(limit) + 1}"
+        spell_groups = match is not None and (raw_type == "FLOAT" or column_type == "datetime")
+        if match is not None and not spell_groups:
+            conditions.append(match)
         query = (
-            f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM ow WHERE {' AND '.join(conditions)} "
-            f"GROUP BY {identifier} ORDER BY {count_name} DESC, {order} ASC "
-            f"LIMIT {int(limit) + 1}"
+            f"SELECT {identifier}, system.main.count(*) AS {count_name} FROM ow "
+            f"WHERE {' AND '.join(conditions)} GROUP BY {identifier}"
         )
+        if spell_groups:
+            # Spelling these types costs more than grouping, so each distinct value is spelled once.
+            query = f"WITH ow_groups AS MATERIALIZED ({query}) SELECT * FROM ow_groups WHERE {match} {ranking}"
+        else:
+            query = f"{query} {ranking}"
         if output is not None or map_cardinality:
             extra = f", system.main.cardinality({identifier})" if map_cardinality else ""
             query = f"SELECT {output or identifier}, {count_name}{extra} FROM ({query}) AS ow_values"
@@ -1297,7 +1314,7 @@ class DuckDBEngine(DataFrameEngine):
         values = []
         for row in rows[:limit]:
             value, count = row[:2]
-            cell = _duckdb_query_cell(value, raw_type, row[2] if map_cardinality else None)
+            cell = _duckdb_query_cell(counted_value(value), raw_type, row[2] if map_cardinality else None)
             item: dict[str, Any] = {"value": cell["display"], "count": int(count)}
             selection = typed_cell_selection_value(cell, column_type)
             item["selectionValue"] = selection
@@ -3541,6 +3558,77 @@ def _duckdb_timestamp_ns_text(identifier: str) -> str:
     )
 
 
+def _duckdb_timestamp_text(identifier: str, aware: bool) -> str:
+    micros = f"system.main.epoch_us({identifier})"
+    text = (
+        f'CASE WHEN system.main."%"({micros}, 1000000) = 0 '
+        f"THEN system.main.strftime({identifier}, '%Y-%m-%dT%H:%M:%S') "
+        f"ELSE system.main.strftime({identifier}, '%Y-%m-%dT%H:%M:%S.%f') END"
+    )
+    if aware:
+        # Whole-hour offsets need Python's minutes, as in +00:00.
+        offset = f"system.main.regexp_replace(system.main.strftime({identifier}, '%z'), '^([+-][0-9]{{2}})$', '\\1:00')"
+        text = f'system.main."||"({text}, {offset})'
+    return f"CASE WHEN system.main.isfinite({identifier}) THEN {text} ELSE CAST({identifier} AS VARCHAR) END"
+
+
+def _duckdb_float_text(identifier: str) -> str:
+    """Single-precision text with the shortest digits that read back, spelled like a double."""
+    wide = f"CAST({identifier} AS DOUBLE)"
+    exponent = f"CAST(system.main.floor(system.main.log10(system.main.abs({wide}))) AS INTEGER)"
+
+    def scale(value: str, power: str, up: bool) -> str:
+        # Powers of ten are exact only when positive, so negative scales divide instead.
+        grow, shrink = ("*", "/") if up else ("/", "*")
+        return (
+            f'CASE WHEN {power} >= 0 THEN system.main."{grow}"({value}, system.main.pow(10, {power})) '
+            f'ELSE system.main."{shrink}"({value}, system.main.pow(10, system.main."-"({power}))) END'
+        )
+
+    def candidates(width: int) -> tuple[str, str]:
+        power = f'system.main."-"({exponent}, {width - 1})'
+        scaled = scale(wide, power, up=False)
+        nearest = f"system.main.round_even({scaled}, 0)"
+        # Beside a power of two the nearest digits can miss while the neighbor across the value reads back.
+        across = f'system.main."+"({nearest}, system.main.sign(system.main."-"({scaled}, {nearest})))'
+        return scale(nearest, power, up=True), scale(across, power, up=True)
+
+    def reads_back(candidate: str) -> str:
+        return f"TRY_CAST({candidate} AS FLOAT) = {identifier}"
+
+    def shortest(low: int, high: int) -> str:
+        # A width that reads back makes every wider width read back too.
+        if low == high:
+            nearest, across = candidates(low)
+            return f"CASE WHEN {reads_back(nearest)} THEN CAST({nearest} AS VARCHAR) ELSE CAST({across} AS VARCHAR) END"
+        middle = (low + high) // 2
+        nearest, across = candidates(middle)
+        return (
+            f"CASE WHEN {reads_back(nearest)} OR {reads_back(across)} "
+            f"THEN {shortest(low, middle)} ELSE {shortest(middle + 1, high)} END"
+        )
+
+    return f"CASE WHEN {identifier} = 0 THEN CAST({wide} AS VARCHAR) ELSE {shortest(1, 9)} END"
+
+
+def _duckdb_display_text(identifier: str, raw_type: str) -> str:
+    """SQL text spelled like the published cell display."""
+    if raw_type == "TIMESTAMP_NS":
+        return _duckdb_timestamp_ns_text(identifier)
+    if raw_type in {"TIMESTAMP", "TIMESTAMP_MS", "TIMESTAMP_S"} or _duckdb_datetime_is_aware(raw_type):
+        return _duckdb_timestamp_text(identifier, _duckdb_datetime_is_aware(raw_type))
+    if raw_type in {"FLOAT", "DOUBLE"}:
+        text = f"CAST({identifier} AS VARCHAR)"
+        if raw_type == "FLOAT":
+            text = _duckdb_float_text(identifier)
+        return (
+            f"CASE WHEN system.main.isinf({identifier}) THEN "
+            f"CASE WHEN {identifier} > 0 THEN 'Infinity' ELSE '-Infinity' END "
+            f"ELSE {text} END"
+        )
+    return f"CAST({identifier} AS VARCHAR)"
+
+
 def _duckdb_temporal_output(expression: str, dtype: Any, depth: int = 0) -> str | None:
     """Format affected output leaves before Python fetch, without changing stored types."""
     if "TIMESTAMP_NS" not in str(dtype):
@@ -3603,6 +3691,8 @@ def _duckdb_query_output(expression: str, raw_type: str) -> tuple[str | None, bo
 def _duckdb_query_cell(value: Any, raw_type: str, map_cardinality: int | None = None) -> dict[str, Any]:
     if map_cardinality is not None and len(value) != map_cardinality:
         raise EngineError("DuckDB Map entries cannot remain distinct when converted for display.")
+    if raw_type == "FLOAT":
+        return narrow_float_cell(value)
     if raw_type != "TIMESTAMP_NS" or value is None:
         return normalize_cell(value)
     return {"kind": "datetime", "raw": value, "display": value, "isNull": False, "isNaN": False}

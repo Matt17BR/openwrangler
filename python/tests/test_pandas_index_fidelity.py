@@ -86,8 +86,13 @@ def test_parquet_integer_data_file_session_preserves_values_through_edit_and_exp
         ]
         profiles = manager.get_summary(session_id, 0, {})["summaries"]
         assert [profile["type"] for profile in profiles] == ["integer", "integer", "list", "struct"]
-        for profile, values in zip(profiles, table.to_pydict().values(), strict=True):
-            expected_counts = {str(value): values.count(value) for value in values if value is not None}
+        for position, (profile, values) in enumerate(zip(profiles, table.to_pydict().values(), strict=True)):
+            cells = [row["values"][position] for row in opened["page"]["rows"]]
+            expected_counts = {
+                cell["display"]: values.count(value)
+                for cell, value in zip(cells, values, strict=True)
+                if value is not None
+            }
             assert profile["nullCount"] == values.count(None) and profile["nanCount"] == 0
             assert profile["distinctCount"] == len(expected_counts)
             assert {item["value"]: item["count"] for item in profile["topValues"]} == expected_counts
@@ -173,7 +178,10 @@ def test_parquet_integer_containers_keep_native_children_and_siblings(tmp_path: 
     pd.testing.assert_series_equal(loaded["ordinary"], ordinary["ordinary"])
     engine = PandasEngine()
     summary = engine.summaries(loaded)[0]
-    expected_counts = {str(value): values.count(value) for value in values if value is not None}
+    cells = [row["values"][0] for row in engine.page(loaded, 0, len(values))["rows"]]
+    expected_counts = {
+        cell["display"]: values.count(value) for cell, value in zip(cells, values, strict=True) if value is not None
+    }
     assert summary["nullCount"] == values.count(None) and summary["nanCount"] == 0
     assert summary["distinctCount"] == len(expected_counts)
     assert {item["value"]: item["count"] for item in summary["topValues"]} == expected_counts

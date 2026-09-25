@@ -71,6 +71,64 @@ def test_profile_ties_follow_first_occurrence_and_ignore_viewing_sorts(tmp_path:
         manager.close_session(session_id, revision)
 
 
+def test_value_choices_spell_grid_text_and_agree_across_engines(tmp_path: Path) -> None:
+    path = tmp_path / "choices.parquet"
+    moment = 1_704_067_200 * 10**6
+    pq.write_table(
+        pa.table(
+            {
+                "f32": pa.array(
+                    [0.1, 0.1, 0.3, 1e-5, 16777216.0, -0.0, 0.0, float("inf"), 442674.125, None], pa.float32()
+                ),
+                "f64": [1e16, 1e-5, 0.1, -0.0, 0.0, 2.5, 2.5, float("-inf"), float("nan"), None],
+                "text": ["v1", "V1", "v2", "", None, "v10", "v1", "\u0130", "i", "v2"],
+                "when": pa.array(
+                    [moment, moment, moment + 500_000, moment + 1_500_000, moment + 86_400 * 10**6, None, moment]
+                    + [moment + 1, moment + 2, moment + 3],
+                    pa.timestamp("us"),
+                ),
+            }
+        ),
+        path,
+    )
+    choices: dict[str, dict[tuple[str, str | None], list[tuple[str, int]]]] = {}
+    missing: dict[str, list[tuple[int, int]]] = {}
+    for backend in ("pandas", "polars", "duckdb"):
+        manager = SessionManager()
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend)
+        session_id, revision = opened["metadata"]["sessionId"], opened["metadata"]["revision"]
+        schema = opened["metadata"]["schema"]
+        rows = manager.get_page(session_id, revision, 0, 10, EMPTY)["page"]["rows"]
+        choices[backend] = {}
+        try:
+            for position, column in enumerate(schema):
+                cells = {row["values"][position]["display"] for row in rows}
+                for search in (None, "1", "e", "0.1", "-", "v1", "i", "T00:00:01", " 00:00:01"):
+                    values = manager.get_column_values(session_id, revision, column["name"], EMPTY, search, 3)
+                    listed = [(item["value"], item["count"]) for item in values["values"]]
+                    # Signed zeros share one choice, labelled like positive zero.
+                    assert {label for label, _ in listed} <= cells | {"0.0"}
+                    choices[backend][column["name"], search] = listed
+            summaries = manager.get_summary(session_id, revision, EMPTY, [column["id"] for column in schema])
+            missing[backend] = [(item["nullCount"], item["nanCount"]) for item in summaries["summaries"]]
+        finally:
+            manager.close_session(session_id, revision)
+    assert choices["polars"] == choices["pandas"] and choices["duckdb"] == choices["pandas"]
+    assert {backend: [sum(counts) for counts in columns] for backend, columns in missing.items()} == dict.fromkeys(
+        missing, [1, 2, 1, 1]
+    )
+    # Pandas NumPy floats store Parquet nulls as NaN; missing text and datetimes stay null.
+    assert missing["polars"] == missing["duckdb"] == [(1, 0), (1, 1), (1, 0), (1, 0)]
+    assert missing["pandas"] == [(0, 1), (0, 2), (1, 0), (1, 0)]
+    listed = choices["pandas"]
+    assert listed["f32", None] == [("0.0", 2), ("0.1", 2), ("0.3", 1)] and listed["f32", "-"] == [("1e-05", 1)]
+    assert listed["f64", "e"] == [("1e+16", 1), ("1e-05", 1)] and listed["f64", "-"] == [("-Infinity", 1), ("1e-05", 1)]
+    assert listed["text", "v1"] == [("v1", 2), ("V1", 1), ("v10", 1)]
+    assert listed["text", "i"] == [("i", 1)]
+    fraction = [("2024-01-01T00:00:01.500000", 1)]
+    assert listed["when", "T00:00:01"] == listed["when", " 00:00:01"] == fraction
+
+
 def test_in_memory_profile_ties_follow_first_occurrence() -> None:
     categories = pd.CategoricalDtype(["a", "b", "c", "unused"])
     pandas_frame = pd.DataFrame({"key": pd.Series(KEYS, dtype=categories), "text": KEYS})

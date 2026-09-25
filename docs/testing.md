@@ -241,8 +241,10 @@ Use the existing owners to choose a focused source check:
   [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
   queries, captures, exact types, source preservation and evaluation bounds. Keep capture, clone and checkpoint
   lifetime checks here; ordinary file scans and saved MIME captures retain their separate lazy/bounded contracts.
-  Pandas missing-mask checks keep built-in nullable integer, Boolean and string arrays out of scalar loops, with
-  separate null/NaN sentinels, custom-array fallback and live/generated filter agreement. Pandas profile checks keep
+  Pandas missing-mask checks keep built-in nullable integer, Boolean and string arrays out of scalar loops, count
+  NaN as a value only in float columns, and cover custom-array fallback and live/generated filter agreement.
+  [Profile consistency](../python/tests/test_profile_consistency.py) checks that every engine's choice labels are
+  grid text and that choices and missing totals agree across engines. Pandas profile checks keep
   nonmissing object strings out of scalar missing/count-key loops while testing late
   mixed-value outliers, custom Series behavior and executable generated comparison keys.
   Notebook command and KernelBridge tests own connection selection; executed-result tests own bounded inline MIME
