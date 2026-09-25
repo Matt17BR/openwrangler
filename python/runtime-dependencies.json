@@ -40,14 +40,14 @@
       "id": "fsspec",
       "importModule": "fsspec",
       "distribution": "fsspec",
-      "exactVersion": "2026.7.0",
+      "exactVersion": "2026.9.0",
       "minimumVersion": null,
       "maximumVersionExclusive": null,
       "pyprojectGroup": "runtime",
       "qualification": {
         "cohortKind": "exact",
         "minimumStatus": "qualified",
-        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.7.0" }]
+        "qualifiedCases": [{ "pythonVersion": "3.12", "version": "2026.9.0" }]
       }
     },
     {

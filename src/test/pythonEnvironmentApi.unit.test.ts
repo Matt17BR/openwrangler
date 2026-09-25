@@ -242,8 +242,8 @@ describe("Python environment API broker", () => {
     const exact = {
       importModule: "fsspec",
       distribution: "fsspec",
-      installSpec: "fsspec==2026.7.0",
-      exactVersion: "2026.7.0"
+      installSpec: "fsspec==2026.9.0",
+      exactVersion: "2026.9.0"
     };
 
     expect(classifyDependencyProbe([exact], [true])).toEqual({
@@ -251,7 +251,7 @@ describe("Python environment API broker", () => {
     });
     for (const observed of [undefined, false]) {
       expect(classifyDependencyProbe([exact], observed === undefined ? [] : [observed])).toEqual({
-        missing: ["fsspec==2026.7.0"]
+        missing: ["fsspec==2026.9.0"]
       });
     }
   });

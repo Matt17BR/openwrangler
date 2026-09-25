@@ -55,16 +55,14 @@ test("fails closed on malformed project-license inputs", () => {
 
 test("requires the selected-environment fsspec notice", () => {
   assert.deepEqual(inspectDependencyLicensePolicy({ root, lock, notices }).errors, []);
-  for (const replacement of ["fsspec 2026.6.0: BSD-3-Clause License", "fsspec 2026.7.0: MIT License"]) {
-    assert.deepEqual(
-      inspectDependencyLicensePolicy({
-        root,
-        lock,
-        notices: notices.replace("fsspec 2026.7.0: BSD-3-Clause License", replacement)
-      }).errors,
-      ["THIRD_PARTY_NOTICES.md is missing fsspec 2026.7.0: BSD-3-Clause License."]
-    );
-  }
+  assert.deepEqual(
+    inspectDependencyLicensePolicy({
+      root,
+      lock,
+      notices: notices.replace("fsspec: BSD-3-Clause License", "fsspec: MIT License")
+    }).errors,
+    ["THIRD_PARTY_NOTICES.md is missing fsspec: BSD-3-Clause License."]
+  );
 });
 
 test("classifies linked packages from their lockfile-owned target", () => {

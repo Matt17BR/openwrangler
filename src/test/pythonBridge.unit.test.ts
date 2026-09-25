@@ -1439,7 +1439,7 @@ describe("PythonBridge dependency installation", () => {
     { name: "engine", requirements: ["duckdb>=1.5.4,<1.6"], modules: ["duckdb"], supporting: false },
     {
       name: "supporting packages",
-      requirements: ["fsspec==2026.7.0", "pytz>=2026.3.post1,<2027"],
+      requirements: ["fsspec==2026.9.0", "pytz>=2026.3.post1,<2027"],
       modules: ["fsspec", "pytz"],
       supporting: true
     }
@@ -3887,7 +3887,7 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["fsspec==2026.7.0"] })
+      .mockResolvedValueOnce({ missing: ["fsspec==2026.9.0"] })
       .mockResolvedValueOnce({ missing: [] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({

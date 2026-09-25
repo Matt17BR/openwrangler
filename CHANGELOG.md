@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.
 - Local R files reuse unchanged filtered sort order across grid pages.
 - R text filters and value search reuse case conversion for repeated values within bounded batches.
 - R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
