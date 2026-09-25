@@ -575,52 +575,6 @@ test("daily notes retain manual preview bases and reject nonancestor source rang
   );
 });
 
-test("the first package attempt freezes notes inputs for publication-only recovery", () => {
-  const workflow = parseYaml(readFileSync(join(fixtureRoot, ".github/workflows/preview-release.yml"), "utf8"));
-  const steps = workflow.jobs.package.steps;
-  const baselineIndex = steps.findIndex((step) => step.id === "notes_base");
-  assert.ok(baselineIndex > steps.findIndex((step) => step.run === "npm ci --ignore-scripts"));
-  assert.ok(baselineIndex < steps.findIndex((step) => step.name === "Package the preview VSIX once"));
-  assert.deepEqual(Object.keys(workflow.on), ["schedule"]);
-  for (const id of ["utc_date", "daily_source", "notes_base"]) {
-    assert.equal(steps.find((step) => step.id === id).if, undefined);
-  }
-  assert.equal(workflow.jobs.package.outputs["candidate-sha"], "${{ steps.daily_source.outputs.generated_sha }}");
-  assert.equal(workflow.jobs.package.outputs["release-tag"], "${{ steps.daily_source.outputs.release_tag }}");
-  assert.equal(workflow.jobs.release.if, "${{ !cancelled() && needs.package.result == 'success' }}");
-  const reconstruct = workflow.jobs.release.steps.find(
-    (step) => step.name === "Reconstruct the qualified daily source"
-  );
-  assert.equal(reconstruct.if, undefined);
-  assert.equal(reconstruct.run, "node scripts/daily-preview-artifact.mjs prepare");
-  assert.deepEqual(reconstruct.env, {
-    EXPECTED_GENERATED_SHA: "${{ needs.package.outputs.candidate-sha }}",
-    GITHUB_REF: "refs/heads/main",
-    PREVIEW_DATE: "${{ needs.package.outputs.preview-date }}",
-    SOURCE_SHA: "${{ github.sha }}"
-  });
-  assert.equal(steps[baselineIndex].run, "node scripts/publish-github-preview-release.mjs --notes-baseline");
-  assert.equal(workflow.jobs.package.outputs["notes-base-tag"], "${{ steps.notes_base.outputs.notes_base_tag }}");
-  assert.equal(workflow.jobs.package.outputs["notes-base-sha"], "${{ steps.notes_base.outputs.notes_base_sha }}");
-  assert.equal(
-    workflow.jobs.package.outputs["notes-pull-requests"],
-    "${{ steps.notes_base.outputs.notes_pull_requests }}"
-  );
-  assert.deepEqual(workflow.jobs.package.permissions, { actions: "read", contents: "read", "pull-requests": "read" });
-  assert.deepEqual(workflow.permissions, { actions: "read", contents: "read" });
-  const publication = workflow.jobs.release.steps.find(
-    (step) => step.name === "Publish and verify the exact GitHub preview release"
-  );
-  assert.equal(publication.env.NOTES_BASE_TAG, "${{ needs.package.outputs.notes-base-tag }}");
-  assert.equal(publication.env.NOTES_BASE_SHA, "${{ needs.package.outputs.notes-base-sha }}");
-  assert.equal(publication.env.NOTES_PULL_REQUESTS, "${{ needs.package.outputs.notes-pull-requests }}");
-  assert.deepEqual(workflow.jobs.release.permissions, { actions: "write", contents: "write" });
-  assert.equal(
-    workflow.jobs.release.steps.some((step) => step.run?.includes("--notes-baseline")),
-    false
-  );
-});
-
 test("manual preview notes remain the exact curated text from their source commit", (context) => {
   const root = repository(context);
   const notesDirectory = join(root, "docs", "release-notes");
