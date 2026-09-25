@@ -1,4 +1,3 @@
-import "@testing-library/jest-dom/vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
