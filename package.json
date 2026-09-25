@@ -1030,7 +1030,7 @@
     "@vscode/python-extension": "1.0.6",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce-sign": "file:scripts/npm-shims/vsce-sign",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "axe-core": "^4.13.0",
     "eslint": "^10.10.0",
     "eslint-plugin-react-hooks": "^7.0.0",
