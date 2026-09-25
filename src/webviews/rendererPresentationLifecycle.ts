@@ -25,6 +25,7 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
   const acknowledgedSynchronizationId = useRef<string | undefined>(undefined);
   const rendererRetirementPublished = useRef(false);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
+  const hostGridViewState = useRef<GridViewState | undefined>(undefined);
   const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
   const gridViewStateTimer = useRef<number | undefined>(undefined);
   const committedSessionRef = useRef<CommittedRendererSession | undefined>(committedSession);
@@ -70,6 +71,7 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
   const restoreHostGridViewState = useCallback(
     (next: GridViewState) => {
       discardPendingGridViewState();
+      hostGridViewState.current = next;
       storeGridViewState(next);
       setViewStateRestoreVersion((current) => current + 1);
     },
@@ -77,7 +79,9 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
   );
 
   const resetGridViewState = useCallback(() => {
-    storeGridViewState(emptyGridViewState());
+    const empty = emptyGridViewState();
+    hostGridViewState.current = empty;
+    storeGridViewState(empty);
   }, [storeGridViewState]);
 
   const restoreGridViewport = useCallback(
@@ -121,8 +125,9 @@ export function useRendererPresentationLifecycle(committedSession: CommittedRend
       revision: synchronization.revision
     });
     acknowledgedSynchronizationId.current = synchronization.syncId;
-    // An earlier debounce may have reached the host while publication was locked.
-    flushGridViewState(true);
+    // An earlier debounce may have reached the host while publication was locked. Echoing an
+    // unchanged host state could instead overwrite a host update that follows this receipt.
+    flushGridViewState(gridViewStateRef.current !== hostGridViewState.current);
   }, [acceptedSynchronization, committedSession, flushGridViewState]);
 
   useEffect(() => {
