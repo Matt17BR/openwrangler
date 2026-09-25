@@ -63,7 +63,6 @@ export default defineConfig(({ mode }) => {
       maxWorkers: 4,
       projects: [
         {
-          plugins: [react()],
           test: {
             ...testOptions,
             name: "node",
@@ -73,7 +72,6 @@ export default defineConfig(({ mode }) => {
           }
         },
         {
-          plugins: [react()],
           test: {
             ...testOptions,
             name: "dom",
