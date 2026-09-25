@@ -20,6 +20,9 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - Pandas profiles no longer fail on sparse numeric columns.
+- Python profiles, statistics and value choices no longer change when you sort the view. Equal top-value counts appear in first-occurrence order in every engine, as they do in R.
+- DuckDB profiles no longer fail on columns with doubles near the floating-point limit.
+- Pandas profiles no longer list unused categories as top values.
 - R refuses a Parquet import when file replacement changes a timestamp's timezone meaning between the metadata and data reads.
 - Opening a local R file column's unfiltered value picker preserves the grid's cached filter and sort order.
 - Generated R Filter Rows and Conditional Column agree with live integer64 comparisons at the minimum signed 64-bit bound.

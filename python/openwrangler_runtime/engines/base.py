@@ -911,6 +911,10 @@ class DataFrameEngine(ABC):
         """Return a filtered view accepted by this engine's read methods; it may defer materialization."""
         return self.apply_filter_model(frame, model)
 
+    def unsorted_view(self, view: Any) -> Any | None:
+        """Return a sorted ``filter_view`` result without its sort, or None when refiltering is required."""
+        return None
+
     @abstractmethod
     def page(
         self,

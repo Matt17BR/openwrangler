@@ -561,13 +561,19 @@ class _PandasRowView:
 
     def unordered(self) -> Any:
         """Selected rows in source order, for aggregates that ignore row order and labels."""
-        import numpy as np
-
         if self._frame is not None:
             return self._frame
         if len(self.positions) == len(self.source):
             return self.source
-        return _pandas_take_rows(self.source, np.sort(self.positions))
+        return _pandas_take_rows(self.source, self.unsorted().positions)
+
+    def unsorted(self) -> _PandasRowView:
+        """The same rows in source order."""
+        import numpy as np
+
+        selected = np.zeros(len(self.source), dtype=bool)
+        selected[self.positions] = True
+        return _PandasRowView(self.source, np.flatnonzero(selected), self.positional)
 
     def column(self, position: int) -> Any:
         if self._frame is not None:
@@ -762,7 +768,16 @@ def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = Fal
             raise EngineError("This Sparse duration unit is unsupported in profiles and value choices.")
     keys = _pandas_duration_keys(series, _NUMPY_DURATION_SECONDS) if duration else _pandas_numeric_key(series)
     try:
-        counts = keys.value_counts(dropna=True, sort=sort)
+        counts = keys.value_counts(dropna=True, sort=False)
+        if sort:
+            if isinstance(keys.dtype, pd.CategoricalDtype) and len(counts) == len(keys.cat.categories):
+                # Categorical counts follow category order; ties follow first occurrence instead.
+                present = np.asarray(keys.cat.codes, dtype=np.int64)
+                present = present[present >= 0]
+                seen = present[np.sort(np.unique(present, return_index=True)[1])]
+                unseen = np.setdiff1d(np.arange(len(counts)), seen, assume_unique=True)
+                counts = counts.iloc[np.concatenate([seen, unseen])]
+            counts = counts.sort_values(ascending=False, kind="stable")
     except OverflowError:
         if keys.dtype != object or not all(
             type(value) is int or _pandas_is_missing_scalar(value) for value in keys.array
@@ -1178,6 +1193,9 @@ class PandasEngine(DataFrameEngine):
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         return self.normalize(self.filter_view(frame, model))
 
+    def unsorted_view(self, view: Any) -> Any | None:
+        return view.unsorted() if isinstance(view, _PandasRowView) else None
+
     def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
         import numpy as np
 
@@ -1352,6 +1370,8 @@ class PandasEngine(DataFrameEngine):
             null_count, nan_count = _missing_value_counts(series)
             value_counts = _pandas_value_counts(series, duration=semantic_type == "duration")
             top_counts = value_counts.head(10)
+            # Unused categories are counted as zero.
+            top_counts = top_counts[top_counts.to_numpy() > 0]
             temporal_counts = _pandas_arrow_temporal_array(top_counts.index, categorical=True)
             top_values = [
                 {

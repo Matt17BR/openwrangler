@@ -1159,16 +1159,21 @@ class PolarsEngine(DataFrameEngine):
             count_name = f"__open_wrangler_count_{index}"
             if count_name == column:
                 count_name += "_"
+            # Equal counts keep first-occurrence order; value_counts leaves ties unordered.
+            counted = (
+                frame.select(valid_expression.alias("__ow_top_value"))
+                .with_row_index("__ow_first")
+                .group_by("__ow_top_value")
+                .agg(pl.len().alias(count_name), pl.col("__ow_first").min())
+            )
             top_queries.append(
-                frame.select(
-                    [
-                        valid_expression.n_unique().alias("distinct"),
-                        valid_expression.alias("__ow_top_value")
-                        .value_counts(sort=True, name=count_name)
-                        .head(10)
-                        .implode()
-                        .alias("top"),
-                    ]
+                counted.select(
+                    pl.len().alias("distinct"),
+                    pl.struct("__ow_top_value", count_name)
+                    .sort_by([count_name, "__ow_first"], descending=[True, False])
+                    .head(10)
+                    .implode()
+                    .alias("top"),
                 )
             )
             definitions.append((column, column_id, raw_type, semantic_type, prefix, count_name))
@@ -1364,7 +1369,16 @@ class PolarsEngine(DataFrameEngine):
 
         try:
             count_name = "count_" if value_name == "count" else "count"
-            counts = valid.value_counts(sort=True, name=count_name)
+            first_name = "__ow_first_" if value_name == "__ow_first" else "__ow_first"
+            # Equal counts keep first-occurrence order; value_counts leaves ties unordered.
+            counts = (
+                valid.to_frame()
+                .with_row_index(first_name)
+                .group_by(value_name)
+                .agg(pl.len().alias(count_name), pl.col(first_name).min())
+                .sort([count_name, first_name], descending=[True, False])
+                .drop(first_name)
+            )
             top = counts.head(10)
             top = _polars_prepare_temporal_cells(top, {value_name: series.dtype})
             rows = list(top.iter_rows(named=True))

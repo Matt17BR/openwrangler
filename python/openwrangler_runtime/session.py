@@ -1502,12 +1502,20 @@ class SessionManager:
         return session.filtered
 
     def _view_query_frame(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
-        """Resolve a profiling view without changing the confirmed grid view."""
-        model = self._normalize_filter_model(filter_model)
-        if model == session.filter_model:
-            return session.filtered
-        if not model.get("filters") and not model.get("sort"):
+        """Resolve a profiling view without changing the confirmed grid view.
+
+        Profiles, statistics and value choices read the filtered rows in source order, so a
+        viewing sort never changes them.
+        """
+        model = {**self._normalize_filter_model(filter_model), "sort": []}
+        if not model.get("filters"):
             return session.display_frame
+        if model == {**session.filter_model, "sort": []}:
+            if not session.filter_model.get("sort"):
+                return session.filtered
+            unsorted = session.engine.unsorted_view(session.filtered)
+            if unsorted is not None:
+                return unsorted
         return session.engine.filter_view(session.display_frame, model)
 
     def _refresh_filtered(

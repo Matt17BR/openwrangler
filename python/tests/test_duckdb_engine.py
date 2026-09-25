@@ -965,8 +965,8 @@ def test_duckdb_view_primitives_ignore_macros_but_preserve_source_functions() ->
             assert text["text"] == {"emptyCount": 1, "minLength": 0, "maxLength": 3, "meanLength": 1.75}
             assert text["topValues"] == [
                 {"value": "abc", "count": 2},
-                {"value": "", "count": 1},
                 {"value": "a", "count": 1},
+                {"value": "", "count": 1},
             ]
             numeric = summaries["value"]
             assert (numeric["nullCount"], numeric["nanCount"], numeric["distinctCount"]) == (1, 1, 3)
