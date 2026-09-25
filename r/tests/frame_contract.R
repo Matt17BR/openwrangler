@@ -7467,6 +7467,17 @@ local({
   }
 })
 
+# Integer64 identities and sums stay exact when a chunk after the first exceeds 2^53.
+local({
+  values <- bit64::as.integer64(c(rep(c("-3", "5", "1000000000000000", "9007199254740991"), 30000L),
+    "9007199254740993", "-9007199254740993", "5"))
+  frame <- data.frame(value = values)
+  capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
+  summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
+  assert_identical(summary$distinctCount, 6L, "a late wide integer64 value changed earlier identities")
+  assert_identical(summary$numeric$exactSum$display, "300215977642229790005", "a late wide integer64 value lost earlier sum bits")
+})
+
 # Numeric distinct tracking stays bounded even when an extra value arrives late.
 local({
   limit <- openwrangler_r_frame_contract$limits$columnValueDistinctMatches

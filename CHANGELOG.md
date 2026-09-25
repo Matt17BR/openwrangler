@@ -17,6 +17,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R Parquet files open about twice as fast, and later text filters, sorts and profiles no longer rebuild every string.
 - R text filters and profiles evaluate each distinct value once.
 - Value search on large Pandas columns, and on DuckDB single-precision and datetime columns, labels each distinct value once instead of every row.
+- R profiles of large numeric columns take about half as long, with the same exact means, sums and distinct counts.
 
 ### Fixed
 
@@ -24,7 +25,6 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Datetime value searches find a `T` or space between the date and time, including at the start of the search.
 - Pandas counts missing text, missing categories and NaN in non-float columns as missing values rather than NaN, as Polars and DuckDB do.
 - Value choices no longer list unused Pandas categories. Positive and negative zero share one `0.0` choice in every engine.
-
 - Pandas profiles no longer fail on sparse numeric columns.
 - Python profiles, statistics and value choices no longer change when you sort the view. Equal top-value counts appear in first-occurrence order in every engine, as they do in R.
 - DuckDB profiles no longer fail on columns with doubles near the floating-point limit.

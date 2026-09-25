@@ -2844,6 +2844,34 @@ openwrangler_r_frame_contract <- local({
     n <- length(values)
     if (n == 0L) return(state)
     if (n > 65536L || state$count + n > 2147483647) stop("exact mean input count outside admitted bound")
+    remaining <- as.double(values)
+    if (!all(is.finite(remaining))) stop("exact mean requires finite values")
+    remaining <- remaining[remaining != 0]
+    partials <- numeric()
+    # Rump, Ogita and Oishi's ExtractVector: with fewer than 2^M values of magnitude at most
+    # 2^-M * sigma, every (sigma + x) - sigma, its remainder and the sum of those parts are
+    # exact. Each pass leaves remainders of at most 2^-53 * sigma, so a few passes reduce the
+    # chunk to exact partial sums. Tiny remainders keep the limb path to avoid underflow.
+    while (length(remaining) != 0L) {
+      largest <- max(abs(remaining))
+      exponent <- ceiling(log2(largest))
+      if (2^exponent < largest) exponent <- exponent + 1
+      scale <- ceiling(log2(length(remaining) + 1)) + exponent
+      if (scale > 1023 || scale < -969) break
+      sigma <- 2^scale
+      high <- (sigma + remaining) - sigma
+      partials <- c(partials, sum(high))
+      remaining <- remaining - high
+      remaining <- remaining[remaining != 0]
+    }
+    state <- exact_mean_accumulate(c(partials, remaining), state)
+    state$count <- state$count + as.double(n)
+    state
+  }
+
+  exact_mean_accumulate <- function(values, state) {
+    n <- length(values)
+    if (n == 0L) return(state)
     words <- matrix(base::readBin(base::writeBin(as.double(values), raw(), size = 8L, endian = "little"),
       integer(), n = 4L * n, size = 2L, signed = FALSE, endian = "little"), ncol = 4L, byrow = TRUE)
     high <- words[, 4L]
@@ -2882,7 +2910,6 @@ openwrangler_r_frame_contract <- local({
         i <- i + 1L
       }
     }
-    state$count <- state$count + as.double(n)
     state
   }
 
@@ -3296,6 +3323,10 @@ openwrangler_r_frame_contract <- local({
     state$numeric_sum <- 0
     state$numeric_has_nonfinite <- FALSE
     state$exact_sum <- "0"
+    state$exact_sum_high <- 0
+    state$exact_sum_low <- 0
+    state$exact_sum_pending <- 0
+    state$integer64_text_keys <- FALSE
     state$exact_minimum <- NULL
     state$exact_maximum <- NULL
     state$datetime_minimum <- NULL
@@ -3439,7 +3470,15 @@ openwrangler_r_frame_contract <- local({
             }
           } else if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
             values <- numeric_profile_values(chunk, state$semantics, present_indices, integer64_bindings)
-            identity_values <- if (state$kind == "integer64" &&
+            # Doubles below 2^53 represent these integers exactly.
+            exact_doubles <- state$kind %in% c("integer", "integer64") && max(abs(values)) < 9007199254740992
+            if (state$kind == "integer64" && !exact_doubles && !state$integer64_text_keys) {
+              # Wider values need text identities; retained exact doubles print as the same text.
+              state$integer64_text_keys <- TRUE
+              if (!is.null(state$numeric_distinct_values)) state$numeric_distinct_values <- sprintf("%.0f", state$numeric_distinct_values)
+              if (!is.null(state$numeric_bin_values)) state$numeric_bin_values <- sprintf("%.0f", state$numeric_bin_values)
+            }
+            identity_values <- if (state$kind == "integer64" && state$integer64_text_keys &&
                 (!is.null(state$numeric_distinct_values) || length(state$numeric_bin_values) < maximum_histogram_bins)) {
               profile_value_keys(present, state$semantics, seq_along(present), integer64_bindings)
             } else values
@@ -3483,7 +3522,16 @@ openwrangler_r_frame_contract <- local({
               state$numeric_finite_count <- state$numeric_finite_count + chunk_finite_count
             }
             if (state$kind %in% c("integer", "integer64")) {
-              state$exact_sum <- add_signed_decimal(state$exact_sum, exact_integer_sum_text(present, state$kind))
+              if (exact_doubles) {
+                if (state$exact_sum_pending + length(values) > 67108864) fold_profile_exact_sum(state)
+                # Parts below 2^26 and 2^27 keep the totals of up to 2^26 values exact.
+                high <- floor(values / 134217728)
+                state$exact_sum_high <- state$exact_sum_high + sum(high)
+                state$exact_sum_low <- state$exact_sum_low + sum(values - high * 134217728)
+                state$exact_sum_pending <- state$exact_sum_pending + length(values)
+              } else {
+                state$exact_sum <- add_signed_decimal(state$exact_sum, exact_integer_sum_text(present, state$kind))
+              }
               if (state$kind == "integer64") {
                 extrema <- integer64_profile_range(present, integer64_bindings)
                 candidate_minimum <- extrema[[1L]]
@@ -3609,6 +3657,7 @@ openwrangler_r_frame_contract <- local({
     if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
       if (state$kind %in% c("integer", "integer64")) {
+        fold_profile_exact_sum(state)
         numeric$exactSum <- exact_profile_integer_text_cell(state$exact_sum, state$budget, paste0(state$label, " sum"))
         sum_value <- finite_statistic(suppressWarnings(as.double(state$exact_sum)))
       } else if (!state$numeric_has_nonfinite) {
@@ -9248,6 +9297,16 @@ openwrangler_r_frame_contract <- local({
     total
   }
 
+  fold_profile_exact_sum <- function(state) {
+    if (state$exact_sum_pending == 0) return(invisible(NULL))
+    pending <- add_signed_decimal(sprintf("%.0f", state$exact_sum_high * 134217728), sprintf("%.0f", state$exact_sum_low))
+    state$exact_sum <- add_signed_decimal(state$exact_sum, pending)
+    state$exact_sum_high <- 0
+    state$exact_sum_low <- 0
+    state$exact_sum_pending <- 0
+    invisible(NULL)
+  }
+
   signed_decimal_in_range <- function(value, minimum, maximum) {
     compare_integer_text(value, minimum) >= 0L && compare_integer_text(value, maximum) <= 0L
   }
@@ -11974,7 +12033,8 @@ openwrangler_r_frame_contract <- local({
     drop_columns_at = drop_columns_at,
     select_columns_at = select_columns_at,
     group_by_at = group_by_at,
-    exact_mean_helpers = list(exact_mean_new = exact_mean_new, exact_mean_add = exact_mean_add, exact_mean_finish = exact_mean_finish, exact_binary64_mean = exact_binary64_mean),
+    exact_mean_helpers = list(exact_mean_new = exact_mean_new, exact_mean_add = exact_mean_add, exact_mean_accumulate = exact_mean_accumulate,
+      exact_mean_finish = exact_mean_finish, exact_binary64_mean = exact_binary64_mean),
     integer_sum_helpers = list(
       compare_unsigned_decimal = compare_unsigned_decimal,
       add_unsigned_decimal = add_unsigned_decimal,

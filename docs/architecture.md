@@ -1769,6 +1769,8 @@ not comparative package speed.
 | Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary without another request. [Drawer-only attribution](https://github.com/Matt17BR/openwrangler/issues/1622#issuecomment-5738658327) measured the extra reductions without demonstrating a net benefit from partial summaries. |
 
 Exact mean uses bounded vectorized accumulation to preserve numerical cancellation, subnormal and rounding behavior.
+Error-free extraction first reduces each chunk to a few exact partial sums; only those and any remainders too small for
+extraction enter the limb accumulator.
 Partial summaries would add completeness tracking, loading and upgrade states, cancellation and view restoration
 rules, and could repeat shared scanning when the drawer opens.
 
@@ -1826,9 +1828,10 @@ verify bit64 registrations once per uninterrupted advance and retain those nativ
 Each chunk still undergoes type, attribute and value checks; a later advance verifies the registrations again.
 Numeric histograms count every finite value into at most
 20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
-Integer64 extrema use the package's native range reduction without sorting every value. Exact integer64 sums reduce
-bounded native quotient/remainder batches, combining only their totals in decimal text. This preserves cancellation
-and sums beyond the integer64 range without per-row decimal arithmetic. Character and
+Integer64 extrema use the package's native range reduction without sorting every value. Integer and integer64 chunks
+whose values stay below 2^53 in magnitude add exact double high and low parts, folded into decimal text once per 2^26
+values. Wider integer64 chunks reduce bounded native quotient/remainder batches, combining only their totals in decimal
+text. This preserves cancellation and sums beyond the integer64 range without per-row decimal arithmetic. Character and
 factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
 A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
 fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
@@ -1845,7 +1848,7 @@ oversized values retain ordered scalar refusal and the original row labels; this
 Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
 non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
 numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
-that bound is exceeded; integer64 keys retain their exact decimal identity. These large numeric summaries omit top
+that bound is exceeded; integer64 keys are exact doubles until a value reaches 2^53, then decimal text. These large numeric summaries omit top
 values even when the distinct count is exact. The host accepts an exact distinct count with no top values only for
 integer, float and duration columns above the non-missing population limit, without a sampled distribution and with a
 distinct count within the bound. Numeric medians remain omitted above 100,000 non-missing values. Omitted statistics
