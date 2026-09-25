@@ -121,6 +121,31 @@ describe("renderer presentation lifecycle", () => {
     }
   });
 
+  it("does not echo an unchanged host presentation after acknowledging", () => {
+    const { result } = renderHook(() => useRendererPresentationLifecycle(committedSession));
+    act(() => result.current.restoreHostGridViewState(gridViewState(275, 200, 90)));
+    postMessage.mockClear();
+
+    act(() =>
+      result.current.acceptSynchronization({
+        kind: "rendererSynchronization",
+        syncId: "U".repeat(32),
+        sessionId: committedSession.sessionId,
+        revision: committedSession.revision,
+        layoutTransitionPending: false
+      })
+    );
+
+    expect(postMessage.mock.calls.map(([message]) => message)).toEqual([
+      {
+        kind: "rendererSynchronized",
+        syncId: "U".repeat(32),
+        sessionId: committedSession.sessionId,
+        revision: committedSession.revision
+      }
+    ]);
+  });
+
   it("bounds snapshot recovery to each visible period", () => {
     const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
     vi.useFakeTimers();
