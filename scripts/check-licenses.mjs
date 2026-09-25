@@ -85,7 +85,7 @@ export function inspectDependencyLicensePolicy({ root, lock, notices }) {
     "PyArrow",
     "openpyxl",
     "fastexcel",
-    "fsspec 2026.7.0: BSD-3-Clause License"
+    "fsspec: BSD-3-Clause License"
   ]) {
     if (!notices.includes(required)) errors.push(`THIRD_PARTY_NOTICES.md is missing ${required}.`);
   }

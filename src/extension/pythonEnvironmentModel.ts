@@ -36,8 +36,8 @@ const PYTHON_RUNTIME_DEPENDENCIES: Readonly<Record<PythonRuntimeDependencyId, Re
     fsspec: Object.freeze({
       importModule: "fsspec",
       distribution: "fsspec",
-      installSpec: "fsspec==2026.7.0",
-      exactVersion: "2026.7.0"
+      installSpec: "fsspec==2026.9.0",
+      exactVersion: "2026.9.0"
     }),
     pytz: Object.freeze({
       importModule: "pytz",

@@ -54,8 +54,8 @@ describe("Python environment requirements", () => {
       {
         importModule: "fsspec",
         distribution: "fsspec",
-        installSpec: "fsspec==2026.7.0",
-        exactVersion: "2026.7.0"
+        installSpec: "fsspec==2026.9.0",
+        exactVersion: "2026.9.0"
       },
       {
         importModule: "pytz",

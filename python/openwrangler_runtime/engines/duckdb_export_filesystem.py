@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, BinaryIO, ClassVar, Literal, NoReturn, cast
+from typing import Any, BinaryIO, Literal, NoReturn, cast
 from uuid import uuid4
 
 from fsspec import AbstractFileSystem
@@ -68,7 +68,7 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
 
     cachable = False
     root_marker = ""
-    protocol: ClassVar[str | tuple[str, ...]] = "openwranglerexport-unregistered"
+    protocol: str | tuple[str, ...] = "openwranglerexport-unregistered"
 
     def __init__(self, writer: BinaryIO, format_name: Literal["csv", "parquet"]) -> None:
         self._token = f"{uuid4().hex}.{format_name}"
@@ -218,7 +218,7 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
     def get_file(
         self,
         rpath: str,
-        lpath: str,
+        lpath: str | None = None,
         callback: Any = None,
         outfile: Any = None,
         **kwargs: Any,
