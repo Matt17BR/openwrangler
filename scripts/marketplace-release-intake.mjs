@@ -39,7 +39,6 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/marketplace-release-intake.mjs",
   "scripts/packaged-editor-orchestration.mjs",
   "scripts/packaged-python-preflight.mjs",
-  "scripts/prepare-xvfb.mjs",
   "scripts/release-metadata.mjs",
   "scripts/remote-workspace-acquisition.mjs",
   "scripts/run-installed-performance.mjs",

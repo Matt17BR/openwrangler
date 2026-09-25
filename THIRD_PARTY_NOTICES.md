@@ -58,6 +58,4 @@ The bundled R runtime uses optional packages from the selected R environment for
 
 These packages are not shipped in the VSIX.
 
-The released-Jupyter acceptance workflow may download a manifest-pinned Ubuntu Xvfb package from the X.Org Server project. X.Org Server uses its canonical MIT/X11 license plus legacy MIT/X11 and BSD-like notices; the downloaded package retains the complete `/usr/share/doc/xvfb/copyright` file. Package sources, versions, and digests are recorded in `scripts/xvfb-packages.json`. Xvfb is test tooling and is not shipped in the VSIX.
-
 Other build and test tooling is not shipped in the VSIX. `npm run license:check` rejects a new bundled production package until its SPDX license and notice group are explicitly approved. Microsoft Data Wrangler is a behavioral reference only; its code and assets are not included.
