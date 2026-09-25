@@ -29,8 +29,7 @@ import {
   type Locator,
   type Page,
   type Request,
-  type Response,
-  type WebError
+  type Response
 } from "playwright-core";
 import type { Jupyter, JupyterServerCollection } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
@@ -61,7 +60,6 @@ import type {
 } from "../../shared/protocol";
 import type { GridViewState } from "../../shared/viewState";
 import {
-  acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   diagnoseThenReacquireAcceptanceAction,
@@ -263,25 +261,6 @@ import type { ExtensionApi, TestApi } from "./extensionHostTestApi";
 import { assertNumericSummarySum, exerciseNumericSummaryPandasJourney } from "./numericSummaryJourney";
 import { exercisePandasIndexFidelityJourney, pandasIndexFixtureSetupCode } from "./pandasIndexFidelityJourney";
 
-interface ReleasedJupyterVariableAction {
-  readonly action: Locator;
-  readonly documentRoot: Locator;
-}
-
-interface ReleasedJupyterDocumentRootElement {
-  readonly dataset: { readonly openWranglerAcceptanceActivation?: string };
-}
-
-interface ReleasedJupyterActivationEvent {
-  readonly detail?: number;
-  readonly isTrusted?: boolean;
-  readonly composedPath?: () => readonly unknown[];
-}
-
-interface ReleasedJupyterActivationPathElement {
-  readonly tagName?: string;
-}
-
 interface FakeJupyterApi {
   testing: {
     execute(uri: vscode.Uri, code: string): Promise<string>;
@@ -311,12 +290,10 @@ const NOTEBOOK_RENDERER_ACTION_STABLE_MS = 750;
 const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
 const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
-const RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS = 1_000;
 const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
 const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
-const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
@@ -2588,27 +2565,27 @@ async function exerciseReleasedJupyterExtension(
     assertExactVisibleReleasedNotebookEditor(
       notebook,
       variableNotebookEditor,
-      "immediately before opening the real Jupyter Variables view"
+      "immediately before opening Jupyter Variables actions"
     );
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
 
-    // Cursor may retire Jupyter's Variables frame after its first remote activation. The local
-    // phase proves DuckDB's Variables action; the remote journey exercises the relation below.
+    // The remote journey exercises the DuckDB relation below.
     if (!kernelTarget.remote) {
       recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
-      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+      const duckdbRelation = {
+        name: "duckdb_relation",
+        type: "_duckdb.DuckDBPyRelation",
+        backend: "duckdb",
+        firstValue: "3400001",
+        notebookInsert: false
+      } as const;
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, duckdbRelation, `${phase}:duckdb-variables`);
       const duckdbVariablesRelation = await waitForReleasedVariableSession(
         workbench,
         testing,
         notebook,
-        {
-          name: "duckdb_relation",
-          type: "_duckdb.DuckDBPyRelation",
-          backend: "duckdb",
-          firstValue: "3400001",
-          notebookInsert: false
-        },
-        "the exact DuckDB relation opened from the existing Jupyter Variables view"
+        duckdbRelation,
+        "the exact DuckDB relation opened from Jupyter Variables"
       );
       assert.equal(
         duckdbVariablesRelation.metadata.mode,
@@ -2638,7 +2615,7 @@ async function exerciseReleasedJupyterExtension(
     await dispatchReleasedJupyterVariableAction(
       workbench,
       notebook,
-      RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+      RELEASED_JUPYTER_VARIABLES_PANDAS,
       `${phase}:variables`
     );
     recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
@@ -2648,7 +2625,7 @@ async function exerciseReleasedJupyterExtension(
       testing,
       notebook,
       RELEASED_JUPYTER_VARIABLES_PANDAS,
-      "the complete canonical orders_df opened from the real Jupyter Variables view"
+      "the complete canonical orders_df opened from Jupyter Variables"
     );
     assert.equal(pandasFrame.metadata.mode, "editing");
 
@@ -3531,14 +3508,6 @@ async function exerciseReleasedJupyterExtension(
     }
   } catch (error) {
     failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
-    if (
-      error instanceof Error &&
-      /^Timed out waiting for [^\n]+ in the released Jupyter Variables view:/u.test(error.message)
-    ) {
-      error.stack = `${error.stack ?? error.message}\nJupyter Variables script loading: ${JSON.stringify(
-        rendererLoadObserver?.variableViewSnapshot() ?? null
-      )}`;
-    }
     throw error;
   } finally {
     try {
@@ -3789,54 +3758,47 @@ const exerciseReleasedPySparkJupyterExtension = createReleasedPySparkJupyterJour
 async function dispatchReleasedJupyterVariableAction(
   workbench: Page,
   notebook: vscode.NotebookDocument,
-  variableName: string,
+  variable: { readonly name: string; readonly type: string },
   checkpoint: string
 ): Promise<void> {
-  const exactEditor = await showExactReleasedNotebook(notebook);
-  await vscode.commands.executeCommand("jupyter.openVariableView");
-  assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-  assertExactVisibleReleasedNotebookEditor(notebook, exactEditor, "after opening the real Jupyter Variables view");
-  const viewerAction = await waitForReleasedJupyterVariableAction(workbench, notebook, variableName, checkpoint);
+  const viewers = (
+    vscode.extensions.getExtension("matt17br.openwrangler")?.packageJSON as {
+      contributes?: { jupyterVariableViewers?: readonly { command: string; dataTypes: readonly string[] }[] };
+    }
+  )?.contributes?.jupyterVariableViewers;
+  assert.ok(
+    viewers?.some(
+      (viewer) => viewer.command === "openWrangler.launchDataViewer" && viewer.dataTypes.includes(variable.type)
+    ),
+    `Jupyter Variables must route ${variable.type} to Open Wrangler.`
+  );
+  await showExactReleasedNotebook(notebook);
   assert.equal(
     releasedJupyterSessionTabs().length,
     0,
-    `The real released-Jupyter Variables action for ${variableName} requires a zero-tab receipt baseline.`
-  );
-  assertExactOpenNotebookDocument(
-    notebook,
-    `immediately before dispatching the released-Jupyter Variables action for ${variableName}`
+    `Opening ${variable.name} from Jupyter Variables requires a zero-tab receipt baseline.`
   );
   recordAcceptanceProgress(`${checkpoint}:dispatch`);
-  const sessionReceipt = async (): Promise<void> => {
-    if (variableName === "duckdb_relation") await selectReleasedDuckDBConnection(workbench, notebook);
-    await waitForReleasedJupyterVariableActionReceipt(variableName);
-  };
-  await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
-    description: `the real released-Jupyter Variables action for ${variableName}`,
-    activate: () => viewerAction.action.press("Enter", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    receipt: async () => {
-      assert.equal(
-        await viewerAction.documentRoot.evaluate(
-          (element) =>
-            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
-        ),
-        "seen",
-        `The real released-Jupyter Variables action for ${variableName} must receive one trusted keyboard activation.`
-      );
-      await sessionReceipt();
-    },
-    authoritativeReceiptAfterActivationFailure: sessionReceipt
+  let failure: unknown;
+  // Jupyter's Variables view invokes the contributed viewer command with its flat variable object.
+  void Promise.resolve(
+    vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+      name: variable.name,
+      type: variable.type,
+      fileName: notebook.uri
+    })
+  ).catch((error: unknown) => {
+    failure = error ?? new Error(`Opening ${variable.name} from Jupyter Variables failed.`);
   });
-  recordAcceptanceProgress(`${checkpoint}:receipt`);
-}
-
-async function waitForReleasedJupyterVariableActionReceipt(variableName: string): Promise<void> {
+  if (variable.name === "duckdb_relation") await selectReleasedDuckDBConnection(workbench, notebook);
   await waitFor(
-    () => releasedJupyterSessionTabs().length === 1,
+    () => failure !== undefined || releasedJupyterSessionTabs().length === 1,
     10_000,
-    `the released Jupyter viewer delegation for ${variableName}`,
+    `the released Jupyter viewer delegation for ${variable.name}`,
     () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
   );
+  if (failure !== undefined) throw failure;
+  recordAcceptanceProgress(`${checkpoint}:receipt`);
 }
 
 async function assertReleasedPySparkPanelAndQueries(
@@ -4818,460 +4780,10 @@ function canonicalAcceptancePath(candidate: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-async function waitForReleasedJupyterVariableAction(
-  workbench: Page,
-  notebook: vscode.NotebookDocument,
-  variableName: string,
-  checkpoint: string
-): Promise<ReleasedJupyterVariableAction> {
-  recordAcceptanceProgress(`${checkpoint}:wait`);
-  let scrollFrame: Frame | undefined;
-  let scrollStarted = false;
-  let pendingScroll: { readonly from: number; readonly direction: -1 | 1 } | undefined;
-  let scrollComplete = false;
-  const viewerAction = await acquirePreparedAcceptanceAction({
-    timeoutMs: RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS,
-    intervalMs: 100,
-    acquire: async () => {
-      for (const frame of releasedWorkbenchFrames(workbench)) {
-        try {
-          const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
-          if ((await table.count()) === 0 || !(await table.isVisible())) continue;
-          const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
-          if ((await cell.count()) === 0 || !(await cell.isVisible())) {
-            const canvas = table.locator(".react-grid-Canvas");
-            if ((await canvas.count()) !== 1 || !(await canvas.isVisible())) continue;
-            if (scrollFrame !== frame) {
-              scrollFrame = frame;
-              scrollStarted = false;
-              pendingScroll = undefined;
-              scrollComplete = false;
-            }
-            if (scrollComplete) continue;
-            const geometry = await withReleasedJupyterVariableActionPrepareDeadline(
-              canvas.evaluate((element) => {
-                const scroller = element as {
-                  readonly clientHeight: number;
-                  readonly scrollHeight: number;
-                  readonly scrollTop: number;
-                  querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null }>;
-                };
-                const names = Array.from(scroller.querySelectorAll('.react-grid-Cell:nth-child(2) [role="cell"]'));
-                return {
-                  height: scroller.clientHeight,
-                  extent: scroller.scrollHeight,
-                  top: scroller.scrollTop,
-                  pendingNames: names.length === 0 || names.some((name) => !name.getAttribute("title")?.trim())
-                };
-              }),
-              "Variables scroll geometry"
-            );
-            if (geometry.height <= 0) continue;
-            const bottom = Math.max(0, geometry.extent - geometry.height);
-            if (pendingScroll) {
-              const moved =
-                pendingScroll.direction === 1
-                  ? geometry.top > pendingScroll.from || geometry.top >= bottom - 1
-                  : geometry.top <= 1;
-              if (!moved) continue;
-              pendingScroll = undefined;
-            }
-            // Reveal virtual rows once from the top, letting each rendered page load before advancing.
-            let delta = 0;
-            if (!scrollStarted && geometry.top > 1) delta = -geometry.top;
-            if (delta === 0) {
-              if (geometry.pendingNames) continue;
-              if (geometry.top >= bottom - 1) {
-                scrollComplete = true;
-                continue;
-              }
-              delta = Math.min(bottom - geometry.top, Math.max(1, Math.floor(geometry.height * 0.8)));
-            }
-            await canvas.hover({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS });
-            scrollStarted = true;
-            pendingScroll = { from: geometry.top, direction: delta < 0 ? -1 : 1 };
-            await frame.page().mouse.wheel(0, delta);
-            continue;
-          }
-          const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
-          const actions = row.getByRole("button", {
-            name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
-            exact: true
-          });
-          if ((await actions.count()) !== 1) continue;
-          const action = actions.first();
-          await action.waitFor({
-            state: "visible",
-            timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS
-          });
-          return { action, documentRoot: frame.locator("html") };
-        } catch (error) {
-          if (!isReleasedJupyterVariableActionReplacement(error)) {
-            // Jupyter may retire a scanned child target while its real kernel
-            // refreshes. Ignore the probe only after the shared lifecycle
-            // guard proves this is a retired non-workbench target; a live
-            // frame, detached workbench main frame, or disconnected browser
-            // must still fail immediately.
-            ignoreRetiredRendererProbeFailure(workbench, workbench.context().browser(), frame.page(), frame, error);
-          }
-          // The Variables view can replace a row or retire its child frame
-          // while its real kernel refreshes.
-        }
-      }
-      return undefined;
-    },
-    prepare: async ({ action, documentRoot }) => {
-      const [visible, enabled] = await withReleasedJupyterVariableActionPrepareDeadline(
-        Promise.all([
-          action.isVisible(),
-          action.isEnabled({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS })
-        ]),
-        "visibility and enabled-state probes"
-      );
-      if (!visible || !enabled) {
-        throw new ReleasedJupyterVariableActionReplacementError();
-      }
-      await withReleasedJupyterVariableActionPrepareDeadline(
-        action.focus({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS }),
-        "focus"
-      );
-      const focusState = await withReleasedJupyterVariableActionPrepareDeadline(
-        action.evaluate((element) => ({
-          connected:
-            typeof element === "object" && element !== null && "isConnected" in element && element.isConnected === true,
-          focused:
-            typeof element === "object" &&
-            element !== null &&
-            "ownerDocument" in element &&
-            element.ownerDocument.activeElement === element
-        })),
-        "focus assertion"
-      );
-      if (!focusState.connected) throw new ReleasedJupyterVariableActionReplacementError();
-      assert.equal(
-        focusState.focused,
-        true,
-        `The released Jupyter Variables action for ${variableName} must accept keyboard focus.`
-      );
-      const listenerAttached = await withReleasedJupyterVariableActionPrepareDeadline(
-        action.evaluate((element) => {
-          if (
-            typeof element !== "object" ||
-            element === null ||
-            !("isConnected" in element) ||
-            element.isConnected !== true ||
-            !("ownerDocument" in element) ||
-            !("addEventListener" in element) ||
-            typeof element.addEventListener !== "function"
-          ) {
-            return false;
-          }
-          const root = element.ownerDocument.documentElement;
-          root.dataset.openWranglerAcceptanceActivation = "pending";
-          root.addEventListener(
-            "click",
-            (event: unknown) => {
-              const candidateEvent = event as unknown as ReleasedJupyterActivationEvent;
-              const composedPath = candidateEvent.composedPath?.() ?? [];
-              const keyboardButtonActivation =
-                candidateEvent.isTrusted === true &&
-                candidateEvent.detail === 0 &&
-                composedPath.some((candidate: unknown) => {
-                  if (typeof candidate !== "object" || candidate === null) return false;
-                  return (candidate as ReleasedJupyterActivationPathElement).tagName === "BUTTON";
-                });
-              if (keyboardButtonActivation) {
-                root.dataset.openWranglerAcceptanceActivation = "seen";
-              }
-            },
-            { capture: true }
-          );
-          return true;
-        }),
-        "click-listener setup"
-      );
-      if (!listenerAttached) throw new ReleasedJupyterVariableActionReplacementError();
-      assert.equal(
-        await documentRoot.evaluate(
-          (element) =>
-            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
-        ),
-        "pending",
-        `The released Jupyter Variables action for ${variableName} must arm its trusted keyboard receipt.`
-      );
-    },
-    dispose: async () => undefined,
-    isRetryablePreparationError: isReleasedJupyterVariableActionReplacement,
-    wait: (durationMs) => workbench.waitForTimeout(durationMs)
-  });
-
-  if (viewerAction) {
-    recordAcceptanceProgress(`${checkpoint}:ready`);
-    return viewerAction;
-  }
-
-  const diagnostics = await releasedWorkbenchDiagnostics(workbench, notebook, variableName);
-  throw new Error(
-    `Timed out waiting for ${variableName} in the released Jupyter Variables view: ${JSON.stringify(diagnostics)}`
-  );
-}
-
-class ReleasedJupyterVariableActionReplacementError extends Error {}
-
-function isReleasedJupyterVariableActionReplacement(error: unknown): boolean {
-  if (error instanceof ReleasedJupyterVariableActionReplacementError) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    /(?:element|node).*(?:detached|not attached|not connected)/iu.test(message) ||
-    ((error as { name?: unknown } | undefined)?.name === "TimeoutError" &&
-      /^(?:elementHandle|locator)\.(?:elementHandle|focus|hover|isEnabled|waitFor): Timeout \d+ms exceeded/u.test(
-        message
-      ))
-  );
-}
-
-async function withReleasedJupyterVariableActionPrepareDeadline<T>(
-  operation: PromiseLike<T>,
-  description: string
-): Promise<T> {
-  try {
-    return await withAcceptanceOperationDeadline(
-      operation,
-      RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS,
-      `the released Jupyter Variables action ${description}`
-    );
-  } catch (error) {
-    if (isReleasedJupyterVariableActionReplacement(error)) throw error;
-    if (
-      error instanceof Error &&
-      error.message ===
-        `Timed out waiting for the released Jupyter Variables action ${description} after ${RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS} ms.`
-    ) {
-      throw new ReleasedJupyterVariableActionReplacementError();
-    }
-    throw error;
-  }
-}
-
 function releasedWorkbenchFrames(workbench: Page): Frame[] {
   const browser = workbench.context().browser();
   const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
   return pages.flatMap((page) => page.frames());
-}
-
-async function releasedWorkbenchDiagnostics(
-  workbench: Page,
-  notebook: vscode.NotebookDocument,
-  variableName: string
-): Promise<unknown> {
-  const frames = releasedWorkbenchFrames(workbench);
-  const frameLimit = 12;
-  const containers = await withAcceptanceOperationDeadline(
-    Promise.all(
-      ["jupyter-variables", "openWranglerCode"].map(async (id) => {
-        const container = workbench.locator(`[id="workbench.view.extension.${id}"]`);
-        const headers = container.locator(".pane-header");
-        const bodies = container.locator(".pane-body");
-        const pane =
-          id === "jupyter-variables"
-            ? await Promise.all([headers.count(), bodies.count()]).then(async ([headerCount, bodyCount]) => {
-                const expanded =
-                  headerCount === 1 ? await headers.getAttribute("aria-expanded", { timeout: 1_000 }) : null;
-                return {
-                  headers: Math.min(headerCount, frameLimit),
-                  bodies: Math.min(bodyCount, frameLimit),
-                  expanded: expanded === "true" ? true : expanded === "false" ? false : null,
-                  bodyVisible: bodyCount === 0 ? false : bodyCount === 1 ? await bodies.isVisible() : null
-                };
-              })
-            : undefined;
-        return {
-          id,
-          present: (await container.count()) > 0,
-          visible: await container.isVisible(),
-          ...(pane ? { pane } : {})
-        };
-      })
-    ),
-    1_000,
-    "the released-Jupyter failure container observations"
-  ).catch(() => null);
-  // Webview overlays attach to the workbench root, outside the owning pane.
-  // The extension ID identifies Jupyter shells, not necessarily its Variables view.
-  const jupyterWebviews = await withAcceptanceOperationDeadline(
-    (async () => {
-      const shells = workbench.locator(
-        'iframe.webview[src*="?extensionId=ms-toolsai.jupyter&"], iframe.webview[src$="?extensionId=ms-toolsai.jupyter"], ' +
-          'iframe.webview[src*="&extensionId=ms-toolsai.jupyter&"], iframe.webview[src$="&extensionId=ms-toolsai.jupyter"]'
-      );
-      const count = await shells.count();
-      return {
-        count: Math.min(count, frameLimit),
-        truncated: count > frameLimit,
-        shells: await Promise.all(
-          Array.from({ length: Math.min(count, frameLimit) }, async (_, index) => {
-            const shell = await shells
-              .nth(index)
-              .elementHandle({ timeout: 1_000 })
-              .catch(() => null);
-            if (!shell) return null;
-            try {
-              return await withAcceptanceOperationDeadline(
-                (async () => {
-                  const [visible, frame] = await Promise.all([shell.isVisible(), shell.contentFrame()]);
-                  const content = frame
-                    ? await frame
-                        .evaluate((limit) => {
-                          type ContentDocument = {
-                            readyState?: string;
-                            defaultView?: {
-                              performance: {
-                                getEntriesByName(
-                                  name: string,
-                                  type: string
-                                ): Array<{
-                                  startTime: number;
-                                  duration: number;
-                                  responseEnd: number;
-                                  responseStatus?: number;
-                                }>;
-                              };
-                            } | null;
-                            querySelector(selector: string): { src?: string } | null;
-                            querySelectorAll(selector: string): ArrayLike<{ contentDocument: ContentDocument | null }>;
-                          };
-                          const outer = (globalThis as unknown as { document: ContentDocument }).document;
-                          return ["active-frame", "pending-frame"].map((id) => {
-                            const children = outer.querySelectorAll(`iframe[id="${id}"]`);
-                            return {
-                              id,
-                              count: Math.min(children.length, limit),
-                              document: (() => {
-                                if (children.length !== 1) return null;
-                                try {
-                                  const document = children[0]!.contentDocument;
-                                  return document
-                                    ? {
-                                        readyState: ["loading", "interactive", "complete"].includes(
-                                          document.readyState ?? ""
-                                        )
-                                          ? document.readyState
-                                          : null,
-                                        rootPresent: Boolean(document.querySelector("#root")),
-                                        variableViewScriptPresent: Boolean(
-                                          document.querySelector('script[src$="/variableView.js"]')
-                                        ),
-                                        variablesDocumentPresent: Boolean(
-                                          document.querySelector("#variable-view-main-panel")
-                                        ),
-                                        variableViewResources: (() => {
-                                          try {
-                                            const script = document.querySelector('script[src$="/variableView.js"]');
-                                            if (!script?.src || !document.defaultView) return null;
-                                            const boundedTime = (value: number): number | null =>
-                                              Number.isFinite(value) && value >= 0
-                                                ? Math.min(3_600_000, Math.round(value))
-                                                : null;
-                                            return document.defaultView.performance
-                                              .getEntriesByName(script.src, "resource")
-                                              .slice(-4)
-                                              .map((entry) => ({
-                                                startTimeMs: boundedTime(entry.startTime),
-                                                durationMs: boundedTime(entry.duration),
-                                                responseEndMs: boundedTime(entry.responseEnd),
-                                                status:
-                                                  typeof entry.responseStatus === "number" &&
-                                                  Number.isInteger(entry.responseStatus) &&
-                                                  entry.responseStatus >= 0 &&
-                                                  entry.responseStatus <= 599
-                                                    ? entry.responseStatus
-                                                    : null
-                                              }));
-                                          } catch {
-                                            return null;
-                                          }
-                                        })()
-                                      }
-                                    : null;
-                                } catch {
-                                  return null;
-                                }
-                              })()
-                            };
-                          });
-                        }, frameLimit)
-                        .catch(() => null)
-                    : null;
-                  return (await shell.evaluate(
-                    (element) => (element as unknown as { isConnected: boolean }).isConnected
-                  ))
-                    ? { visible, content }
-                    : null;
-                })(),
-                1_000,
-                "the released-Jupyter failure shell observations"
-              );
-            } catch {
-              return null;
-            } finally {
-              await shell.dispose().catch(() => undefined);
-            }
-          })
-        )
-      };
-    })(),
-    1_000,
-    "the released-Jupyter failure current-content observations"
-  ).catch(() => null);
-  return {
-    activeNotebook:
-      vscode.window.activeNotebookEditor?.notebook === notebook
-        ? "exact"
-        : vscode.window.activeNotebookEditor
-          ? "other"
-          : "none",
-    frameCount: Math.min(frames.length, 999),
-    framesTruncated: frames.length > frameLimit,
-    containers,
-    jupyterWebviews,
-    frames: await Promise.all(
-      frames.slice(0, frameLimit).map(async (frame) => {
-        const tables = frame.getByRole("table", { name: "Variables", exact: true, includeHidden: true });
-        const observations = await withAcceptanceOperationDeadline(
-          Promise.all([
-            tables.count(),
-            tables.first().isVisible(),
-            frame.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).count(),
-            frame
-              .locator("#variable-explorer-empty-rows")
-              .evaluateAll((elements) =>
-                elements.some((element) => (element.textContent ?? "").trim() === "Loading variables")
-              ),
-            frame.locator("#variable-view-main-panel").count()
-          ]).then(([tableCount, tableVisible, variableCells, loading, variablesDocuments]) => ({
-            tables: Math.min(Math.max(tableCount, 0), 999),
-            tableVisible,
-            variableCells: Math.min(Math.max(variableCells, 0), 999),
-            loading,
-            variablesDocumentPresent: variablesDocuments > 0
-          })),
-          1_000,
-          "the released-Jupyter failure frame observations"
-        ).catch(() => null);
-        return {
-          kind:
-            frame.page() === workbench && frame === workbench.mainFrame()
-              ? "workbench"
-              : /^vscode-webview:.*(?:[?&])extensionId=ms-toolsai\.jupyter(?:&|$)/u.test(frame.url())
-                ? "jupyter"
-                : frame.url().startsWith("vscode-webview:")
-                  ? "webview"
-                  : "other",
-          observations
-        };
-      })
-    )
-  };
 }
 
 async function waitForReleasedJupyterConsent(
@@ -15206,19 +14718,7 @@ interface NotebookRendererLoadSnapshot {
 
 interface NotebookRendererLoadObserver {
   snapshot(): NotebookRendererLoadSnapshot;
-  variableViewSnapshot(): readonly JupyterVariableLoadEvent[];
   dispose(): void;
-}
-
-interface JupyterVariableLoadEvent {
-  readonly ordinal: number;
-  readonly elapsedMs: number;
-  readonly kind: "response" | "requestfinished" | "requestfailed" | "weberror";
-  readonly script: "variableView" | "other" | "unavailable";
-  readonly status?: number;
-  readonly errorClass?: string;
-  readonly line?: number | null;
-  readonly column?: number | null;
 }
 
 interface NotebookRendererButton {
@@ -15255,61 +14755,6 @@ async function activateNotebookRendererButtonOnce(
 }
 
 function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObserver {
-  const context = workbench.context();
-  const startedAt = performance.now();
-  const variableViewEvents: JupyterVariableLoadEvent[] = [];
-  let variableViewEventOrdinal = 0;
-  const recordVariableViewEvent = (event: Omit<JupyterVariableLoadEvent, "ordinal" | "elapsedMs">): void => {
-    variableViewEvents.push({
-      ordinal: ++variableViewEventOrdinal,
-      elapsedMs: Math.min(3_600_000, Math.max(0, Math.round(performance.now() - startedAt))),
-      ...event
-    });
-    if (variableViewEvents.length > 12) variableViewEvents.shift();
-  };
-  const isVariableViewScript = (url: string): boolean => {
-    try {
-      return new URL(url).pathname.endsWith("/variableView.js");
-    } catch {
-      return false;
-    }
-  };
-  const onVariableViewResponse = (response: Response): void => {
-    if (isVariableViewScript(response.url())) {
-      recordVariableViewEvent({ kind: "response", script: "variableView", status: response.status() });
-    }
-  };
-  const onVariableViewFinished = (request: Request): void => {
-    if (isVariableViewScript(request.url()))
-      recordVariableViewEvent({ kind: "requestfinished", script: "variableView" });
-  };
-  const onVariableViewFailed = (request: Request): void => {
-    if (isVariableViewScript(request.url())) recordVariableViewEvent({ kind: "requestfailed", script: "variableView" });
-  };
-  const onWebError = (error: WebError): void => {
-    const location = error.location();
-    const name = error.error().name;
-    const coordinate = (value: number): number | null =>
-      Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
-    recordVariableViewEvent({
-      kind: "weberror",
-      script: location.url ? (isVariableViewScript(location.url) ? "variableView" : "other") : "unavailable",
-      errorClass: [
-        "Error",
-        "EvalError",
-        "RangeError",
-        "ReferenceError",
-        "SyntaxError",
-        "TypeError",
-        "URIError",
-        "AggregateError"
-      ].includes(name)
-        ? name
-        : "other",
-      line: coordinate(location.line),
-      column: coordinate(location.column)
-    });
-  };
   const rendererResponses: number[] = [];
   const rendererRequestFailures: string[] = [];
   const pageErrors: string[] = [];
@@ -15344,10 +14789,6 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
   workbench.on("requestfailed", onRequestFailed);
   workbench.on("pageerror", onPageError);
   workbench.on("console", onConsole);
-  context.on("response", onVariableViewResponse);
-  context.on("requestfinished", onVariableViewFinished);
-  context.on("requestfailed", onVariableViewFailed);
-  context.on("weberror", onWebError);
   return {
     snapshot: () => ({
       rendererResponses: [...rendererResponses],
@@ -15355,16 +14796,11 @@ function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObser
       pageErrors: [...pageErrors],
       consoleErrors: [...consoleErrors]
     }),
-    variableViewSnapshot: () => [...variableViewEvents],
     dispose: () => {
       workbench.off("response", onResponse);
       workbench.off("requestfailed", onRequestFailed);
       workbench.off("pageerror", onPageError);
       workbench.off("console", onConsole);
-      context.off("response", onVariableViewResponse);
-      context.off("requestfinished", onVariableViewFinished);
-      context.off("requestfailed", onVariableViewFailed);
-      context.off("weberror", onWebError);
     }
   };
 }

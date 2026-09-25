@@ -108,7 +108,7 @@ export interface ReleasedPySparkJupyterJourneyDependencies {
   readonly dispatchReleasedJupyterVariableAction: (
     workbench: Page,
     notebook: vscode.NotebookDocument,
-    variableName: string,
+    variable: { readonly name: string; readonly type: string },
     checkpoint: string
   ) => Promise<void>;
   readonly disposePackagedSessionPanel: (testing: TestApi, sessionId: string, description: string) => Promise<void>;
@@ -367,7 +367,7 @@ export function createReleasedPySparkJupyterJourney({
       await dispatchReleasedJupyterVariableAction(
         workbench,
         notebook,
-        "spark_unsupported_variant_frame",
+        { name: "spark_unsupported_variant_frame", type: "pyspark.sql.classic.dataframe.DataFrame" },
         `${phase}:unsupported-variant-action`
       );
       if (!screenshotOutput) {
@@ -391,7 +391,7 @@ export function createReleasedPySparkJupyterJourney({
       await dispatchReleasedJupyterVariableAction(
         workbench,
         notebook,
-        "spark_classic_frame",
+        { name: "spark_classic_frame", type: "pyspark.sql.classic.dataframe.DataFrame" },
         `${phase}:classic-action`
       );
       const classic = await waitForReleasedVariableSession(
@@ -405,7 +405,7 @@ export function createReleasedPySparkJupyterJourney({
           firstValue: "",
           notebookInsert: false
         },
-        "the PySpark Classic DataFrame opened from the real Jupyter Variables view"
+        "the PySpark Classic DataFrame opened from Jupyter Variables"
       );
       assert.equal(classic.metadata.mode, "viewing");
       assert.deepEqual(classic.metadata.capabilities, {
@@ -656,7 +656,7 @@ export function createReleasedPySparkJupyterJourney({
         await dispatchReleasedJupyterVariableAction(
           workbench,
           notebook,
-          "spark_orders_frame",
+          { name: "spark_orders_frame", type: "pyspark.sql.classic.dataframe.DataFrame" },
           `${phase}:orders-action`
         );
         const orders = await waitForReleasedVariableSession(
@@ -670,7 +670,7 @@ export function createReleasedPySparkJupyterJourney({
             firstValue: "",
             notebookInsert: false
           },
-          "the realistic PySpark Classic orders DataFrame opened from the real Jupyter Variables view"
+          "the realistic PySpark Classic orders DataFrame opened from Jupyter Variables"
         );
         assert.deepEqual(orders.metadata.shape, { rows: null, columns: 15 });
         assert.equal(orders.metadata.mode, "viewing");
@@ -703,7 +703,7 @@ export function createReleasedPySparkJupyterJourney({
       await dispatchReleasedJupyterVariableAction(
         workbench,
         notebook,
-        "spark_connect_frame",
+        { name: "spark_connect_frame", type: "pyspark.sql.connect.dataframe.DataFrame" },
         `${phase}:connect-action`
       );
       const connect = await waitForReleasedVariableSession(
@@ -717,7 +717,7 @@ export function createReleasedPySparkJupyterJourney({
           firstValue: "",
           notebookInsert: false
         },
-        "the local Spark Connect DataFrame opened from the real Jupyter Variables view"
+        "the local Spark Connect DataFrame opened from Jupyter Variables"
       );
       const connectPage = await assertReleasedPySparkPanelAndQueries(testing, connect, "connect");
 
