@@ -513,25 +513,9 @@ or exercise recovery keep their own mutation path.
 Notebook toolbar discovery treats an overflow menu that disappears before action acquisition as transient within its
 existing twenty-second discovery deadline. Duplicate menus and cleanup failures remain terminal; discovery does not
 dispatch the Open Wrangler action, which still requires exact notebook identity and one activation after acquisition.
-The released-Jupyter Variables action shows its exact notebook and opens Jupyter's Variables view once before each
-bounded action acquisition, including after session disposal changes focus. The shared dispatcher
-owns this preparation for Pandas, DuckDB and PySpark. If the target row is not rendered, acquisition reveals the
-virtualized Variables rows with one public scroll pass from the top, using overlapping pages and waiting for their
-names to load. It stops scrolling at the bottom and reacquires a replaced frame within the original deadline.
-The action still requires one trusted keyboard activation and the exact session receipt. Preparation does not retry a
-failed activation or extend acquisition deadlines.
-The local journey checks both DuckDB and Pandas Variables actions before testing code insertion with another notebook
-active. It does not qualify Jupyter Variables reuse after insertion. The
-[Variables React update-limit failure](https://github.com/Matt17BR/openwrangler/issues/1498) remains open.
-If acquisition fails, the existing diagnostic distinguishes hidden Variables tables from absent ones and records
-fixed Variables-document and panel-container presence/visibility. It also records capped pane header/body counts,
-expansion and body visibility, then inspects up to twelve Jupyter webview shells attached to the workbench root.
-Each shell reports visibility and its current active/pending content-frame counts. A single readable content document
-reports root, `variableView.js` script-suffix and Variables-panel presence, readiness, and exact-script resource timings.
-A script tag or completed request does not prove execution.
-Jupyter shells are not assumed to belong to Variables. Missing, ambiguous, inaccessible or timed-out document reads
-remain `null`. These failure-only observations use one-second collection bounds and include no page content, URLs or
-raw probe errors; they do not identify which event caused the observed state.
+Released-Jupyter Variables actions for Pandas, DuckDB and PySpark first check that the manifest routes the variable's
+type to `openWrangler.launchDataViewer`, then invoke that command with the flat variable object Jupyter passes to
+contributed viewers. The journeys do not drive Jupyter's own Variables webview, which is upstream UI.
 The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
 reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
 view requests. These page assertions report bounded error codes and recoverability when a request fails.
@@ -586,13 +570,6 @@ After editor and display ownership and private-root identity are verified, a fai
 
 R dependency repair may report bounded package-check and installation failures. Do not add complete installer or
 terminal output, private package-library contents or user data to failure uploads.
-
-Released-Jupyter Variables timeouts include the last 12 script-load or uncaught-error observations from the captured
-browser context: event order and relative time, `variableView.js` response status and completion/failure, or a standard
-error class with script category and numeric location. Added records contain no messages, stacks or URLs. The current
-content-document read also reports readiness and up to four timings for its exact Variables script; unavailable reads
-remain null. Timing values are capped at one hour. Context events can belong to an earlier Variables document and do not
-prove that the current script executed or React mounted. These passive diagnostics do not change actions or deadlines.
 
 The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
 separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
