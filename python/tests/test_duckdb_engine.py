@@ -9,6 +9,7 @@ import sys
 import weakref
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -1350,6 +1351,50 @@ def export_generated_native(engine: DataFrameEngine, frame: Any, connection: Any
         engine.export_data(plan, writer, options)
     finally:
         owner.close()
+
+
+def test_duckdb_parquet_sorted_views_keep_source_tie_order_and_unordered_aggregates(tmp_path: Path) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    keys = ["b", "a", None, "a", "b", "a"] * 20
+    path = tmp_path / "ties.parquet"
+    pq.write_table(pa.table({"key": keys, "value": list(range(len(keys)))}), path, row_group_size=7)
+    engine = DuckDBEngine()
+    try:
+        source = engine.ensure_row_ids(engine.read_file(str(path)), "source")
+        assert source.row_id_order
+        value_filter = {
+            "column": "value",
+            "type": "integer",
+            "predicates": [{"kind": "predicate", "operator": "gt", "value": 10}],
+        }
+        model = {"filters": [value_filter], "sort": [{"column": "key", "direction": "desc", "nulls": "first"}]}
+        view = engine.filter_view(source, model)
+        page = engine.page(view, 0, len(keys))
+        rank = {None: 0, "b": 1, "a": 2}
+        expected = sorted((value for value in range(len(keys)) if value > 10), key=lambda value: rank[keys[value]])
+        assert [row["values"][1]["raw"] for row in page["rows"]] == expected
+        assert engine.page(engine.filter_view(replace(source, row_id_order=False), model), 0, len(keys)) == page
+
+        unsorted = engine.filter_view(source, {**model, "sort": []})
+        assert engine.shape(view) == engine.shape(unsorted)
+        expected_summaries = engine.summaries(unsorted)
+        for summary in expected_summaries:
+            if "std" in summary.get("numeric", {}):
+                # Parallel variance may round its last bit differently under another plan.
+                summary["numeric"]["std"] = pytest.approx(summary["numeric"]["std"], rel=1e-12)
+        assert engine.summaries(view) == expected_summaries
+        assert engine.header_stats(view) == engine.header_stats(unsorted)
+        assert engine.missing_count(view, 0) == engine.missing_count(unsorted, 0) == 18
+        assert engine.column_values(view, "key") == engine.column_values(unsorted, "key")
+
+        named = tmp_path / "named-ordinal.parquet"
+        pq.write_table(pa.table({"file_row_number": [7, 8], "value": [1, 2]}), named)
+        frame = engine.ensure_row_ids(engine.read_file(str(named)), "named")
+        assert [column["name"] for column in engine.schema(frame)] == ["file_row_number", "value"]
+        assert [row["values"][0]["raw"] for row in engine.page(frame, 0, 2)["rows"]] == [7, 8]
+    finally:
+        engine.close()
 
 
 def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) -> None:

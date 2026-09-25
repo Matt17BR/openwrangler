@@ -907,6 +907,10 @@ class DataFrameEngine(ABC):
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         raise NotImplementedError
 
+    def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
+        """Return a filtered view accepted by this engine's read methods; it may defer materialization."""
+        return self.apply_filter_model(frame, model)
+
     @abstractmethod
     def page(
         self,
