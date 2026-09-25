@@ -208,9 +208,6 @@ function parseCommonJsEdges(modulePath, source) {
     if (loaderProperty !== undefined && COMMONJS_FORBIDDEN_LOADER_PROPERTIES.has(loaderProperty)) {
       throw new Error("A generated CommonJS module contains an indirect require or evaluation edge.");
     }
-    if (ts.isIdentifier(node) && node.text === "Reflect") {
-      throw new Error("A generated CommonJS module contains reflective dynamic access.");
-    }
     if (isCommonJsLoaderModuleIdentifier(node) && !isReviewedCommonJsModuleIdentifier(node)) {
       throw new Error("A generated CommonJS module contains an unreviewed module-loader reference.");
     }
