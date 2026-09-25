@@ -34,7 +34,6 @@ import {
   PIVOT_WIDER_R_JUPYTER_SELECTOR
 } from "./packaged-r-journey.mjs";
 import { acquireExactArtifact } from "./r-editor-acceptance-tooling.mjs";
-import { parseOsRelease } from "./prepare-xvfb.mjs";
 
 const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas"]);
 const NOTEBOOK_DEPENDENCIES = Object.freeze([...CORE_DEPENDENCIES, "polars", "duckdb", "fsspec", "pytz"]);
@@ -723,19 +722,27 @@ const R_ACCEPTANCE_COLLAPSE_PROBE = [
   ")",
   'if (!inherits(.ow_indexed, "indexed_frame")) quit(save = "no", status = 17L)'
 ].join("\n");
+const UBUNTU_R_DISTRIBUTIONS = new Map([
+  ["24.04", "noble"],
+  ["26.04", "resolute"]
+]);
+
 export function rAcceptanceRepositories(platform = process.platform, osReleaseText) {
   if (platform === "linux") {
-    let host;
-    try {
-      host = parseOsRelease(osReleaseText === undefined ? readFileSync("/etc/os-release", "utf8") : osReleaseText);
-    } catch {
-      host = undefined;
+    let text = osReleaseText;
+    if (text === undefined) {
+      try {
+        text = readFileSync("/etc/os-release", "utf8");
+      } catch {
+        text = "";
+      }
     }
-    let distribution;
-    if (host?.distribution === "ubuntu") {
-      if (host.distributionVersion === "24.04") distribution = "noble";
-      else if (host.distributionVersion === "26.04") distribution = "resolute";
+    const host = new Map();
+    for (const line of text.split(/\r?\n/u)) {
+      const match = /^(ID|VERSION_ID)=(["']?)([^"']*)\2$/u.exec(line);
+      if (match) host.set(match[1], match[3]);
     }
+    const distribution = host.get("ID") === "ubuntu" ? UBUNTU_R_DISTRIBUTIONS.get(host.get("VERSION_ID")) : undefined;
     if (distribution) {
       return Object.freeze({
         repository: `https://p3m.dev/cran/__linux__/${distribution}/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`,

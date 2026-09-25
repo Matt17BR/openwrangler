@@ -56,7 +56,6 @@ import {
   writeInstalledPerformanceReport
 } from "./installed-performance-report.mjs";
 import { readInstalledPlatformProvenance, readInstalledStorageProvenance } from "./installed-performance-system.mjs";
-import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { acquirePinnedVSCodeClient, resolveRemoteInspectionPython } from "./remote-workspace-acquisition.mjs";
 import { verifyExtensionTestRuntimeAssets } from "./copy-extension-test-runtime-assets.mjs";
@@ -1492,9 +1491,6 @@ export function installedPerformanceDisplayMode(editor, environment = process.en
 async function runEditorPerformanceWithIsolatedDisplay(options) {
   const mode = installedPerformanceDisplayMode(options.editor, options.environment);
   const environment = { ...options.environment, OPEN_WRANGLER_EDITOR_DISPLAY: mode };
-  if (mode === "xvfb" && !environment.OPEN_WRANGLER_XVFB_EXECUTABLE) {
-    environment.OPEN_WRANGLER_XVFB_EXECUTABLE = await prepareRepositoryLocalXvfb();
-  }
   let display;
   let result;
   let primaryError;
