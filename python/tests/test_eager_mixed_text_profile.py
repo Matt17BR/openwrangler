@@ -64,8 +64,8 @@ def test_eager_mixed_text_profile_probe_validates_the_complete_summary_contract(
         "type": "string",
         "rawType": "category",
         "totalCount": rows,
-        "nullCount": 0,
-        "nanCount": missing_count,
+        "nullCount": missing_count,
+        "nanCount": 0,
         "distinctCount": 2,
         "topValues": [
             {"value": "1", "count": short_count},

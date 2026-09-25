@@ -40,7 +40,7 @@ def test_mixed_numeric_keys_preserve_profiles_duplicates_and_original_rows(float
     summary = engine.summaries(source.iloc[[0, 1, 3, 4, 5, 6]])[0]
     assert summary["distinctCount"] == 2
     assert summary["topValues"][0] == {
-        "value": str(first),
+        "value": normalize_cell(first)["display"],
         "count": 2,
         "selectionValue": typed_selection_value(first, "float"),
     }
@@ -141,7 +141,8 @@ def test_mixed_numeric_counts_retain_first_labels_and_native_containers(first, r
     summary = engine.summaries(source)[0]
     assert summary["distinctCount"] == 6
     assert summary["topValues"][0] == counts[0]
-    assert summary["nullCount"] == 2 and summary["nanCount"] == 3
+    # Mixed columns are text, which holds no NaN values.
+    assert summary["nullCount"] == 5 and summary["nanCount"] == 0
     pd.testing.assert_frame_equal(source, before)
     assert all(actual is original for actual, original in zip(source["value"].array, values, strict=True))
 
@@ -234,7 +235,7 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
     if duration:
         evaluated_labels = selection_decodes = 0
         summary = PandasEngine().summaries(source)[0]
-        assert len(summary["topValues"]) == evaluated_labels == selection_decodes == 10
+        assert len(summary["topValues"]) == selection_decodes == 10 and evaluated_labels <= 10
         assert summary["distinctCount"] == len(source)
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
@@ -749,28 +750,29 @@ def test_object_numpy_nat_null_filters_match_grid_and_summary(monkeypatch: pytes
         metadata = opened["metadata"]
         session_id, revision = metadata["sessionId"], metadata["revision"]
         rows = opened["page"]["rows"]
-        assert [row["values"][1]["raw"] for row in rows if row["values"][0]["isNull"]] == [0, 1, 2, 3]
-        assert [row["values"][1]["raw"] for row in rows if row["values"][0]["isNaN"]] == [4]
+        # Only float columns hold NaN values, so NaN beside temporal values is missing like NaT.
+        assert [row["values"][1]["raw"] for row in rows if row["values"][0]["isNull"]] == [0, 1, 2, 3, 4]
+        assert not any(row["values"][0]["isNaN"] for row in rows)
         summary = manager.get_summary(session_id, revision, query, [metadata["schema"][0]["id"]])["summaries"][0]
-        assert summary["nullCount"] == 4 and summary["nanCount"] == 1
+        assert summary["nullCount"] == 5 and summary["nanCount"] == 0
         schema = engine.schema(source)
         lineage = source_lineage(schema)
         rules = [
-            ({"predicates": [{"kind": "predicate", "operator": "isNull"}]}, [0, 1, 2, 3]),
-            ({"predicates": [{"kind": "predicate", "operator": "isNotNull"}]}, [4, 5]),
+            ({"predicates": [{"kind": "predicate", "operator": "isNull"}]}, [0, 1, 2, 3, 4]),
+            ({"predicates": [{"kind": "predicate", "operator": "isNotNull"}]}, [5]),
             (
                 {
                     "predicates": [],
                     "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": True, "includeNaN": False},
                 },
-                [0, 1, 2, 3],
+                [0, 1, 2, 3, 4],
             ),
             (
                 {
                     "predicates": [],
-                    "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": True, "includeNaN": True},
+                    "valueFilter": {"kind": "values", "selectedValues": [], "includeNulls": False, "includeNaN": True},
                 },
-                [0, 1, 2, 3, 4],
+                [],
             ),
         ]
         for rule, expected_rows in rules:
@@ -952,8 +954,8 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
         assert {item["value"]: item["count"] for item in summary["topValues"]} == {
             labels[key]: count for key, count in counts.items()
         }
-        assert summary["nullCount"] == (4 if missing else 0)
-        assert summary["nanCount"] == (2 if missing else 0)
+        # Durations hold no NaN values, so every missing marker is null.
+        assert (summary["nullCount"], summary["nanCount"]) == (6 if missing else 0, 0)
         if all(type(value) is timedelta for value in original):
             page = engine.page(source, 0, len(original))
             assert [row["values"][0]["display"] for row in page["rows"]] == [str(value) for value in original]
@@ -985,7 +987,7 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
                 },
             }
             if missing:
-                expected += list(range(len(original), len(original) + 4))
+                expected += list(range(len(original), len(original) + 6))
             model = {"filters": [column_filter], "sort": []}
             step = bind_step(
                 validate_step(
@@ -1006,7 +1008,7 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
                 scope["clean_data"](source),
             ):
                 pd.testing.assert_frame_equal(result, source.iloc[expected], check_exact=True)
-            assert len(expected) == choice["count"] + (4 if missing else 0)
+            assert len(expected) == choice["count"] + (6 if missing else 0)
         pd.testing.assert_frame_equal(source, before, check_exact=True)
         assert source.attrs == before.attrs
     finally:
@@ -1333,18 +1335,18 @@ def test_timestamp_cells_preserve_fraction_offset_and_instant(zone, clock, offse
     assert [row["rowLabel"] for row in page["rows"]] == ["same", "same"]
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     assert source.attrs == before.attrs
-    label = expected.replace("T", " ")
     engine = PandasEngine()
     summary = engine.summaries(source)[0]
     assert summary["topValues"] == [
-        {"value": label, "count": 1, "selectionValue": typed_selection_value(value, "datetime")}
+        {"value": expected, "count": 1, "selectionValue": typed_selection_value(value, "datetime")}
     ]
-    assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
+    assert summary["visualization"] == {"kind": "datetime", "min": expected, "max": expected}
     choices, more = engine.column_values(source, "when")
     assert not more and len(choices) == 1
-    assert choices[0]["value"] == label and choices[0]["count"] == 1
+    assert choices[0]["value"] == expected and choices[0]["count"] == 1
     assert choices[0].get("selectionValue") == typed_selection_value(value, "datetime")
-    assert engine.column_values(source, "when", search=label) == (choices, False)
+    for search in (expected, expected.replace("T", " ")):
+        assert engine.column_values(source, "when", search=search) == (choices, False)
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     assert source.attrs == before.attrs
 
@@ -1416,20 +1418,18 @@ def test_timestamp_parquet_session_preserves_exact_page_text(tmp_path: Path, zon
         assert repeated["page"] == opened["page"]
         assert opened["page"]["columnIds"] == [metadata["schema"][0]["id"]]
         query = {"filters": [], "sort": []}
-        label = expected.replace("T", " ")
         summary = manager.get_summary(
             metadata["sessionId"], metadata["revision"], query, [metadata["schema"][0]["id"]]
         )["summaries"][0]
-        assert summary["topValues"] == [{"value": label, "count": 1, "selectionValue": None}]
-        assert summary["visualization"] == {"kind": "datetime", "min": label, "max": label}
+        assert summary["topValues"] == [{"value": expected, "count": 1, "selectionValue": None}]
+        assert summary["visualization"] == {"kind": "datetime", "min": expected, "max": expected}
         choices = manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query)
-        assert choices["values"] == [{"value": label, "count": 1, "selectionValue": None}]
-        assert (
-            manager.get_column_values(metadata["sessionId"], metadata["revision"], "when", query, search=label)[
-                "values"
-            ]
-            == choices["values"]
-        )
+        assert choices["values"] == [{"value": expected, "count": 1, "selectionValue": None}]
+        for search in (expected, expected.replace("T", " ")):
+            searched = manager.get_column_values(
+                metadata["sessionId"], metadata["revision"], "when", query, search=search
+            )
+            assert searched["values"] == choices["values"]
         json.dumps(opened, allow_nan=False)
     finally:
         manager.close_all()
@@ -1528,7 +1528,7 @@ def test_pandas_value_search_filters_original_representations_before_counting(
     assert not more
     assert choices == [
         {
-            "value": str(expected_value),
+            "value": normalize_cell(expected_value)["display"],
             "count": count,
             "selectionValue": typed_selection_value(expected_value, column_type),
         }
@@ -1591,7 +1591,7 @@ def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, t
         ("ns", [172800000000000, 1, 259200000000000]),
     ],
 )
-def test_pandas_native_duration_categories_search_counts_and_unused_labels(
+def test_pandas_native_duration_categories_search_counts_and_skip_unused_labels(
     unit: str, category_ticks: list[int]
 ) -> None:
     categories = pd.Index(np.array(category_ticks, dtype=np.int64).view(f"timedelta64[{unit}]"))
@@ -1604,7 +1604,7 @@ def test_pandas_native_duration_categories_search_counts_and_unused_labels(
     engine = PandasEngine()
     try:
         choices, more = engine.column_values(source, "value")
-        expected = sorted(zip(map(str, categories), [2, 2, 0], strict=True), key=lambda item: (-item[1], item[0]))
+        expected = sorted(zip(map(str, categories[:2]), [2, 2], strict=True), key=lambda item: (-item[1], item[0]))
         assert [(choice["value"], choice["count"]) for choice in choices] == expected and not more
         assert engine.column_values(source, "value", search="days", limit=1) == (choices[:1], True)
         for choice in choices:
@@ -1648,12 +1648,11 @@ def test_pandas_native_duration_categories_search_counts_and_unused_labels(
                 source["value"].astype(str).str.contains(raw, na=False, regex=False), "value"
             ].value_counts()
             found, _ = engine.column_values(source, "value", search=raw)
-            assert {item["value"]: item["count"] for item in found if item["count"]} == {
+            assert {item["value"]: item["count"] for item in found} == {
                 str(value): count for value, count in native.items() if count
             }
         for empty in [source.iloc[:0], source.iloc[[4]]]:
-            unused = next(item for item in choices if item["count"] == 0)
-            assert engine.column_values(empty, "value", search=unused["value"]) == ([unused], False)
+            assert engine.column_values(empty, "value", search=str(categories[2])) == ([], False)
         pd.testing.assert_frame_equal(source, before, check_exact=True)
         assert source.attrs == before.attrs
     finally:
@@ -1698,7 +1697,7 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         session_id, revision = metadata["sessionId"], metadata["revision"]
         result = manager.get_column_values(session_id, revision, "value", query)
         choices = result["values"]
-        assert not result["hasMore"] and sorted(item["count"] for item in choices) == [0, 1, 1, 1, 1, 2]
+        assert not result["hasMore"] and sorted(item["count"] for item in choices) == [1, 1, 1, 1, 2]
         day = choices[0]
         assert day["value"] == ("1 days 00:00:00" if unit == "ns" else "1 day, 0:00:00")
         assert day["selectionValue"]["cell"]["raw"] == 86400
@@ -1719,7 +1718,7 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
             )
             found, more = engine.column_values(source, "value", search=raw)
             assert not more
-            assert {item["value"]: item["count"] for item in found if item["count"]} == dict(expected)
+            assert {item["value"]: item["count"] for item in found} == dict(expected)
         searched = manager.get_column_values(session_id, revision, "value", query, search=day["value"])
         assert searched["values"] == [day] and not searched["hasMore"]
         model = {
@@ -1743,13 +1742,11 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
         positive = [item for item in choices if "day" in item["value"]]
         assert engine.column_values(source, "value", search="DaY", limit=1) == (positive[:1], len(positive) > 1)
-        unused = next(item for item in choices if item["count"] == 0)
         unused_raw = pd.Series(pd.Categorical.from_codes([5], categories=categories)).astype(str).iloc[0]
         displayed_matches = [item for item in choices if unused_raw in item["value"]]
         assert engine.column_values(source, "value", search=unused_raw) == (displayed_matches, False)
         for empty in (source.iloc[:0], source.iloc[[5]]):
-            assert engine.column_values(empty, "value", search=unused_raw) == (displayed_matches, False)
-            assert engine.column_values(empty, "value", search=unused["value"]) == ([unused], False)
+            assert engine.column_values(empty, "value", search=unused_raw) == ([], False)
             assert engine.column_values(empty, "value", search="[not-a-duration]") == ([], False)
         restored = manager.get_page(session_id, revision, 0, 7, query)
         assert restored["page"] == opened["page"]
@@ -2303,7 +2300,7 @@ def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(sto
         assert page["rows"][2]["values"][0] == cell
         assert page["rows"][3]["values"][0]["isNull"]
         choices, more = engine.column_values(source, "value")
-        assert not more and [choice["count"] for choice in choices] == [2, 1, 0]
+        assert not more and [choice["count"] for choice in choices] == [2, 1]
         first = choices[0]
         microseconds = seconds * 1000000
         portable = microseconds.denominator == 1 and -999999999 * 86400000000 <= microseconds < 1000000000 * 86400000000
@@ -2400,19 +2397,21 @@ def test_pandas_temporal_categories_publish_exact_cells_and_selection_values(sto
 
 
 @pytest.mark.parametrize("include_fraction", [False, True])
-def test_pandas_datetime_search_retains_native_midnight_and_padded_fraction_text(include_fraction: bool) -> None:
+def test_pandas_datetime_search_matches_displayed_midnight_and_fraction_text(include_fraction: bool) -> None:
     midnight = pd.Timestamp("2020-01-01")
     other = pd.Timestamp("2020-01-01T00:00:00.000000123") if include_fraction else pd.Timestamp("2020-01-02")
     source = pd.DataFrame({"value": [midnight, other]})
     before = source.copy(deep=True)
     engine = PandasEngine()
     if include_fraction:
-        assert engine.column_values(source, "value", search=".000000000") == (
+        # Native text pads midnight to the column's nanoseconds; its label shows no fraction.
+        assert engine.column_values(source, "value", search=".000000000") == ([], False)
+        assert engine.column_values(source, "value", search=".000000123") == (
             [
                 {
-                    "value": "2020-01-01 00:00:00",
+                    "value": "2020-01-01T00:00:00.000000123",
                     "count": 1,
-                    "selectionValue": typed_selection_value(midnight, "datetime"),
+                    "selectionValue": typed_selection_value(other, "datetime"),
                 }
             ],
             False,
@@ -3088,7 +3087,8 @@ def test_object_uuid_session_selections_use_canonical_values_and_preserve_source
         selected = [item for item in picker if item["value"] == str(identifier)]
         assert len(picker) == 3 and len(selected) == 1 and selected[0]["count"] == 2
         summary = manager.get_summary(session_id, 0, query)["summaries"][0]
-        assert (summary["distinctCount"], summary["nullCount"], summary["nanCount"]) == (3, 3, 1)
+        # Only float columns hold NaN values, so text NaN is missing like None.
+        assert (summary["distinctCount"], summary["nullCount"], summary["nanCount"]) == (3, 4, 0)
         column_filter = {
             "column": "value",
             "type": "string",
@@ -3101,7 +3101,7 @@ def test_object_uuid_session_selections_use_canonical_values_and_preserve_source
             },
         }
         query["filters"] = [column_filter]
-        positions = sorted([1, 2] + ([3, 4, 6] if include_nulls else []) + ([5] if include_nan else []))
+        positions = [1, 2, 3, 4, 5, 6] if include_nulls else [1, 2]
         page = manager.get_page(session_id, 0, 0, 20, query)["page"]
         assert [row["values"][1]["raw"] for row in page["rows"]] == positions
         step = {

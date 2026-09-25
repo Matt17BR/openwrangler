@@ -1190,7 +1190,8 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
 
     assert (summaries["float"]["nullCount"], summaries["float"]["nanCount"]) == (0, 1)
-    assert (summaries["object"]["nullCount"], summaries["object"]["nanCount"]) == (1, 1)
+    # Without other values Pandas cannot tell NaN from missing, and only float columns hold NaN values.
+    assert (summaries["object"]["nullCount"], summaries["object"]["nanCount"]) == (2, 0)
     assert (summaries["nullable"]["nullCount"], summaries["nullable"]["nanCount"]) == (1, 0)
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
@@ -1211,7 +1212,8 @@ def test_pandas_string_profiles_count_native_missing_sentinels_without_boxing(
     before = source.copy(deep=True)
     engine = PandasEngine()
     expected = engine.summaries(source)
-    assert (expected[0]["nullCount"], expected[0]["nanCount"]) == ((3, 0) if missing_kind == "null" else (0, 3))
+    # The str dtype marks missing text with NaN, which is still missing text.
+    assert (expected[0]["nullCount"], expected[0]["nanCount"]) == (3, 0)
 
     def reject_scalar_mask(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("StringDtype profile counts must use their native missing mask")
@@ -1276,9 +1278,10 @@ def test_pandas_object_string_profiles_avoid_scalar_fallbacks(
         (pd.NA, (1, 0)),
         (pd.NaT, (1, 0)),
         (np.datetime64("NaT", "ns"), (1, 0)),
-        (np.nan, (0, 1)),
-        (Decimal("NaN"), (0, 1)),
-        (Decimal("sNaN"), (0, 1)),
+        # Only float columns hold NaN values, so NaN beside text is missing.
+        (np.nan, (1, 0)),
+        (Decimal("NaN"), (1, 0)),
+        (Decimal("sNaN"), (1, 0)),
         (np.uint64(2**63 + 1), (0, 0)),
         (np.float32(0.5), (0, 0)),
     ],
@@ -1459,7 +1462,6 @@ def test_pandas_nullable_missing_masks_do_not_box_values(monkeypatch: pytest.Mon
         [("same", 1), ("same", 1), ("other", 2), ("other", 2)], names=["group", "row"]
     )
     before = source.copy(deep=True)
-    missing_is_nan = strings and dtype.na_value is np.nan
 
     def reject_boxing(_array: Any) -> Any:
         raise AssertionError("Nullable missing masks must not iterate over Python values")
@@ -1469,10 +1471,9 @@ def test_pandas_nullable_missing_masks_do_not_box_values(monkeypatch: pytest.Mon
         (source.iloc[:0], []),
         (source.iloc[[1, 3]], [True, True]),
     ]:
-        expected_null = pd.Series(
-            [present and not missing_is_nan for present in missing], index=candidate.index, dtype=bool
-        )
-        expected_nan = pd.Series([present and missing_is_nan for present in missing], index=candidate.index, dtype=bool)
+        # The str dtype marks missing text with NaN, which is still missing text.
+        expected_null = pd.Series(missing, index=candidate.index, dtype=bool)
+        expected_nan = pd.Series(False, index=candidate.index, dtype=bool)
         with monkeypatch.context() as context:
             context.setattr(type(candidate.array), "__iter__", reject_boxing)
             nulls = pandas_engine_module._null_mask(candidate)
@@ -1641,15 +1642,15 @@ def test_pandas_mixed_display_text_summary_streams_without_changing_profile_byte
 
     expected = json.loads(
         b'[{"columnId":"c:category","column":"category","type":"string","rawType":"category",'
-        b'"totalCount":6,"nullCount":0,"nanCount":1,"distinctCount":2,"topValues":'
+        b'"totalCount":6,"nullCount":1,"nanCount":0,"distinctCount":2,"topValues":'
         b'[{"value":"1","count":3},{"value":"200","count":2}],"text":'
         b'{"emptyCount":0,"minLength":1,"maxLength":3,"meanLength":1.8},"visualization":'
         b'{"kind":"categorical","categories":[{"value":"1","count":3},{"value":"200","count":2}],'
         b'"otherCount":0}},{"columnId":"c:object","column":"object","type":"string",'
-        b'"rawType":"object","totalCount":6,"nullCount":1,"nanCount":1,"distinctCount":2,"topValues":'
-        b'[{"value":"b\'\\\\x00\'","count":3},{"value":"x","count":1}],"text":'
+        b'"rawType":"object","totalCount":6,"nullCount":2,"nanCount":0,"distinctCount":2,"topValues":'
+        b'[{"value":"AA==","count":3},{"value":"x","count":1}],"text":'
         b'{"emptyCount":0,"minLength":1,"maxLength":4,"meanLength":3.25},"visualization":'
-        b'{"kind":"categorical","categories":[{"value":"b\'\\\\x00\'","count":3},'
+        b'{"kind":"categorical","categories":[{"value":"AA==","count":3},'
         b'{"value":"x","count":1}],"otherCount":0}}]'
     )
 
@@ -1779,7 +1780,7 @@ def test_pandas_eager_boolean_summaries_reuse_native_counts_without_materializin
     expected = {
         "native": (0, 0, 2, {"kind": "boolean", "trueCount": 4, "falseCount": 2}),
         "nullable": (2, 0, 2, {"kind": "boolean", "trueCount": 3, "falseCount": 1}),
-        "object": (2, 1, 2, {"kind": "boolean", "trueCount": 2, "falseCount": 1}),
+        "object": (3, 0, 2, {"kind": "boolean", "trueCount": 2, "falseCount": 1}),
         "all_null": (6, 0, 0, {"kind": "boolean", "trueCount": 0, "falseCount": 0}),
     }
     for column, (null_count, nan_count, distinct_count, visualization) in expected.items():
@@ -1958,14 +1959,16 @@ def test_pandas_float_nan_mask_preserves_float_only_fallback_semantics(monkeypat
     monkeypatch.setattr(CustomSeries, "to_numpy", forbid_native_array)
 
     cases = [
-        (pd.Series([Decimal("NaN"), float("nan"), None], dtype=object), [False, True, False]),
+        # Only float columns hold NaN values, so NaN beside decimals is missing.
+        (pd.Series([Decimal("NaN"), float("nan"), None], dtype=object), [False, False, False]),
+        (pd.Series([1.5, float("nan"), None], dtype=object), [False, True, False]),
         (
             pd.Series(pd.arrays.FloatingArray(np.array([np.nan, 1.0]), np.array([False, True]))),
             [True, False],
         ),
         (pd.Series(pd.arrays.ArrowExtensionArray(pa.array([float("nan"), None]))), [True, False]),
         (pd.Series(pd.arrays.SparseArray([0.0, float("nan")])), [False, True]),
-        (pd.Series(pd.Categorical([1.0, None])), [False, True]),
+        (pd.Series(pd.Categorical([1.0, None])), [False, False]),
         (CustomSeries([0.0, float("nan"), float("inf")]), [False, True, False]),
         (pd.Series([0, 1], dtype="int64"), [False, False]),
         (pd.Series([True, False]), [False, False]),

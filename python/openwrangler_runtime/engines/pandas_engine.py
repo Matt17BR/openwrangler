@@ -80,6 +80,7 @@ from .base import (
     bound_column_position,
     categorical_visualization,
     coerce_typed_view_value,
+    counted_value,
     datetime_isoformat,
     datetime_visualization,
     decimal_at_scale,
@@ -758,6 +759,55 @@ def _pandas_dense_rank(series: Any, direction: str) -> Any:
     return pd.Series(values, index=series.index, dtype="Int64")
 
 
+def _pandas_datetime_labels(values: Any) -> Any:
+    """Datetime cell text with a space separator; native array text shares one precision across rows."""
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        categories = _pandas_datetime_labels(pd.Series(values.cat.categories))
+        return pd.Series(categories.to_numpy()[values.cat.codes.to_numpy()], index=values.index)
+    aware = isinstance(values.dtype, pd.DatetimeTZDtype)
+    wall = values.dt.tz_localize(None) if aware else values
+    if (wall.dt.year < 1000).any():
+        return pd.Series([datetime_isoformat(value, sep=" ") for value in values], index=values.index, dtype=object)
+    # This exact pattern takes Pandas' native formatter; tz-aware values would box each row.
+    text = wall.dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+    nanoseconds = wall.dt.nanosecond.to_numpy()
+    text = text.where((wall.dt.microsecond.to_numpy() != 0) | (nanoseconds != 0), text.str.slice(0, -7))
+    if nanoseconds.any():
+        text = text.where(nanoseconds == 0, text + pd.Series(nanoseconds, index=text.index).astype(str).str.zfill(3))
+    if aware:
+        offset = ((wall - values.dt.tz_convert("UTC").dt.tz_localize(None)) // pd.Timedelta(seconds=1)).to_numpy()
+        minutes, seconds = np.divmod(np.abs(offset), 60)
+        hours, minutes = np.divmod(minutes, 60)
+
+        def digits(part: Any) -> Any:
+            return pd.Series(part, index=text.index).astype(str).str.zfill(2)
+
+        text = text + np.where(offset < 0, "-", "+") + digits(hours) + ":" + digits(minutes)
+        text = text.where(seconds == 0, text + ":" + digits(seconds))
+    return text
+
+
+def _pandas_counts_index_values(dtype: Any) -> bool:
+    """Whether value counts index the column's own values rather than comparison keys."""
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(dtype, np.dtype):
+        # Counting rejects extended floats, so a search must drop them first.
+        return dtype.kind in "biuM" or (dtype.kind == "f" and dtype.itemsize <= 8)
+    if isinstance(dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        return not pa.types.is_nested(dtype.pyarrow_dtype) and dtype.kind != "m"
+    if isinstance(dtype, (pd.DatetimeTZDtype, pd.StringDtype, pd.CategoricalDtype)):
+        return True
+    masked = (pd.arrays.IntegerArray, pd.arrays.FloatingArray, pd.arrays.BooleanArray)
+    return isinstance(dtype, pd.api.extensions.ExtensionDtype) and dtype.construct_array_type() in masked
+
+
 def _pandas_value_counts(series: Any, *, sort: bool = True, duration: bool = False) -> Any:
     import numpy as np
     import pandas as pd
@@ -890,10 +940,21 @@ def _pandas_text_sort_ranks(series: Any, ascending: bool, nulls: Literal["first"
 
 
 def _pandas_text_condition(series: Any, method: str, value: str) -> Any:
+    import pandas as pd
+
+    text = series.astype(str)
     if method == "contains":
-        folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
-        return folded.str.contains(value.translate(_ASCII_TO_LOWER), na=False, regex=False)
-    return getattr(series.astype(str).str, method)(value, na=False)
+        needle = value.translate(_ASCII_TO_LOWER)
+        if isinstance(text.dtype, pd.StringDtype) and text.dtype.storage in {"pyarrow", "pyarrow_numpy"}:
+            import pyarrow.compute as pc
+
+            # ASCII lowering leaves every byte of a non-ASCII UTF-8 character unchanged.
+            folded = pc.call_function("ascii_lower", [text.array.__arrow_array__()])
+            matched = pc.call_function("match_substring", [folded], pc.MatchSubstringOptions(needle))
+            matched = pc.fill_null(matched, False)
+            return pd.Series(matched.to_numpy(), index=series.index, name=series.name)
+        return text.str.translate(_ASCII_TO_LOWER).str.contains(needle, na=False, regex=False)
+    return getattr(text.str, method)(value, na=False)
 
 
 def _pandas_distinct_text_condition(series: Any, method: str, value: str) -> Any:
@@ -1299,6 +1360,8 @@ class PandasEngine(DataFrameEngine):
                 _pandas_temporal_output_values(
                     sliced.iloc[:, position],
                     temporal_columns[position - value_offset] if position >= value_offset else None,
+                    nan_is_missing=position >= value_offset
+                    and _pandas_page_nan_is_missing(sliced.iloc[:, position], df.iloc[:, selected_positions[position]]),
                 )
                 for position in range(sliced.shape[1])
             ),
@@ -1373,24 +1436,26 @@ class PandasEngine(DataFrameEngine):
             # Unused categories are counted as zero.
             top_counts = top_counts[top_counts.to_numpy() > 0]
             temporal_counts = _pandas_arrow_temporal_array(top_counts.index, categorical=True)
-            top_values = [
-                {
-                    "value": _pandas_temporal_text(
-                        index, temporal_counts[position] if temporal_counts is not None else None
+            top_cells = [
+                (
+                    _pandas_temporal_cell(
+                        counted_value(index), temporal_counts[position] if temporal_counts is not None else None
                     ),
-                    "count": int(value),
-                    "selectionValue": typed_cell_selection_value(
-                        _pandas_temporal_cell(
-                            index, temporal_counts[position] if temporal_counts is not None else None
-                        ),
-                        semantic_type,
-                    ),
-                }
+                    value,
+                )
                 for position, (index, value) in enumerate(
                     zip(
                         _pandas_temporal_output_values(top_counts.index, temporal_counts), top_counts.array, strict=True
                     )
                 )
+            ]
+            top_values = [
+                {
+                    "value": cell["display"],
+                    "count": int(value),
+                    "selectionValue": typed_cell_selection_value(cell, semantic_type),
+                }
+                for cell, value in top_cells
             ]
             summary: dict[str, Any] = {
                 "columnId": column_id,
@@ -1456,13 +1521,13 @@ class PandasEngine(DataFrameEngine):
                     extrema = pc.call_function("min_max", [temporal_values])
                     minimum, maximum = extrema["min"], extrema["max"]
                     summary["visualization"] = datetime_visualization(
-                        _pandas_temporal_text(minimum.as_py(), minimum),
-                        _pandas_temporal_text(maximum.as_py(), maximum),
+                        _pandas_temporal_cell(minimum.as_py(), minimum)["display"],
+                        _pandas_temporal_cell(maximum.as_py(), maximum)["display"],
                     )
                 else:
                     summary["visualization"] = datetime_visualization(
-                        _pandas_temporal_text(values.min(), None) if not values.empty else None,
-                        _pandas_temporal_text(values.max(), None) if not values.empty else None,
+                        _pandas_temporal_cell(values.min(), None)["display"] if not values.empty else None,
+                        _pandas_temporal_cell(values.max(), None)["display"] if not values.empty else None,
                     )
             else:
                 if semantic_type == "string":
@@ -1596,17 +1661,29 @@ class PandasEngine(DataFrameEngine):
             series = series.dropna()
         arrow_duration_values = isinstance(series.dtype, pd.ArrowDtype) and series.dtype.kind == "m"
         search_counted_labels = search_counted_labels or arrow_duration_values
-        temporal_values = _pandas_arrow_temporal_array(series)
+        duration = column_type == "duration"
+        value_counts = None
         if search and not search_counted_labels:
             _pandas_require_nested_timestamp_boxing(series)
-            labels = series.astype(str)
-            if (
+            labelled = series
+            if _pandas_counts_index_values(series.dtype):
+                # Each distinct value is spelled once rather than once per row.
+                value_counts = _pandas_value_counts(series, sort=False, duration=duration)
+                labelled = pd.Series(value_counts.index, copy=False)
+            temporal_values = _pandas_arrow_temporal_array(labelled)
+            spelled = (
+                labelled.cat.categories.dtype if isinstance(labelled.dtype, pd.CategoricalDtype) else labelled.dtype
+            )
+            native_datetime = isinstance(spelled, pd.DatetimeTZDtype) or (
+                isinstance(spelled, np.dtype) and spelled.kind == "M"
+            )
+            labels = _pandas_datetime_labels(labelled) if native_datetime else labelled.astype(str)
+            if not native_datetime and (
                 temporal_values is not None
-                or pd.api.types.is_datetime64_any_dtype(series.dtype)
-                or pd.api.types.is_object_dtype(series.dtype)
-                or isinstance(series.dtype, pd.CategoricalDtype)
+                or pd.api.types.is_object_dtype(labelled.dtype)
+                or isinstance(labelled.dtype, pd.CategoricalDtype)
             ):
-                for position, value in enumerate(_pandas_temporal_output_values(series.array, temporal_values)):
+                for position, value in enumerate(_pandas_temporal_output_values(labelled.array, temporal_values)):
                     scalar = temporal_values[position] if temporal_values is not None else None
                     if (type(value) is pd.Timestamp and value.nanosecond) or (
                         scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType"
@@ -1614,29 +1691,66 @@ class PandasEngine(DataFrameEngine):
                         label = _pandas_temporal_text(value, scalar)
                         if label != str(value):
                             labels.iloc[position] = label
-            needle = str(search).translate(_ASCII_TO_LOWER)
-            matches = _pandas_distinct_text_condition(labels, "contains", str(search))
+            search_text = str(search)
+            if column_type == "float":
+                if _pandas_narrow_float_type(labelled.dtype) is not None:
+                    # Narrow text keeps its shortest digits; float64 spells them like the cell.
+                    labels = labels.astype("float64").astype(str)
+                numbers = labelled.to_numpy(dtype=float, na_value=np.nan)
+                infinite = np.isinf(numbers)
+                if infinite.any():
+                    labels = labels.where(~infinite, np.where(numbers > 0, "Infinity", "-Infinity"))
+                # Counting merges signed zeros under the label 0.0.
+                labels = labels.where(numbers != 0, "0.0")
+            elif column_type == "datetime":
+                from re import sub
+
+                # Choices display ISO text, while native row text separates the time with a space.
+                search_text = sub(r"(?<![A-Za-z])[Tt](?![A-Za-z])", " ", search_text)
+            needle = search_text.translate(_ASCII_TO_LOWER)
+            # Counted labels are already distinct.
+            condition = _pandas_text_condition if value_counts is not None else _pandas_distinct_text_condition
+            matches = condition(labels, "contains", search_text)
             # These aliases can add only a space-containing match or part of the midnight clock.
             if column_type == "datetime" and (" " in needle or needle in "00:00:00"):
                 from re import fullmatch
 
                 matches = matches.to_numpy(dtype=bool, copy=True)
+                candidates = labels.str.contains("T", regex=False).to_numpy(dtype=bool) | (
+                    labels.str.len().to_numpy() == 10
+                )
                 for position, label in enumerate(labels):
-                    if matches[position]:
+                    if matches[position] or not candidates[position]:
                         continue
                     alias = label.replace("T", " ")
                     if len(alias) == 10 and fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", alias):
                         alias += " 00:00:00"
                     if alias != label:
                         matches[position] = needle in alias.translate(_ASCII_TO_LOWER)
-            series = series[matches]
-        value_counts = _pandas_value_counts(series, sort=False, duration=column_type == "duration")
+            matches = np.asarray(matches, dtype=bool)
+            if value_counts is None:
+                series = series[matches]
+            else:
+                value_counts = value_counts.iloc[matches]
+        if value_counts is None:
+            value_counts = _pandas_value_counts(series, sort=False, duration=duration)
+        counted = value_counts.to_numpy()
+        # Unused categories never occur in the rows.
+        present = counted > 0
+        if not (search and search_counted_labels) and np.count_nonzero(present) > limit + 1:
+            # Only values tied with or above the last listed count need a label for the tie-break.
+            observed = counted[present]
+            present &= counted >= np.partition(observed, observed.size - limit - 1)[-limit - 1]
+        if not present.all():
+            value_counts = value_counts.iloc[present]
         temporal_counts = _pandas_arrow_temporal_array(value_counts.index, categorical=True)
         counts = (
             (
                 index,
                 count,
-                _pandas_temporal_text(index, temporal_counts[position] if temporal_counts is not None else None),
+                _pandas_temporal_text(
+                    counted_value(index), temporal_counts[position] if temporal_counts is not None else None
+                ),
                 position,
             )
             for position, (index, count) in enumerate(
@@ -1672,14 +1786,18 @@ class PandasEngine(DataFrameEngine):
             )
         counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
-        for index, count, label, position in counts[:limit]:
-            item: dict[str, Any] = {"value": label, "count": int(count)}
-            selection = typed_cell_selection_value(
-                _pandas_temporal_cell(index, temporal_counts[position] if temporal_counts is not None else None),
-                column_type,
+        for index, count, _, position in counts[:limit]:
+            # Native labels rank ties; published labels match the grid cell.
+            cell = _pandas_temporal_cell(
+                counted_value(index), temporal_counts[position] if temporal_counts is not None else None
             )
-            item["selectionValue"] = selection
-            values.append(item)
+            values.append(
+                {
+                    "value": cell["display"],
+                    "count": int(count),
+                    "selectionValue": typed_cell_selection_value(cell, column_type),
+                }
+            )
         return values, len(counts) > limit
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
@@ -7069,10 +7187,8 @@ def _missing_value_counts(series: Any) -> tuple[int, int]:
     ):
         return 0, 0
     if type(series) is pd.Series and isinstance(dtype, pd.StringDtype):
-        if dtype.na_value is pd.NA:
-            return int(series.isna().sum()), 0
-        if _is_nan_value(dtype.na_value):
-            return 0, int(series.isna().sum())
+        # The str dtype marks missing text with NaN, which is still null.
+        return int(series.isna().sum()), 0
     if isinstance(dtype, np.dtype):
         if dtype.kind in {"i", "u", "b"}:
             return 0, 0
@@ -8461,12 +8577,48 @@ def _pandas_arrow_temporal_array(series: Any, *, categorical: bool = False) -> A
     return _pandas_dictionary_values(series).array.__arrow_array__()
 
 
-def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
+def _pandas_narrow_float_type(dtype: Any) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(dtype, pd.SparseDtype):
+        dtype = dtype.subtype
+    if isinstance(dtype, np.dtype):
+        return dtype.type if dtype.type in (np.float32, np.float16) else None
+    if isinstance(dtype, pd.Float32Dtype):
+        return np.float32
+    if isinstance(dtype, pd.ArrowDtype):
+        return {"float": np.float32, "halffloat": np.float16}.get(str(dtype.pyarrow_dtype))
+    return None
+
+
+def _pandas_page_nan_is_missing(values: Any, column: Any) -> bool:
+    """Object NaN is a value only in columns Pandas infers as floating; a page with other values decides alone."""
+    import numpy as np
+    import pandas as pd
+
+    if not (isinstance(values.dtype, np.dtype) and values.dtype.kind == "O"):
+        return False
+    try:
+        if not values.isna().any():
+            return False
+    except ArithmeticError:
+        # Pandas compares a signaling Decimal NaN with itself; Decimal NaN is never a float value.
+        return True
+    numeric = {"floating", "mixed-integer-float"}
+    if pd.api.types.infer_dtype(values, skipna=True) not in {*numeric, "integer", "empty"}:
+        return True
+    return pd.api.types.infer_dtype(column, skipna=True) not in numeric
+
+
+def _pandas_temporal_output_values(values: Any, array: Any, *, nan_is_missing: bool = False) -> Iterable[Any]:
     import numpy as np
     import pandas as pd
 
     _pandas_require_nested_timestamp_boxing(values)
     categorical = isinstance(values.dtype, pd.CategoricalDtype)
+    # Only float columns hold NaN values; Pandas marks other missing values with NaN.
+    nan_is_missing = nan_is_missing or categorical or isinstance(values.dtype, pd.StringDtype)
     if array is None:
         dtype = values.dtype.subtype if isinstance(values.dtype, pd.SparseDtype) else values.dtype
         if isinstance(dtype, np.dtype) and dtype.kind == "m":
@@ -8482,7 +8634,17 @@ def _pandas_temporal_output_values(values: Any, array: Any) -> Iterable[Any]:
                 codes = values.codes if isinstance(values, pd.Categorical) else values.array.codes
                 yield from (native[code] if code >= 0 else pd.NaT for code in codes)
                 return
-        yield from values
+        narrow = _pandas_narrow_float_type(dtype)
+        if not nan_is_missing and narrow is None:
+            yield from values
+            return
+        for value in values:
+            if nan_is_missing and isinstance(value, (float, np.floating)) and value != value:
+                value = None
+            elif narrow is not None and type(value) is float:
+                # Iteration widens to Python floats; cells need the narrow type to show 0.1.
+                value = narrow(value)
+            yield value
         return
     import pyarrow as pa
 
@@ -8536,10 +8698,14 @@ def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
 def _pandas_temporal_text(value: Any, scalar: Any) -> str:
     if scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType":
         return str(_pandas_temporal_cell(value, scalar)["display"])
+    import numpy as np
     import pandas as pd
 
     if type(value) is pd.Timestamp:
         return datetime_isoformat(value, sep=" ")
+    if isinstance(value, (float, np.floating)):
+        # Ties rank by the published label, as in 0.1 for single precision and Infinity.
+        return str(normalize_cell(value)["display"])
     return str(value)
 
 
@@ -8552,6 +8718,33 @@ def _pandas_native_missing_mask(series: Any, *, nan: bool) -> Any:
     if type(series) is not pd.Series:
         return None
     dtype = series.dtype
+    array = series.array
+    if (
+        (type(dtype) is pd.StringDtype and type(array) is pd.StringDtype.construct_array_type(dtype))
+        or (type(dtype) is pd.CategoricalDtype and type(array) is pd.Categorical)
+        or (
+            isinstance(dtype, np.dtype)
+            and dtype.kind == "O"
+            and pd.api.types.infer_dtype(series, skipna=True) not in {"floating", "mixed-integer-float"}
+        )
+    ):
+        # Only float columns hold NaN values; Pandas marks other missing values with NaN.
+        if nan:
+            return np.zeros(len(series), dtype=bool)
+        try:
+            return series.isna().to_numpy()
+        except ArithmeticError:
+            from decimal import Decimal
+
+            # Pandas compares a signaling Decimal NaN with itself.
+            return np.fromiter(
+                (
+                    value.is_nan() if isinstance(value, Decimal) else pd.api.types.is_scalar(value) and pd.isna(value)
+                    for value in array
+                ),
+                dtype=bool,
+                count=len(series),
+            )
     if isinstance(dtype, np.dtype):
         kind = dtype.kind
         if kind not in {"i", "u", "b", "f", "M", "m"}:
@@ -8561,11 +8754,8 @@ def _pandas_native_missing_mask(series: Any, *, nan: bool) -> Any:
         if not nan and kind in {"M", "m"}:
             return np.isnat(series.to_numpy(copy=False))
         return np.zeros(len(series), dtype=bool)
-    array = series.array
     if type(array) in (pd.arrays.IntegerArray, pd.arrays.BooleanArray):
         return np.zeros(len(series), dtype=bool) if nan else array.isna()
-    if type(dtype) is pd.StringDtype and type(array) is pd.StringDtype.construct_array_type(dtype):
-        return array.isna() if nan == (dtype.na_value is np.nan) else np.zeros(len(series), dtype=bool)
     return None
 
 

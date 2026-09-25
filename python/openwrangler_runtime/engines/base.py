@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import struct
 import sys
 from abc import ABC, abstractmethod
 from base64 import b64encode
@@ -395,6 +396,52 @@ def safe_float_midpoint(lower: Any, upper: Any) -> float:
 def typed_selection_value(value: Any, column_type: str) -> dict[str, Any] | None:
     """Return the portable selection token for one non-missing scalar value."""
     return typed_cell_selection_value(normalize_cell(value), column_type)
+
+
+def counted_value(value: Any) -> Any:
+    """Counting merges signed zeros, so the counted group is labeled with positive zero."""
+    numpy = sys.modules.get("numpy")
+    floating = (float, numpy.floating) if numpy is not None else float
+    return 0.0 if isinstance(value, floating) and value == 0 else value
+
+
+def narrow_float_cell(value: Any, width: Literal["f", "e"] = "f") -> dict[str, Any]:
+    """Single- and half-precision numbers show their own shortest text, as in 0.1; raw keeps the exact value."""
+    cell = normalize_cell(value)
+    if cell["kind"] != "number":
+        return cell
+    number = cell["raw"]
+    numpy = sys.modules.get("numpy")
+    if numpy is not None:
+        narrow = numpy.float32(number) if width == "f" else numpy.float16(number)
+        cell["display"] = str(float(str(narrow)))
+        return cell
+
+    def shortest(digits: int) -> float | None:
+        nearest = Decimal(f"{number:.{digits - 1}e}")
+        step = Decimal(1).scaleb(nearest.adjusted() - digits + 1)
+        # Next to a power of two the nearest decimal can miss while its neighbor reads back.
+        neighbors = (nearest, nearest + step, nearest - step)
+        for candidate in sorted(neighbors, key=lambda item: abs(item - Decimal(number))):
+            try:
+                if struct.unpack(f"<{width}", struct.pack(f"<{width}", float(candidate)))[0] == number:
+                    return float(candidate)
+            except OverflowError:
+                continue
+        return None
+
+    # More digits never lose a round trip, so search for the fewest.
+    low, high = 1, 9 if width == "f" else 5
+    if shortest(high) is None:
+        return cell
+    while low < high:
+        middle = (low + high) // 2
+        if shortest(middle) is None:
+            low = middle + 1
+        else:
+            high = middle
+    cell["display"] = str(shortest(low))
+    return cell
 
 
 def typed_cell_selection_value(cell: dict[str, Any], column_type: str) -> dict[str, Any] | None:
@@ -1104,6 +1151,8 @@ def normalize_cell(value: Any) -> dict[str, Any]:
     numpy = sys.modules.get("numpy")
     is_numpy_datetime = isinstance(value, getattr(numpy, "datetime64", ()))
     is_numpy_duration = isinstance(value, getattr(numpy, "timedelta64", ()))
+    if numpy is not None and isinstance(value, (numpy.float32, numpy.float16)):
+        return narrow_float_cell(value.item(), "f" if isinstance(value, numpy.float32) else "e")
     if _is_numpy_scalar_wrapper(value) and not (is_numpy_datetime or is_numpy_duration):
         converted = value.item()
         if type(converted) is not type(value):
@@ -1371,11 +1420,12 @@ def boolean_visualization(values: Iterable[Any]) -> dict[str, Any]:
 
 
 def datetime_visualization(minimum: Any, maximum: Any) -> dict[str, Any]:
-    return {
-        "kind": "datetime",
-        "min": None if minimum is None else str(minimum),
-        "max": None if maximum is None else str(maximum),
-    }
+    def text(value: Any) -> str | None:
+        if value is None:
+            return None
+        return datetime_isoformat(value) if isinstance(value, datetime) else str(value)
+
+    return {"kind": "datetime", "min": text(minimum), "max": text(maximum)}
 
 
 def ensure_output_columns_available(existing: Iterable[Any], generated: Iterable[Any], operation: str) -> None:

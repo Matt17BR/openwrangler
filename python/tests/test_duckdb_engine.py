@@ -4607,8 +4607,8 @@ def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
         assert summaries[0]["numeric"]["min"] == 1.23
         assert summaries[1]["visualization"] == {
             "kind": "datetime",
-            "min": "2025-12-31 23:30:00+00:00",
-            "max": "2026-01-02 10:00:00+00:00",
+            "min": "2025-12-31T23:30:00+00:00",
+            "max": "2026-01-02T10:00:00+00:00",
         }
         assert summaries[2]["topValues"][0]["value"] == "[1,2]"
         assert {item["value"] for item in summaries[3]["topValues"]} == {

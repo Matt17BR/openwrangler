@@ -676,7 +676,7 @@ def test_live_and_generated_missing_predicates_distinguish_null_from_nan(backend
                 "string",
                 operator,
                 "a" if operator == "equals" else None,
-                [0] if operator == "equals" else ([1] if missing is pd.NA else []),
+                [0] if operator == "equals" else [1],
             )
             for storage in ("python", "pyarrow")
             for missing in (pd.NA, np.nan)

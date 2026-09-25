@@ -87,8 +87,8 @@ def _validate_summary(summary: dict[str, Any], rows: int) -> None:
         summary.get("type") != "string"
         or summary.get("rawType") != "category"
         or summary.get("totalCount") != rows
-        or summary.get("nullCount") != 0
-        or summary.get("nanCount") != missing_count
+        or summary.get("nullCount") != missing_count
+        or summary.get("nanCount") != 0
         or summary.get("distinctCount") != 2
         or summary.get("topValues") != expected_top_values
         or summary.get("text") != expected_text

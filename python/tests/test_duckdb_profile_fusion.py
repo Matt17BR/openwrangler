@@ -319,8 +319,8 @@ def test_duckdb_fused_profiles_preserve_numeric_and_temporal_payload_bytes(
             "type": "datetime",
             "visualization": {
                 "kind": "datetime",
-                "max": "2026-01-02 00:00:00+00:00",
-                "min": "2025-12-31 23:30:00+00:00",
+                "max": "2026-01-02T00:00:00+00:00",
+                "min": "2025-12-31T23:30:00+00:00",
             },
         },
         {

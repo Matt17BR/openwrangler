@@ -665,7 +665,7 @@ def test_polars_literal_column_names_keep_temporal_profile_values_exact(lazy: bo
         frame = source.lazy() if lazy else source
         summary = engine.summaries(frame, [(0, "selected")])[0]
         assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
-        expected = {"1969-12-31T23:59:59.999999999": 2, "1970-01-01T00:00:00.000000000": 1}
+        expected = {"1969-12-31T23:59:59.999999999": 2, "1970-01-01T00:00:00": 1}
         assert {item["value"]: item["count"] for item in summary["topValues"]} == expected
         choices, more = engine.column_values(frame, name)
         assert not more and {item["value"]: item["count"] for item in choices} == expected
@@ -1056,15 +1056,9 @@ def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_s
         (pl.Duration("us"), 100000001, 100.000001, "1m 40s 1µs", True),
         (pl.Duration("us"), 1, "0.000001", "1µs", True),
         (pl.Duration("ms"), -12345, -12.345, "-12s -345ms", True),
-        (pl.Datetime("ms"), -12345, "1969-12-31T23:59:47.655000", "1969-12-31T23:59:47.655", True),
+        (pl.Datetime("ms"), -12345, "1969-12-31T23:59:47.655000", None, True),
         (pl.Datetime("us", "Europe/Berlin"), 100000001, "1970-01-01T01:01:40.000001+01:00", None, True),
-        (
-            pl.Datetime("ns", "Europe/Amsterdam"),
-            -5364662400000000000,
-            "1800-01-01T00:17:30+00:17:30",
-            "1800-01-01T00:17:30.000000000+00:17:30",
-            False,
-        ),
+        (pl.Datetime("ns", "Europe/Amsterdam"), -5364662400000000000, "1800-01-01T00:17:30+00:17:30", None, False),
         (pl.Duration("ns"), -(2**63), "-9223372036.854775808", "-106751d -23h -47m -16s -854775808ns", False),
         (pl.Datetime("ns"), -(2**63), "1677-09-21T00:12:43.145224192", None, False),
     ],
@@ -1172,17 +1166,11 @@ def test_polars_temporal_queries_preserve_native_values_before_row_boxing(
 
 
 @pytest.mark.parametrize("lazy", [False, True])
-@pytest.mark.parametrize(
-    "unit,scale,whole,fraction",
-    [
-        ("ms", 1_000, "2020-01-01T00:00:00.000", "2020-01-01T00:00:00.123"),
-        ("us", 1_000_000, "2020-01-01T00:00:00.000000", "2020-01-01T00:00:00.123000"),
-        ("ns", 1_000_000_000, "2020-01-01T00:00:00.000000000", "2020-01-01T00:00:00.123000000"),
-    ],
-)
-def test_polars_datetime_choices_keep_fraction_search_and_portable_raw_keys(
-    lazy: bool, unit: Any, scale: int, whole: str, fraction: str
+@pytest.mark.parametrize("unit,scale", [("ms", 1_000), ("us", 1_000_000), ("ns", 1_000_000_000)])
+def test_polars_datetime_choices_label_like_cells_and_search_either_separator(
+    lazy: bool, unit: Any, scale: int
 ) -> None:
+    whole, fraction = "2020-01-01T00:00:00", "2020-01-01T00:00:00.123000"
     source = pl.DataFrame(
         {
             "value": pl.Series([1577836800 * scale, 1577836800 * scale + 123 * (scale // 1000), None]).cast(
@@ -1195,17 +1183,15 @@ def test_polars_datetime_choices_keep_fraction_search_and_portable_raw_keys(
     try:
         choices, truncated = engine.column_values(frame, "value")
         assert not truncated and [item["value"] for item in choices] == [whole, fraction]
-        assert [item["selectionValue"]["cell"]["raw"] for item in choices] == [
-            "2020-01-01T00:00:00",
-            "2020-01-01T00:00:00.123000",
-        ]
+        assert [item["selectionValue"]["cell"]["raw"] for item in choices] == [whole, fraction]
         for needle, expected in [
-            (".000", [choices[0]]),
-            (".000000", [choices[0]] if unit != "ms" else []),
-            (".123000", [choices[1]] if unit != "ms" else []),
-            (".123000000", [choices[1]] if unit == "ns" else []),
+            (".000", []),
+            ("00:00:00", choices),
+            (".123000", [choices[1]]),
+            (".123000000", []),
             (fraction, [choices[1]]),
             (fraction.replace("T", " "), [choices[1]]),
+            (fraction.replace("T", "t"), [choices[1]]),
         ]:
             assert engine.column_values(frame, "value", search=needle)[0] == expected
     finally:

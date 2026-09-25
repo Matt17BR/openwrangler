@@ -442,6 +442,10 @@ merely because another resource has the same URI, variable name, or display labe
 Profiles, dataset statistics and value choices read the filtered rows in data order, so a viewing sort never changes
 them; a committed Sort Rows step does. Equal top-value counts keep the first occurrence in that order in every engine,
 and unused categories never count as top values. Value choices break equal counts by ascending label.
+Profile and choice labels are the grid's cell text in every engine: datetimes use Python ISO text, single-precision
+floats show their shortest round-trip digits, infinities read `Infinity`, and signed zeros share the label `0.0`.
+Search matches those labels with ASCII case folding and accepts a space for the date-time `T`. Engines spell each
+distinct value once when that is cheaper than spelling rows, grouping before the search in DuckDB and Polars.
 
 Python CSV/TSV readers own whitespace, empty fields and record parsing. Pandas maps only its native `EmptyDataError`
 to an empty dataframe; Polars disables the native empty-input exception. DuckDB validates the file and options in its
@@ -753,8 +757,11 @@ The remainder can still contain a large tail; input conversion, copied source co
 
 Native NumPy int64 profile sums reuse the existing conservative overflow bound before summing without Python-value
 boxing; unproven integer cases retain exact widening. Built-in nullable integer, Boolean and string arrays use native
-missing masks in live and generated operations. StringDtype uses its declared null or NaN sentinel. Custom Series
+missing masks in live and generated operations. Only float columns hold NaN values: StringDtype NaN sentinels,
+missing category codes and NaN in object columns that do not infer as floating are null. Custom Series
 and extension arrays retain scalar classification; nullable and Arrow floats retain separate valid NaN and null values.
+Pandas reads Parquet float nulls into NumPy floats as NaN, so those columns report NaN where Polars and DuckDB
+report null; the missing total is the same.
 Ordinary object Series use exhaustive native inference to recognize strings with
 no missing values, skipping scalar missing counts and numeric-key normalization. Mixed or missing object values and
 Series subclasses retain their existing classification. Generated comparison keys use the same string admission.
@@ -785,11 +792,11 @@ label collection. Native counting and ordinary text search remain exhaustive ove
 are evaluated before publication, so a late formatting failure still refuses the entire request.
 
 Native NumPy `timedelta64` columns, categories with that native dtype, and dictionary strings search the counted labels.
-Matching unused duration categories retain their zero counts; nonmatching categories do not fill search results.
+Unused categories are dropped after the search, so they never fill search results.
 Duration search uses the same scalar labels published in choices, including whole-day clocks and values outside the
 nanosecond range. It retains the full native distinct-count state before searching, without a full-source label array.
 Arrow-backed duration categories also search their counted display labels and native text for observed categories.
-Raw aliases preserve original positive matches; unused categories match only displayed labels. A nonempty search uses
+Raw aliases preserve original positive matches. A nonempty search uses
 a mask across native category counts, then takes and formats only observed category values. Strings and the positional
 lookup grow with observed categories, without expanding strings to every row or bounding them by the requested limit.
 Unsearched choices skip this allocation. Non-text missing entries are not aliases; corrected display labels remain searchable.
@@ -807,8 +814,9 @@ NumPy duration multipliers. Temporal-category null masks use missing codes, so v
 Directional Fill repeats the native categorical anchor rather than assigning a boxed scalar that can change its value.
 
 Datetime cells and nested values share one formatter. Pandas Timestamp nanoseconds are inserted into the time
-fraction while preserving the complete native offset, including offset seconds. Ordinary Timestamp profile and
-value-choice labels reuse this formatter with their existing space separator. Other scalar labels retain native string conversion.
+fraction while preserving the complete native offset, including offset seconds. Profile and value-choice labels
+reuse this formatter. Native datetime columns format the counted values with one vectorized wall-time pass; other
+scalar labels retain native string conversion.
 Other searches retain original per-row text matches and filter before counting, correcting affected timestamp and
 present temporal-extremum text. Datetime searches also recognize a space in place of the ISO `T` separator and the midnight
 clock omitted from native four-digit-year date-only text. These aliases use one transient string at a time without
@@ -1116,8 +1124,8 @@ text; exact ticks and labels are retained only for the limited choices. Profile 
 or extrema aggregation, including the already collected lazy top-ten payload. These transformations add bounded
 resident-frame work without another source scan or conversion through another dataframe engine.
 
-Datetime labels retain the native unit's three, six or nine fractional digits and exact offset seconds. Portable
-selection keys retain Python ISO fractional spelling; this does not replace native timezone offsets with Python's
+Datetime cells and labels use Python ISO text with exact offset seconds: whole seconds omit the fraction, and other
+values show six digits, or nine when nanoseconds remain. This does not replace native timezone offsets with Python's
 timezone data. Duration text uses Polars' signed-unit format, including at the Int64 minimum. Datetime value search
 accepts either `T` or a space between the date and time, and preserves searches for padded fractions such as `.123000`.
 The shared duration raw conversion and typed-cell selection decoder retain the
