@@ -49,9 +49,9 @@ class CountingPandasEngine(PandasEngine):
         self.schema_calls += 1
         return super().schema(frame)
 
-    def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
+    def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
         self.filter_calls += 1
-        return super().apply_filter_model(frame, model)
+        return super().filter_view(frame, model)
 
     def page(
         self,

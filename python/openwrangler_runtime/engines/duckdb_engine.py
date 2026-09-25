@@ -4,7 +4,7 @@ import os
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from glob import escape as escape_glob
@@ -193,6 +193,10 @@ class DuckDBSqlPlan:
     type_names: tuple[str, ...]
     checkpoint: _DuckDBCheckpoint | None = None
     ordinal_sql: str | None = None
+    ordinal: str | None = None
+    unordered_sql: str | None = None
+    # Rows are read in ascending private row-ID order, so the ID is a stable sort tie-break.
+    row_id_order: bool = False
 
     @property
     def columns(self) -> list[str]:
@@ -348,6 +352,7 @@ class DuckDBNotebookPlan:
     sql: str
     column_names: tuple[str, ...]
     type_names: tuple[str, ...]
+    unordered_sql: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -678,7 +683,14 @@ class DuckDBEngine(DataFrameEngine):
                         self._empty_source_frame = frame
                     return frame
                 if extension == ".parquet":
-                    return _snapshot_relation_factory(lambda: connection.read_parquet(_literal_file_path(path)))
+                    frame = _snapshot_relation_factory(lambda: connection.read_parquet(_literal_file_path(path)))
+                    if any(name.casefold() == "file_row_number" for name in frame.column_names):
+                        return frame
+                    # A window row number serializes every later scan of the source.
+                    numbered = _snapshot_relation_factory(
+                        lambda: connection.read_parquet(_literal_file_path(path), file_row_number=True)
+                    )
+                    return replace(frame, ordinal_sql=numbered.sql, ordinal="file_row_number")
                 if extension in {".jsonl", ".ndjson"}:
                     try:
                         return _snapshot_relation_factory(
@@ -700,7 +712,7 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(f"DuckDB could not open {path}: {error}") from error
 
     def shape(self, frame: Any) -> SessionDataShape:
-        row_count = int(self._terminal_scalar(frame, "SELECT system.main.count(*) FROM ow") or 0)
+        row_count = int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 
     def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
@@ -738,16 +750,23 @@ class DuckDBEngine(DataFrameEngine):
             return frame
         row_id = f"{INTERNAL_ROW_ID_PREFIX}{token}"
         if isinstance(frame, DuckDBSqlPlan) and frame.ordinal_sql is not None:
-            assert frame.checkpoint is not None
-            ordinal = _quote_ident(frame.checkpoint.ordinal)
-            return self._relation_from_sql(
-                f"SELECT * EXCLUDE ({ordinal}), {ordinal} AS {_quote_ident(row_id)} "
-                f"FROM ({frame.ordinal_sql}) AS captured",
-                checkpoint=frame.checkpoint,
+            ordinal_name = frame.ordinal
+            if ordinal_name is None:
+                assert frame.checkpoint is not None
+                ordinal_name = frame.checkpoint.ordinal
+            ordinal = _quote_ident(ordinal_name)
+            return replace(
+                self._relation_from_sql(
+                    f"SELECT * EXCLUDE ({ordinal}), {ordinal} AS {_quote_ident(row_id)} "
+                    f"FROM ({frame.ordinal_sql}) AS captured",
+                    checkpoint=frame.checkpoint,
+                ),
+                row_id_order=True,
             )
-        return self._relation(
+        numbered = self._relation(
             frame, f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(row_id)} FROM ow'
         )
+        return replace(numbered, row_id_order=True) if isinstance(numbered, DuckDBSqlPlan) else numbered
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         frame = self.normalize(frame)
@@ -788,8 +807,17 @@ class DuckDBEngine(DataFrameEngine):
             column_type = _semantic_type(type_by_column[column])
             if column_type not in VIEW_COMPARABLE_TYPES:
                 raise EngineError(f"DuckDB view sorting is unavailable for {column_type} columns.")
-        query = _filter_query(self._columns(frame), model)
+        row_id = self._row_id_column(frame) if getattr(frame, "row_id_order", False) else None
+        query = _filter_query(self._columns(frame), model, tiebreak=row_id)
         return self._relation(frame, query)
+
+    def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
+        view = self.apply_filter_model(frame, model)
+        source = self.normalize(frame)
+        available = set(self._columns(source))
+        if _sort_clause(available, model) is None:
+            return view
+        return replace(view, unordered_sql=_compose_sql(source.sql, _filter_query(available, {**model, "sort": []})))
 
     def page(
         self,
@@ -845,9 +873,12 @@ class DuckDBEngine(DataFrameEngine):
                 formatted.append(f"{output} AS {_quote_ident(column)}" if output else _quote_ident(column))
             formatted.extend(f"system.main.cardinality({_quote_ident(column)})" for column in cardinality_positions)
             query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
+        row_count = (
+            int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
+            if total_rows is None
+            else total_rows
+        )
         with self._terminal_connection(frame) as (connection, source_sql):
-            if total_rows is None:
-                total_rows = int(_execute_scalar(connection, source_sql, "SELECT system.main.count(*) FROM ow") or 0)
             records = _execute_rows(
                 connection,
                 source_sql,
@@ -874,7 +905,7 @@ class DuckDBEngine(DataFrameEngine):
         return {
             "offset": offset,
             "limit": limit,
-            "totalRows": int(total_rows),
+            "totalRows": int(row_count),
             "columnIds": column_ids,
             "rows": rows,
         }
@@ -884,7 +915,7 @@ class DuckDBEngine(DataFrameEngine):
         frame: Any,
         column_projection: SummaryColumnProjection | None = None,
     ) -> list[dict[str, Any]]:
-        frame = self.normalize(frame)
+        frame = _unordered_view(self.normalize(frame))
         visible = self._visible_columns(frame)
         projection = normalize_summary_projection(len(visible), column_projection)
         selected = [(visible[position], column_id) for position, column_id in projection]
@@ -1099,11 +1130,13 @@ class DuckDBEngine(DataFrameEngine):
         raw_types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         identifier = _quote_ident(column)
         valid = _valid_predicate(identifier, raw_types[column])
-        result = self._terminal_scalar(frame, f"SELECT system.main.count(*) FILTER (WHERE NOT ({valid})) FROM ow")
+        result = self._terminal_scalar(
+            _unordered_view(frame), f"SELECT system.main.count(*) FILTER (WHERE NOT ({valid})) FROM ow"
+        )
         return int(result or 0)
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
-        frame = self.normalize(frame)
+        frame = _unordered_view(self.normalize(frame))
         visible = self._visible_columns(frame)
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         if not visible:
@@ -1180,7 +1213,7 @@ class DuckDBEngine(DataFrameEngine):
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
-        frame = self.normalize(frame)
+        frame = _unordered_view(self.normalize(frame))
         visible = self._visible_columns(frame)
         if column not in visible:
             raise EngineError(f"Unknown DuckDB column: {column}")
@@ -3994,7 +4027,7 @@ def _bound_duckdb_filter_model(model: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
+def _filter_query(columns: Iterable[str], model: Mapping[str, Any], *, tiebreak: str | None = None) -> str:
     available = set(columns)
     column_conditions: list[str] = []
     for column_filter in model.get("filters", []):
@@ -4032,20 +4065,34 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any]) -> str:
         operator = " OR " if model.get("logic") == "or" else " AND "
         where = " WHERE " + operator.join(column_conditions)
 
-    rules = [rule for rule in model.get("sort", []) if not available or rule.get("column") in available]
-    if not rules:
+    order = _sort_clause(available, model)
+    if order is None:
         return f"SELECT * FROM ow{where}"
+    if tiebreak is not None:
+        return f"SELECT * FROM ow{where} ORDER BY {order}, {_quote_ident(tiebreak)}"
     order_name = _unique_internal(available, "__ow_sort_order")
-    order = ", ".join(
-        f"{_quote_ident(rule['column'])} {str(rule.get('direction', 'asc')).upper()} "
-        f"NULLS {str(rule.get('nulls', 'last')).upper()}"
-        for rule in rules
-    )
     return (
         f"SELECT * EXCLUDE ({_quote_ident(order_name)}) FROM "
         f"(SELECT *, row_number() OVER () AS {_quote_ident(order_name)} FROM ow{where}) AS sorted "
         f"ORDER BY {order}, {_quote_ident(order_name)}"
     )
+
+
+def _sort_clause(available: set[str], model: Mapping[str, Any]) -> str | None:
+    rules = [rule for rule in model.get("sort", []) if not available or rule.get("column") in available]
+    if not rules:
+        return None
+    return ", ".join(
+        f"{_quote_ident(rule['column'])} {str(rule.get('direction', 'asc')).upper()} "
+        f"NULLS {str(rule.get('nulls', 'last')).upper()}"
+        for rule in rules
+    )
+
+
+def _unordered_view(frame: Any) -> Any:
+    """Order-independent reads skip a sorted view's full sort."""
+    unordered_sql = getattr(frame, "unordered_sql", None)
+    return frame if unordered_sql is None else replace(frame, sql=unordered_sql, unordered_sql=None)
 
 
 def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_type: str | None) -> str:

@@ -8087,6 +8087,35 @@ openwrangler_r_kernel_agent <- local({
       require_package = openwrangler_r_frame_contract$require_package) {
     require_arrow()
     require_nanoparquet()
+    naive_time_from_ticks <- function(ticks, unit, refuse) {
+      per_second <- c(ms = 1000, us = 1000000, ns = 1000000000)[[unit]]
+      floor_divide <- function(values, divisor) {
+        divisor <- arrow::Scalar$create(divisor, arrow::int64())
+        quotient <- arrow::call_function("divide", values, divisor)
+        remainder <- arrow::call_function("subtract", values, arrow::call_function("multiply", quotient, divisor))
+        negative <- arrow::call_function("less", remainder, arrow::Scalar$create(0L, arrow::int64()))
+        base::list(
+          quotient = arrow::call_function("if_else", negative,
+            arrow::call_function("subtract", quotient, arrow::Scalar$create(1L, arrow::int64())), quotient),
+          remainder = arrow::call_function("if_else", negative, arrow::call_function("add", remainder, divisor), remainder)
+        )
+      }
+      days <- floor_divide(ticks, 86400 * per_second)
+      seconds <- floor_divide(days$remainder, per_second)
+      day_values <- days$quotient$cast(arrow::float64(), safe = FALSE)$as_vector()
+      calendar <- base::as.integer(clock::as_duration(clock::as_naive_time(
+        clock::year_month_day(c(0L, 9999L), c(1L, 12L), c(1L, 31L))
+      )))
+      if (base::any(day_values < calendar[[1L]] | day_values > calendar[[2L]], na.rm = TRUE)) {
+        refuse("timestamps exceed the supported native calendar range")
+      }
+      whole <- function(array) array$cast(arrow::int32())$as_vector()
+      subsecond <- whole(seconds$remainder)
+      subsecond <- base::switch(unit, ms = clock::duration_milliseconds(subsecond),
+        us = clock::duration_microseconds(subsecond), ns = clock::duration_nanoseconds(subsecond))
+      clock::as_naive_time(clock::duration_days(base::as.integer(day_values))) +
+        clock::duration_seconds(whole(seconds$quotient)) + subsecond
+    }
     metadata <- nanoparquet::read_parquet_metadata(path)
     schema <- metadata$schema
     if (base::nrow(schema) < 1L || base::is.na(schema$num_children[[1L]]) ||
@@ -8180,13 +8209,8 @@ openwrangler_r_kernel_agent <- local({
           base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
         } else {
           require_clock()
-          precision <- c(ms = "millisecond", us = "microsecond", ns = "nanosecond")[[unit]]
-          text <- column$cast(arrow::timestamp(unit))$cast(arrow::utf8())$as_vector()
-          parsed <- base::withCallingHandlers(
-            clock::naive_time_parse(text, format = "%Y-%m-%d %H:%M:%S", precision = precision),
-            warning = function(warning) refuse("timestamps exceed the supported native calendar range"))
-          if (!base::identical(base::is.na(parsed), nulls) ||
-              !base::identical(base::format(clock::as_duration(parsed)), ticks$cast(arrow::utf8())$as_vector())) {
+          parsed <- naive_time_from_ticks(ticks, unit, refuse)
+          if (!base::identical(base::is.na(parsed), nulls)) {
             refuse("timestamps cannot be represented exactly by the native clock type")
           }
           if (adjusted) clock::as_sys_time(parsed) else parsed
@@ -8220,7 +8244,11 @@ openwrangler_r_kernel_agent <- local({
         native <- column$as_vector()
         if (!base::is.factor(native)) refuse("dictionary values are not a supported native factor")
         native
-      } else if (kind %in% c("bool", "float", "double", "string")) {
+      } else if (base::identical(kind, "string")) {
+        # Arrow's lazy character vectors rebuild every string on each full scan.
+        altrep <- base::options(arrow.use_altrep = FALSE)
+        base::tryCatch(column$as_vector(), finally = base::options(altrep))
+      } else if (kind %in% c("bool", "float", "double")) {
         column$as_vector()
       } else {
         refuse("only supported flat scalar columns can be opened in native R")

@@ -12,9 +12,14 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
 - R compound filters combine row masks incrementally instead of retaining every condition's mask.
+- Large Pandas files page, filter and sort without copying the whole filtered result. Text filters, text sorts and value search evaluate each distinct value once.
+- DuckDB Parquet profiles, statistics and sorted pages no longer wait on a serialized row numbering scan; sorted views profile the unsorted rows.
+- R Parquet files open about twice as fast, and later text filters, sorts and profiles no longer rebuild every string.
+- R text filters and profiles evaluate each distinct value once.
 
 ### Fixed
 
+- Pandas profiles no longer fail on sparse numeric columns.
 - R refuses a Parquet import when file replacement changes a timestamp's timezone meaning between the metadata and data reads.
 - Opening a local R file column's unfiltered value picker preserves the grid's cached filter and sort order.
 - Generated R Filter Rows and Conditional Column agree with live integer64 comparisons at the minimum signed 64-bit bound.

@@ -497,6 +497,85 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     return result
 
 
+def _pandas_contiguous_text(frame: Any) -> Any:
+    import pandas as pd
+    import pyarrow as pa
+
+    result = frame
+    for position in range(frame.shape[1]):
+        dtype = frame.dtypes.iloc[position]
+        if isinstance(dtype, pd.StringDtype):
+            if dtype.storage not in {"pyarrow", "pyarrow_numpy"}:
+                continue
+        elif not (
+            isinstance(dtype, pd.ArrowDtype)
+            and (pa.types.is_string(dtype.pyarrow_dtype) or pa.types.is_large_string(dtype.pyarrow_dtype))
+        ):
+            continue
+        array = frame.iloc[:, position].array.__arrow_array__()
+        if array.num_chunks <= 1:
+            continue
+        # Arrow concatenates every chunk of a text column before each row take.
+        if result is frame:
+            result = frame.copy(deep=False)
+        result.isetitem(position, pd.array(pa.chunked_array([array.combine_chunks()], type=array.type), dtype=dtype))
+    return result
+
+
+class _PandasRowView:
+    """Selected rows of a source frame; reads take only the rows and columns they need."""
+
+    __slots__ = ("source", "positions", "positional", "_frame", "_index", "_window_source")
+
+    def __init__(self, source: Any, positions: Any, positional: bool) -> None:
+        self.source = _pandas_prepare_dictionary_rows(source)
+        self.positions = positions
+        self.positional = positional
+        self._frame = None
+        self._index = None
+        self._window_source = None
+
+    def frame(self) -> Any:
+        if self._frame is None:
+            frame = _pandas_take_rows(self.source, self.positions)
+            self._frame = frame.reset_index(drop=True) if self.positional else frame
+        return self._frame
+
+    def index(self) -> Any:
+        import pandas as pd
+
+        if self._frame is not None:
+            return self._frame.index
+        if self._index is None:
+            self._index = (
+                pd.RangeIndex(len(self.positions)) if self.positional else self.source.index.take(self.positions)
+            )
+        return self._index
+
+    def rows(self, start: int, stop: int, columns: list[int]) -> Any:
+        if self._frame is not None:
+            return self._frame.iloc[start:stop, columns]
+        if self._window_source is None:
+            self._window_source = _pandas_contiguous_text(self.source)
+        return _pandas_take_rows(self._window_source.iloc[:, columns], self.positions[start:stop])
+
+    def unordered(self) -> Any:
+        """Selected rows in source order, for aggregates that ignore row order and labels."""
+        import numpy as np
+
+        if self._frame is not None:
+            return self._frame
+        if len(self.positions) == len(self.source):
+            return self.source
+        return _pandas_take_rows(self.source, np.sort(self.positions))
+
+    def column(self, position: int) -> Any:
+        if self._frame is not None:
+            return self._frame.iloc[:, position]
+        series = _pandas_take_rows(self.source.iloc[:, [position]], self.positions).iloc[:, 0]
+        return series.reset_index(drop=True) if self.positional else series
+
+
 def _pandas_row_key(series: Any) -> Any:
     import numpy as np
     import pandas as pd
@@ -761,6 +840,72 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
     return key.sort_values(ascending=ascending, na_position=nulls, kind="stable").index.to_numpy()
 
 
+def _pandas_text_sort_ranks(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any | None:
+    """Rank Arrow text rows so a stable integer argsort matches the Arrow string sort."""
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    key = _pandas_row_key(series)
+    dtype = key.dtype
+    if isinstance(dtype, pd.StringDtype):
+        if dtype.storage not in {"pyarrow", "pyarrow_numpy"}:
+            return None
+    elif not (
+        isinstance(dtype, pd.ArrowDtype)
+        and (pa.types.is_string(dtype.pyarrow_dtype) or pa.types.is_large_string(dtype.pyarrow_dtype))
+    ):
+        return None
+    array = key.array.__arrow_array__()
+    encoded = (array.chunk(0) if array.num_chunks == 1 else array.combine_chunks()).dictionary_encode()
+    count = len(encoded.dictionary)
+    order = pc.call_function(
+        "array_sort_indices",
+        [encoded.dictionary],
+        pc.ArraySortOptions(order="ascending" if ascending else "descending"),
+    )
+    # NumPy's stable argsort is a radix sort for keys of at most 16 bits.
+    rank_type = np.min_scalar_type(count)
+    ranks = np.empty(count + 1, dtype=rank_type)
+    shift = 1 if nulls == "first" else 0
+    ranks[order.to_numpy()] = np.arange(shift, count + shift, dtype=rank_type)
+    ranks[count] = 0 if nulls == "first" else count
+    return ranks[pc.fill_null(encoded.indices, count).to_numpy()]
+
+
+def _pandas_text_condition(series: Any, method: str, value: str) -> Any:
+    if method == "contains":
+        folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
+        return folded.str.contains(value.translate(_ASCII_TO_LOWER), na=False, regex=False)
+    return getattr(series.astype(str).str, method)(value, na=False)
+
+
+def _pandas_distinct_text_condition(series: Any, method: str, value: str) -> Any:
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    dtype = series.dtype
+    if isinstance(dtype, pd.StringDtype):
+        arrow_text = dtype.storage in {"pyarrow", "pyarrow_numpy"}
+    else:
+        arrow_text = isinstance(dtype, pd.ArrowDtype) and (
+            pa.types.is_string(dtype.pyarrow_dtype) or pa.types.is_large_string(dtype.pyarrow_dtype)
+        )
+    if not arrow_text:
+        return _pandas_text_condition(series, method, value)
+    array = series.array.__arrow_array__()
+    encoded = (array.chunk(0) if array.num_chunks == 1 else array.combine_chunks()).dictionary_encode()
+    count = len(encoded.dictionary)
+    # Evaluate each distinct value once, plus one null so missing rows keep the row-wise result.
+    candidates = pd.Series(
+        pd.array(pa.concat_arrays([encoded.dictionary, pa.nulls(1, encoded.dictionary.type)]), dtype=dtype)
+    )
+    matched = _pandas_text_condition(candidates, method, value).to_numpy(dtype=bool)
+    return pd.Series(matched[pc.fill_null(encoded.indices, count).to_numpy()], index=series.index)
+
+
 def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition, duration_keys: Any = None) -> Any:
     import pandas as pd
 
@@ -791,11 +936,8 @@ def _pandas_live_filter_condition(series: Any, condition: _PandasFilterCondition
         result = _null_mask(series)
     elif method == "nan":
         result = _nan_mask(series)
-    elif method == "contains":
-        folded = series.astype(str).str.translate(_ASCII_TO_LOWER)
-        result = folded.str.contains(str(values[0]).translate(_ASCII_TO_LOWER), na=False, regex=False)
-    elif method in {"startswith", "endswith"}:
-        result = getattr(series.astype(str).str, method)(str(values[0]), na=False)
+    elif method in {"contains", "startswith", "endswith"}:
+        result = _pandas_distinct_text_condition(series, method, str(values[0]))
     elif condition.column_type == "integer":
         result = _pandas_integer_filter(series, method, values)
     else:
@@ -889,6 +1031,9 @@ class PandasEngine(DataFrameEngine):
         return isinstance(value, (pd.DataFrame, pd.Series))
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
+        return _pandas_contiguous_text(self._read_file_frame(path, options))
+
+    def _read_file_frame(self, path: str, options: Mapping[str, Any] | None) -> Any:
         import pandas as pd
 
         options = options or {}
@@ -929,6 +1074,8 @@ class PandasEngine(DataFrameEngine):
     def normalize(self, value: Any) -> Any:
         import pandas as pd
 
+        if isinstance(value, _PandasRowView):
+            return value.frame()
         if isinstance(value, pd.Series):
             return value.to_frame()
         return value
@@ -981,15 +1128,14 @@ class PandasEngine(DataFrameEngine):
     def row_axis(self, frame: Any) -> RowAxis:
         import pandas as pd
 
-        df = self.normalize(frame)
-        index = df.index
+        index = frame.index() if isinstance(frame, _PandasRowView) else self.normalize(frame).index
         if index.nlevels > _MAX_ROW_AXIS_LEVELS:
             raise EngineError(f"Pandas row indexes may contain at most {_MAX_ROW_AXIS_LEVELS} levels.")
         if (
             isinstance(index, pd.RangeIndex)
             and index.name is None
             and index.start == 0
-            and index.stop == len(df)
+            and index.stop == len(index)
             and index.step == 1
         ):
             return {"kind": "positional", "levelNames": []}
@@ -999,6 +1145,8 @@ class PandasEngine(DataFrameEngine):
         }
 
     def shape(self, frame: Any) -> SessionDataShape:
+        if isinstance(frame, _PandasRowView):
+            return {"rows": len(frame.positions), "columns": len(self._visible_positions(frame.source))}
         df = self.normalize(frame)
         return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
 
@@ -1028,6 +1176,9 @@ class PandasEngine(DataFrameEngine):
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
+        return self.normalize(self.filter_view(frame, model))
+
+    def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
         import numpy as np
 
         df = self.normalize(frame)
@@ -1068,17 +1219,20 @@ class PandasEngine(DataFrameEngine):
                     column_type = _pandas_semantic_type(df.iloc[:, position])
                     if column_type not in VIEW_COMPARABLE_TYPES:
                         raise EngineError(f"Pandas view sorting is unavailable for {column_type} columns.")
-                    series = (
-                        df.iloc[:, position]
-                        if positions is None
-                        else _pandas_take_rows(df.iloc[:, [position]], positions).iloc[:, 0]
-                    )
-                    order = _pandas_sort_order(series, rule.get("direction", "asc") == "asc", rule.get("nulls", "last"))
+                    ascending = rule.get("direction", "asc") == "asc"
+                    nulls = rule.get("nulls", "last")
+                    ranks = _pandas_text_sort_ranks(df.iloc[:, position], ascending, nulls)
+                    if ranks is not None:
+                        order = np.argsort(ranks if positions is None else ranks[positions], kind="stable")
+                    else:
+                        series = (
+                            df.iloc[:, position]
+                            if positions is None
+                            else _pandas_take_rows(df.iloc[:, [position]], positions).iloc[:, 0]
+                        )
+                        order = _pandas_sort_order(series, ascending, nulls)
                     positions = order if positions is None else positions[order]
-        filtered = df if positions is None else _pandas_take_rows(df, positions)
-        if positional_row_axis and filtered is not df:
-            filtered = filtered.reset_index(drop=True)
-        return filtered
+        return df if positions is None else _PandasRowView(df, positions, positional_row_axis)
 
     def page(
         self,
@@ -1091,14 +1245,19 @@ class PandasEngine(DataFrameEngine):
     ) -> dict[str, Any]:
         import pandas as pd
 
-        df = self.normalize(frame)
+        view = frame if isinstance(frame, _PandasRowView) else None
+        df = view.source if view is not None else self.normalize(frame)
         visible_positions = self._visible_positions(df)
         projection = normalize_page_projection(len(visible_positions), column_projection)
         positions = [visible_positions[position] for position, _identifier in projection]
         column_ids = [identifier for _position, identifier in projection]
         row_id_position = self._row_id_position(df)
         selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
-        sliced = df.iloc[offset : offset + limit, selected_positions]
+        sliced = (
+            df.iloc[offset : offset + limit, selected_positions]
+            if view is None
+            else view.rows(offset, offset + limit, selected_positions)
+        )
         value_offset = 1 if row_id_position is not None else 0
         prepared = sliced
         for position in range(value_offset, sliced.shape[1]):
@@ -1127,7 +1286,7 @@ class PandasEngine(DataFrameEngine):
             ),
             strict=True,
         )
-        row_axis = self.row_axis(df)
+        row_axis = self.row_axis(frame if view is not None else df)
         one_level_multi_index = isinstance(df.index, pd.MultiIndex) and df.index.nlevels == 1
         row_labels = _pandas_row_axis_values(sliced.index)
         for row_number, (row_label, row) in enumerate(
@@ -1164,7 +1323,9 @@ class PandasEngine(DataFrameEngine):
         return {
             "offset": offset,
             "limit": limit,
-            "totalRows": int(df.shape[0]) if total_rows is None else int(total_rows),
+            "totalRows": (int(df.shape[0]) if view is None else len(view.positions))
+            if total_rows is None
+            else int(total_rows),
             "columnIds": column_ids,
             "rows": rows,
         }
@@ -1174,14 +1335,17 @@ class PandasEngine(DataFrameEngine):
         frame: Any,
         column_projection: SummaryColumnProjection | None = None,
     ) -> list[dict[str, Any]]:
-        df = self.normalize(frame)
+        import pandas as pd
+
+        view = frame if isinstance(frame, _PandasRowView) else None
+        df = view.source if view is not None else self.normalize(frame)
         visible_positions = self._visible_positions(df)
         projection = normalize_summary_projection(len(visible_positions), column_projection)
         summaries = []
         for visible_position, column_id in projection:
             frame_position = visible_positions[visible_position]
             column = df.columns[frame_position]
-            series = df.iloc[:, frame_position]
+            series = df.iloc[:, frame_position] if view is None else view.column(frame_position)
             raw_type = str(series.dtype)
             semantic_type = _pandas_semantic_type(series)
             series = _pandas_scalar_values(series)
@@ -1221,6 +1385,8 @@ class PandasEngine(DataFrameEngine):
             }
             if semantic_type in {"integer", "float", "decimal"}:
                 numeric = series.dropna()
+                if isinstance(numeric.dtype, pd.SparseDtype):
+                    numeric = numeric.sparse.to_dense()
                 minimum = numeric.min()
                 maximum = numeric.max()
                 statistics = _pandas_decimal_profile_statistics(numeric) if semantic_type == "decimal" else None
@@ -1286,7 +1452,8 @@ class PandasEngine(DataFrameEngine):
         return summaries
 
     def missing_count(self, frame: Any, column_position: int) -> int:
-        df = self.normalize(frame)
+        view = frame if isinstance(frame, _PandasRowView) else None
+        df = view.source if view is not None else self.normalize(frame)
         visible_positions = self._visible_positions(df)
         if (
             not isinstance(column_position, int)
@@ -1295,7 +1462,8 @@ class PandasEngine(DataFrameEngine):
             or column_position >= len(visible_positions)
         ):
             raise EngineError("The selected column is unavailable for missing-value counting.")
-        series = df.iloc[:, visible_positions[column_position]]
+        position = visible_positions[column_position]
+        series = df.iloc[:, position] if view is None else view.column(position)
         null_count, nan_count = _missing_value_counts(series)
         return null_count + nan_count
 
@@ -1303,7 +1471,7 @@ class PandasEngine(DataFrameEngine):
         import numpy as np
         import pandas as pd
 
-        df = self._visible_frame(self.normalize(frame))
+        df = self._visible_frame(frame.unordered() if isinstance(frame, _PandasRowView) else self.normalize(frame))
         native_frame = type(df) is pd.DataFrame
         logical = df
         for position in range(df.shape[1]):
@@ -1379,11 +1547,12 @@ class PandasEngine(DataFrameEngine):
         import numpy as np
         import pandas as pd
 
-        df = self.normalize(frame)
+        view = frame if isinstance(frame, _PandasRowView) else None
+        df = view.source if view is not None else self.normalize(frame)
         position = self._resolve_visible_position(df, column, "values")
         if position is None:
             raise EngineError(f"Unknown Pandas column: {column}")
-        series = df.iloc[:, position]
+        series = df.iloc[:, position] if view is None else view.column(position)
         column_type = _pandas_semantic_type(series)
         sparse_duration = isinstance(series.dtype, pd.SparseDtype) and series.dtype.subtype.kind == "m"
         arrow_duration_categories = (
@@ -1425,9 +1594,8 @@ class PandasEngine(DataFrameEngine):
                         label = _pandas_temporal_text(value, scalar)
                         if label != str(value):
                             labels.iloc[position] = label
-            folded = labels.str.translate(_ASCII_TO_LOWER)
             needle = str(search).translate(_ASCII_TO_LOWER)
-            matches = folded.str.contains(needle, na=False, regex=False)
+            matches = _pandas_distinct_text_condition(labels, "contains", str(search))
             # These aliases can add only a space-containing match or part of the midnight clock.
             if column_type == "datetime" and (" " in needle or needle in "00:00:00"):
                 from re import fullmatch

@@ -2438,15 +2438,16 @@ openwrangler_r_frame_contract <- local({
     result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
-      values <- keys
+      values <- unique(keys)
       target <- predicate$valueKey
-      result[present_indices] <- if (identical(operator, "contains")) {
+      matched <- if (identical(operator, "contains")) {
         grepl(ascii_fold(target), ascii_fold(values), fixed = TRUE)
       } else if (identical(operator, "startsWith")) {
         startsWith(values, target)
       } else {
         endsWith(values, target)
       }
+      result[present_indices] <- matched[match(keys, values)]
       return(result)
     }
     compare <- function(target, comparison_operator) {
@@ -2607,6 +2608,13 @@ openwrangler_r_frame_contract <- local({
   }
 
   profile_text_values <- function(values, indices, label = "profile value") {
+    if (length(values) > 1L) {
+      distinct <- unique(values)
+      if (length(distinct) * 2L <= length(values)) {
+        # Conversion depends only on each string. First occurrences keep the earliest invalid position.
+        return(profile_text_values(distinct, indices[match(distinct, values)], label)[match(values, distinct)])
+      }
+    }
     single_chunk <- length(values) <= maximum_profile_chunk_rows
     normalized <- if (single_chunk) character() else character(length(values))
     start <- 1
@@ -3270,7 +3278,7 @@ openwrangler_r_frame_contract <- local({
     state$text_min_length <- Inf
     state$text_max_length <- -Inf
     state$text_total_length <- 0
-    state$text_counts <- if (state$kind %in% c("character", "factor")) new.env(hash = TRUE, parent = emptyenv()) else NULL
+    state$text_counts <- if (state$kind %in% c("character", "factor")) numeric() else NULL
     state$text_keys <- character()
     state$text_first_sources <- integer()
     state$text_key_bytes <- 0
@@ -3363,13 +3371,17 @@ openwrangler_r_frame_contract <- local({
             state$true_count <- state$true_count + chunk_true
             state$false_count <- state$false_count + chunk_false
           } else if (state$kind %in% c("character", "factor")) {
-            text_values <- profile_text_values(if (state$kind == "factor") as.character(present) else present, visible_positions)
+            source_text <- if (state$kind == "factor") as.character(present) else present
+            first_rows <- which(!duplicated(source_text))
+            row_counts <- tabulate(match(source_text, source_text[first_rows]), nbins = length(first_rows))
+            text_values <- profile_text_values(source_text[first_rows], visible_positions[first_rows])
             lengths <- nchar(text_values, type = "chars", allowNA = FALSE, keepNA = FALSE)
-            state$text_empty_count <- state$text_empty_count + sum(lengths == 0L)
+            state$text_empty_count <- state$text_empty_count + sum(row_counts[lengths == 0L])
             state$text_min_length <- min(state$text_min_length, min(lengths))
             state$text_max_length <- max(state$text_max_length, max(lengths))
-            state$text_total_length <- state$text_total_length + sum(as.double(lengths))
+            state$text_total_length <- state$text_total_length + sum(as.double(lengths) * row_counts)
             if (!is.null(state$text_counts)) {
+              # Different encodings of one string convert to the same key.
               first <- !duplicated(text_values)
               keys <- text_values[first]
               if (length(keys) > maximum_column_value_distinct_matches) {
@@ -3377,35 +3389,26 @@ openwrangler_r_frame_contract <- local({
                 state$text_keys <- character()
                 state$text_first_sources <- integer()
               } else {
-                sources <- present_sources[first]
-                counts <- tabulate(match(text_values, keys), nbins = length(keys))
-                new_keys <- character(length(keys))
-                new_sources <- integer(length(keys))
-                new_count <- 0L
-                for (index in seq_along(keys)) {
-                  key <- keys[[index]]
-                  environment_key <- paste0(":", key)
-                  if (exists(environment_key, envir = state$text_counts, inherits = FALSE)) {
-                    assign(environment_key, get(environment_key, state$text_counts, inherits = FALSE) + counts[[index]], state$text_counts)
-                  } else {
-                    next_bytes <- state$text_key_bytes + as.double(nchar(key, type = "bytes"))
-                    if (length(state$text_keys) + new_count >= maximum_column_value_distinct_matches ||
-                        next_bytes > maximum_column_value_distinct_key_bytes) {
-                      state$text_counts <- NULL
-                      state$text_keys <- character()
-                      state$text_first_sources <- integer()
-                      break
-                    }
-                    assign(environment_key, as.double(counts[[index]]), state$text_counts)
-                    state$text_key_bytes <- next_bytes
-                    new_count <- new_count + 1L
-                    new_keys[[new_count]] <- key
-                    new_sources[[new_count]] <- sources[[index]]
-                  }
+                sources <- present_sources[first_rows[first]]
+                counts <- if (all(first)) {
+                  as.double(row_counts)
+                } else {
+                  as.double(rowsum(as.double(row_counts), match(text_values, keys), reorder = TRUE))
                 }
-                if (!is.null(state$text_counts) && new_count != 0L) {
-                  state$text_keys <- c(state$text_keys, new_keys[seq_len(new_count)])
-                  state$text_first_sources <- c(state$text_first_sources, new_sources[seq_len(new_count)])
+                existing <- match(keys, state$text_keys)
+                known <- !is.na(existing)
+                next_bytes <- state$text_key_bytes + sum(as.double(nchar(keys[!known], type = "bytes")))
+                if (length(state$text_keys) + sum(!known) > maximum_column_value_distinct_matches ||
+                    next_bytes > maximum_column_value_distinct_key_bytes) {
+                  state$text_counts <- NULL
+                  state$text_keys <- character()
+                  state$text_first_sources <- integer()
+                } else {
+                  state$text_counts[existing[known]] <- state$text_counts[existing[known]] + counts[known]
+                  state$text_counts <- c(state$text_counts, counts[!known])
+                  state$text_keys <- c(state$text_keys, keys[!known])
+                  state$text_first_sources <- c(state$text_first_sources, sources[!known])
+                  state$text_key_bytes <- next_bytes
                 }
               }
             }
@@ -3574,8 +3577,7 @@ openwrangler_r_frame_contract <- local({
       )
     } else if (state$exact_text_counts) {
       counts <- profile_count_summary(
-        state$column, state$semantics, state$text_first_sources,
-        vapply(paste0(":", state$text_keys), get, numeric(1L), envir = state$text_counts, inherits = FALSE, USE.NAMES = FALSE),
+        state$column, state$semantics, state$text_first_sources, state$text_counts,
         state$budget, state$label
       )
     } else if (state$large_population && !state$kind %in% c("character", "factor")) {

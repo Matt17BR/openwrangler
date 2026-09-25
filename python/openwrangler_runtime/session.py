@@ -827,7 +827,7 @@ class SessionManager:
                     session.filter_model, diff_base_schema, session.committed_schema
                 )
                 diff_base_view = (
-                    session.engine.apply_filter_model(diff_base, reconciled_before_filter)
+                    session.engine.filter_view(diff_base, reconciled_before_filter)
                     if reconciled_before_filter["filters"] or reconciled_before_filter["sort"]
                     else diff_base
                 )
@@ -858,7 +858,7 @@ class SessionManager:
             )
             if reconciled_filter_model != session.filter_model:
                 if reconciled_filter_model["filters"] or reconciled_filter_model["sort"]:
-                    diff_base_view = session.engine.apply_filter_model(diff_base, reconciled_filter_model)
+                    diff_base_view = session.engine.filter_view(diff_base, reconciled_filter_model)
                     diff_base_view_shape = (
                         session.engine.shape(diff_base_view) if reconciled_filter_model["filters"] else diff_base_shape
                     )
@@ -1508,7 +1508,7 @@ class SessionManager:
             return session.filtered
         if not model.get("filters") and not model.get("sort"):
             return session.display_frame
-        return session.engine.apply_filter_model(session.display_frame, model)
+        return session.engine.filter_view(session.display_frame, model)
 
     def _refresh_filtered(
         self,
@@ -1524,7 +1524,7 @@ class SessionManager:
             filtered = session.display_frame
             filtered_shape = session.display_shape
         else:
-            filtered = session.engine.apply_filter_model(session.display_frame, model)
+            filtered = session.engine.filter_view(session.display_frame, model)
             if not has_filters:
                 filtered_shape = session.display_shape
             elif known_shape is not None:

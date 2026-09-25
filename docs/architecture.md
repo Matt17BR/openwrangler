@@ -735,7 +735,10 @@ including empty or all-missing columns. Omitting the option retains the engine's
 ### Pandas
 
 Pandas executes viewing, its supported cleaning operations, profiling, generated code and exports in Pandas.
-Viewing filters and sorts compose row positions, selecting the full result once after ordering the native sort columns.
+Viewing filters and sorts compose row positions into a row view. Pages take only their rows and columns, statistics
+that ignore row order read the selected rows in source order, and other reads materialize the view once. Arrow text
+columns are combined into one chunk when a file opens. Text predicates evaluate each distinct value once, and text
+sorts rank the dictionary instead of comparing every row.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
@@ -1255,6 +1258,11 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
+Parquet sources take their private row identity from DuckDB's `file_row_number`, unless the file already has a column
+of that name. A window row number would serialize every later scan. When row IDs follow source order, viewing sorts
+break ties by row ID; other sorts keep a window tie-break. Counts, profiles, statistics and value choices read the
+filtered relation without its sort.
+
 File Custom Code is an explicit capture boundary. Its result must belong to the supplied `df` connection, have
 addressable visible columns and use no reserved row-identity names. It is evaluated once, with a stored row ordinal,
 into native storage. The private Custom context is rolled back without committing outstanding side effects, then
@@ -1605,13 +1613,14 @@ use `clock` 0.7.4 or newer: unadjusted values remain `clock_naive_time`, and adj
 Arrow's decoded timezone presence must agree with the footer's UTC-adjusted flag; disagreements are refused in both
 live and generated loading. This checks timestamp interpretation across the two reads, without making file loading
 atomic against concurrent writes.
-The reader converts Arrow timestamp text directly to clock storage and verifies exact original ticks and nulls.
-It never first converts these values through POSIXct doubles or integer64 missing sentinels. Nanosecond timestamps
+The reader splits Arrow's exact integer ticks into days, seconds and sub-second remainders for clock storage and
+verifies nulls. It never first converts these values through POSIXct doubles or integer64 missing sentinels. Nanosecond timestamps
 retain the full signed 64-bit range, including a present minimum value. Named timezone metadata is not restored;
 adjusted values display in UTC. Clock millisecond/microsecond values must be within ISO calendar years 0000 to 9999,
 matching the display and filter parser; direct notebook columns use the same bound. Reader-preserved durations retain
 the below-2^51 tick bound and a consistent
 seconds/milliseconds/microseconds/nanoseconds scale, checked against Arrow arrays without a second data read.
+Text columns become ordinary character vectors once, because Arrow's lazy strings rebuild every value on each scan.
 
 JSONL/NDJSON input uses `jsonlite` and admits flat object records with one scalar type per column. Missing keys and
 JSON null become missing values; field order follows first occurrence. Blank lines are skipped. Numeric token text
