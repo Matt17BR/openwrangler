@@ -1,4 +1,3 @@
-import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";

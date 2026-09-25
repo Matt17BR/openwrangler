@@ -79,7 +79,7 @@ export default defineConfig(({ mode }) => {
             name: "dom",
             environment: "jsdom",
             include: domTests,
-            setupFiles: ["src/test/popoverTestSetup.ts"]
+            setupFiles: ["src/test/domMatchersSetup.ts", "src/test/popoverTestSetup.ts"]
           }
         }
       ]
