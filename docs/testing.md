@@ -894,12 +894,11 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 
 1. Audits the published Node and Python dependencies.
 2. Runs pinned VS Code installed-performance against the canonical triple.
-3. Reverifies the triple and runs pinned Cursor `platform-smoke` against the same VSIX.
-4. Reverifies and uploads only the canonical triple for stable promotion.
+3. Runs pinned Cursor `platform-smoke` against the same VSIX.
+4. Uploads only the canonical triple for stable promotion.
 
 A dependent three-platform R matrix downloads that same-run triple, verifies it against the exact checkout, builds
-only the test harness and runs default `r-jupyter` in desktop VS Code once per platform. It reverifies the triple after
-acceptance. The default profiles retain their existing editing, native-frame, export/insertion and restart checks;
+only the test harness and runs default `r-jupyter` in desktop VS Code once per platform. The default profiles retain their existing editing, native-frame, export/insertion and restart checks;
 Windows also opens the three ordinary collapse fixtures. No focused selector replaces the default, and macOS retains
 its coupled direct-document check. Private R packages and editor setup stay with the existing runner. The matrix adds
 no source suite, Java, Spark or development dataframe environment.

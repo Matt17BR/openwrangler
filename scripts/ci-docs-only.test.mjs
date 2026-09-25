@@ -1842,13 +1842,9 @@ test("released Jupyter investigation targets preserve installed R calls and actu
     [
       "r-lib/actions/setup-r",
       "rscript",
-      "canonical_r_jupyter",
       "packaged_editor_r",
-      "canonical_r_values",
       "packaged_editor_r_values",
-      "canonical_r_categorical",
       "packaged_editor_r_categorical",
-      "canonical_r_interactive",
       "packaged_editor_r_interactive"
     ]
   );
