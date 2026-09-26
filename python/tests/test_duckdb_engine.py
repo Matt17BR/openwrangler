@@ -159,6 +159,69 @@ def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
     assert database_file.read_bytes() == before
 
 
+def test_duckdb_database_view_is_evaluated_once_per_session(
+    database_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_conversion_guards(monkeypatch)
+    with duckdb.connect(str(database_file)) as writer:
+        writer.execute("CREATE VIEW sampled AS SELECT id, random() AS sampled FROM range(1, 6) t(id)")
+        writer.execute(
+            "CREATE VIEW countdown AS WITH RECURSIVE r(n) AS "
+            "(SELECT 3 UNION ALL SELECT n - 1 FROM r WHERE n > 1) SELECT n FROM r"
+        )
+        writer.execute("CREATE TABLE dropped(x INTEGER)")
+        writer.execute("CREATE VIEW broken AS SELECT * FROM dropped")
+        writer.execute("DROP TABLE dropped")
+        writer.execute("CHECKPOINT")
+    before = database_file.read_bytes()
+    listed = {(entry["name"], entry["kind"]) for entry in list_duckdb_tables(database_file)}
+    assert {("sampled", "view"), ("countdown", "view"), ("broken", "view"), ("generated_values", "table")} <= listed
+    source = {
+        "kind": "file",
+        "path": str(database_file),
+        "label": database_file.name,
+        "importOptions": {"duckdbSchema": "main", "duckdbTable": "sampled"},
+    }
+
+    def displays(page: dict[str, Any]) -> list[list[str]]:
+        return [[cell["display"] for cell in row["values"]] for row in page["rows"]]
+
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    failed = DuckDBEngine()
+    try:
+        opened = manager.open_session(source, backend="duckdb", mode="editing", page_size=10)
+        session_id = opened["metadata"]["sessionId"]
+        assert opened["metadata"]["mode"] == "viewing" and opened["metadata"]["capabilities"]["editable"] is False
+        session = manager.sessions[session_id]
+        native = session.engine
+        assert isinstance(native, DuckDBEngine)
+        model = {"logic": "and", "filters": [], "sort": [{"column": "sampled", "direction": "desc", "nulls": "last"}]}
+        sorted_page = manager.get_page(session_id, 0, 0, 10, model)["page"]
+        assert displays(sorted_page) == displays(manager.get_page(session_id, 0, 0, 10, model)["page"])
+        assert sorted(displays(sorted_page)) == sorted(displays(opened["page"]))
+        rows = native._terminal_rows(session.original, "SELECT id, sampled FROM ow ORDER BY id")
+        assert rows == native._terminal_rows(session.original, "SELECT id, sampled FROM ow ORDER BY id")
+        summary = manager.get_summary(session_id, 0, model, ["c:source:1"])["summaries"][0]
+        assert summary["numeric"]["max"] == max(value for _, value in rows)
+        with pytest.raises(EngineError, match="viewing-only"):
+            manager.apply_draft(session_id, 0, 0, 10)
+        assert native._database_reservation is not None
+        temporary = Path(native._database_reservation.temporary.name)
+        manager.close_session(session_id, 0)
+        assert not temporary.exists()
+        countdown = manager.open_session(
+            {**source, "importOptions": {"duckdbSchema": "main", "duckdbTable": "countdown"}}, backend="duckdb"
+        )
+        assert displays(countdown["page"]) == [["3"], ["2"], ["1"]]
+        with pytest.raises(EngineError, match="could not run the selected view.*dropped"):
+            failed.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "broken"})
+        assert failed._closed and failed._database_reservation is None
+    finally:
+        manager.close_all()
+        failed.close()
+    assert database_file.read_bytes() == before
+
+
 def test_duckdb_database_query_fetch_and_close_are_serialized(database_file: Path) -> None:
     engine = DuckDBEngine()
     frame = engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "generated_values"})
@@ -227,8 +290,8 @@ def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_f
                     "current_setting('enable_external_access'), current_setting('autoload_known_extensions'), "
                     "current_setting('autoinstall_known_extensions'), current_setting('enable_external_file_cache')"
                 ).fetchone() == (1, str(temporary), False, False, False, False)
-        with pytest.raises(EngineError, match="base table is no longer available"):
-            failed.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "ordinary_view"})
+        with pytest.raises(EngineError, match="table or view is no longer available"):
+            failed.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "missing"})
         assert failed._closed and failed._database_reservation is None
         assert temporary.exists()
         cli = subprocess.run(
@@ -239,8 +302,9 @@ def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_f
             timeout=15,
         )
         assert json.loads(cli.stdout) == [
-            {"schema": "main", "name": "generated_values"},
-            {"schema": 'schema " exact', "name": "table; exact"},
+            {"schema": "main", "name": "generated_values", "kind": "table"},
+            {"schema": "main", "name": "ordinary_view", "kind": "view"},
+            {"schema": 'schema " exact', "name": "table; exact", "kind": "table"},
         ]
         assert cli.stderr == ""
         assert first.shape(frame) == {"rows": 2, "columns": 2}
@@ -444,7 +508,11 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
     database_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     before = database_file.read_bytes()
-    expected = [{"schema": "main", "name": "generated_values"}, {"schema": 'schema " exact', "name": "table; exact"}]
+    expected = [
+        {"schema": "main", "name": "generated_values", "kind": "table"},
+        {"schema": "main", "name": "ordinary_view", "kind": "view"},
+        {"schema": 'schema " exact', "name": "table; exact", "kind": "table"},
+    ]
     with monkeypatch.context() as discovery_patch:
         discovery_patch.setattr(
             duckdb_runtime,
@@ -470,8 +538,8 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
 
     monkeypatch.setattr(duckdb_runtime, "TemporaryDirectory", record_directory)
     try:
-        with pytest.raises(EngineError, match="base table is no longer available"):
-            engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "ordinary_view"})
+        with pytest.raises(EngineError, match="table or view is no longer available"):
+            engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "missing"})
         assert engine._closed and engine._database_reservation is None
         assert len(directories) == 1 and not directories[0].exists()
     finally:
@@ -499,10 +567,11 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
     empty = tmp_path / "empty"
     duckdb.connect(str(empty)).close()
     assert list_duckdb_tables(empty) == []
-    assert validated_database_tables([("same", "name"), ("other", "name"), ("😀", "x" * 1024)]) == [
-        {"schema": "same", "name": "name"},
-        {"schema": "other", "name": "name"},
-        {"schema": "😀", "name": "x" * 1024},
+    rows = [("same", "name", "table"), ("other", "name", "view"), ("😀", "x" * 1024, "table")]
+    assert validated_database_tables(rows) == [
+        {"schema": "same", "name": "name", "kind": "table"},
+        {"schema": "other", "name": "name", "kind": "view"},
+        {"schema": "😀", "name": "x" * 1024, "kind": "table"},
     ]
     absent = tmp_path / "does-not-exist"
     failed = DuckDBEngine()
@@ -517,7 +586,7 @@ def test_duckdb_database_discovery_and_failed_selection_release_reader(
     decode = duckdb_runtime.validated_database_tables
 
     def bounded_decode(rows: list[tuple[Any, ...]]) -> list[dict[str, str]]:
-        assert rows == [("main", "v" * 1_024), ("é" * 1_025, "😀" * 1_025)]
+        assert rows == [("main", "v" * 1_024, "table"), ("é" * 1_025, "😀" * 1_025, "table")]
         return decode(rows)
 
     monkeypatch.setattr(duckdb_runtime, "validated_database_tables", bounded_decode)
@@ -562,17 +631,19 @@ def test_duckdb_database_read_only_wal_recovery_preserves_both_files(database_fi
 @pytest.mark.parametrize(
     "rows,message",
     [
-        ([("main", "same"), ("main", "same")], "duplicate"),
-        ([("main", str(i)) for i in range(4097)], "too many"),
-        ([("main", "x" * 1025)], "invalid"),
-        ([("main", "\ud800")], "invalid"),
-        ([("main", "a\0b")], "invalid"),
-        ([("main", "")], "invalid"),
-        ([("main", f"{i:04d}" + "😀" * 1020) for i in range(17)], "too much"),
-        ([("main", f"{i:04d}" + "\x01" * 1020) for i in range(44)], "too large"),
+        ([("main", "same", "table"), ("main", "same", "view")], "duplicate"),
+        ([("main", str(i), "table") for i in range(4097)], "too many"),
+        ([("main", "x" * 1025, "table")], "invalid"),
+        ([("main", "\ud800", "table")], "invalid"),
+        ([("main", "a\0b", "table")], "invalid"),
+        ([("main", "", "table")], "invalid"),
+        ([("main", "orders")], "invalid"),
+        ([("main", "orders", "index")], "invalid"),
+        ([("main", f"{i:04d}" + "😀" * 1020, "table") for i in range(17)], "too much"),
+        ([("main", f"{i:04d}" + "\x01" * 1020, "view") for i in range(44)], "too large"),
     ],
 )
-def test_duckdb_database_discovery_bounds(rows: list[tuple[str, str]], message: str) -> None:
+def test_duckdb_database_discovery_bounds(rows: list[tuple[str, ...]], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         validated_database_tables(rows)
 

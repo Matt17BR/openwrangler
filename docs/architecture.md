@@ -109,7 +109,10 @@ revision through the picker and cancels an unhanded runtime when that owner reti
 also open a separate session because the native process is bound to its original source and options.
 
 **Open DuckDB Table** resolves a local regular file, its resource-scoped Python interpreter and a bounded native
-base-table catalog before asking for a table. Discovery closes its reader before the picker opens. The file source
+catalog of non-temporary tables and views before asking for one. Discovery closes its reader before the picker opens.
+Tables and views share one catalog namespace, so the runtime resolves the selected kind at open. A table is queried in
+place. A view is evaluated once into a temporary table in the viewer's own read-only connection; every later query
+reads that snapshot, which spills to the reservation's private directory and disappears when the connection closes. The file source
 retains only the exact `duckdbSchema` and `duckdbTable` import options, with both required and other import options
 excluded. Each name contains 1 to 1024 Unicode scalar values without NUL; names are not trimmed. A real file path and
 the DuckDB backend are required regardless of filename suffix. The picker admits at most 4096 entries and 65536 UTF-8
@@ -1298,8 +1301,8 @@ page and transport limits do not bound capture work, memory or temporary disk us
 Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
 scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
 directory, removed after the last reserved reader closes; DuckDB's database-adjacent default is not used. External access is
-disabled. Only base tables are admitted; views and SQL editing are unsupported. Stored defaults and computed columns
-retain native behavior, so computed values may change between requests. This is not a snapshot transaction.
+disabled. SQL editing is unsupported. A table's stored defaults and computed columns retain native behavior, so
+computed values may change between requests; only a view is read from a snapshot.
 Catalog admission quotes validated schema and table names through the existing SQL-literal owner. It avoids
 parameter binding that initializes optional Pandas, NumPy and PyArrow modules on a cold request worker.
 

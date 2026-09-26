@@ -91,9 +91,9 @@ describe("Python metadata process ownership", () => {
       extensionPath: "/extension",
       sourcePath: "/data/input"
     });
-    finish({ stdout: '[{"schema":"main","name":"orders"}]' });
+    finish({ stdout: '[{"schema":"main","name":"orders","kind":"table"}]' });
     child.emit("close", 0, null);
-    await expect(discovery).resolves.toEqual([{ schema: "main", name: "orders" }]);
+    await expect(discovery).resolves.toEqual([{ schema: "main", name: "orders", kind: "table" }]);
   });
 
   it("preserves a spawn failure after close without waiting for an exit event", async () => {
@@ -124,7 +124,7 @@ describe("Python metadata process ownership", () => {
 describe("DuckDB table discovery", () => {
   it("uses the pinned interpreter and literal filename with bounded cancellable native discovery", async () => {
     const execute = vi.fn<DuckDBTableDiscoveryExecutor>(async () => ({
-      stdout: '[{"schema":"main","name":"orders"}]'
+      stdout: '[{"schema":"main","name":"orders","kind":"view"}]'
     }));
     const controller = new AbortController();
     const sourcePath = '/workspace/[data] "quarter"';
@@ -138,7 +138,7 @@ describe("DuckDB table discovery", () => {
         },
         execute
       )
-    ).resolves.toEqual([{ schema: "main", name: "orders" }]);
+    ).resolves.toEqual([{ schema: "main", name: "orders", kind: "view" }]);
     const [executable, arguments_, options] = execute.mock.calls[0]!;
     expect(executable).toBe("/env/bin/python");
     expect(arguments_).toEqual(["-s", "-m", "openwrangler_runtime.duckdb_tables", "--source", sourcePath]);
@@ -157,38 +157,42 @@ describe("DuckDB table discovery", () => {
 
   it("retains exact scalar names, distinguishes schema/table pairs, and accepts empty catalogs", () => {
     const tables = [
-      { schema: "a.b", name: "c" },
-      { schema: "a", name: "b.c" },
-      { schema: " main ", name: ' "订单"\n ' },
-      { schema: "main", name: "😀".repeat(1_024) }
+      { schema: "a.b", name: "c", kind: "table" },
+      { schema: "a", name: "b.c", kind: "view" },
+      { schema: " main ", name: ' "订单"\n ', kind: "table" },
+      { schema: "main", name: "😀".repeat(1_024), kind: "view" }
     ];
     expect(decodeDuckDBTableNames(JSON.stringify(tables))).toEqual(tables);
     expect(decodeDuckDBTableNames("[]")).toEqual([]);
-    const full = Array.from({ length: 4_096 }, (_, index) => ({ schema: "s", name: String(index) }));
+    const full = Array.from({ length: 4_096 }, (_, index) => ({ schema: "s", name: String(index), kind: "table" }));
     expect(decodeDuckDBTableNames(JSON.stringify(full))).toHaveLength(4_096);
   });
 
   it.each([
     ["malformed JSON", "not JSON"],
-    ["unknown fields", JSON.stringify([{ schema: "main", name: "orders", sql: "SELECT 1" }])],
-    ["empty name", JSON.stringify([{ schema: "main", name: "" }])],
-    ["NUL", JSON.stringify([{ schema: "main", name: "a\0b" }])],
-    ["lone surrogate", '[{"schema":"main","name":"\\ud800"}]'],
-    ["character count", JSON.stringify([{ schema: "main", name: "😀".repeat(1_025) }])],
+    ["unknown fields", JSON.stringify([{ schema: "main", name: "orders", kind: "table", sql: "SELECT 1" }])],
+    ["missing kind", JSON.stringify([{ schema: "main", name: "orders" }])],
+    ["unknown kind", JSON.stringify([{ schema: "main", name: "orders", kind: "index" }])],
+    ["empty name", JSON.stringify([{ schema: "main", name: "", kind: "table" }])],
+    ["NUL", JSON.stringify([{ schema: "main", name: "a\0b", kind: "table" }])],
+    ["lone surrogate", '[{"schema":"main","name":"\\ud800","kind":"table"}]'],
+    ["character count", JSON.stringify([{ schema: "main", name: "😀".repeat(1_025), kind: "table" }])],
     [
       "duplicate pair",
       JSON.stringify([
-        { schema: "s", name: "t" },
-        { schema: "s", name: "t" }
+        { schema: "s", name: "t", kind: "table" },
+        { schema: "s", name: "t", kind: "view" }
       ])
     ],
     [
       "table count",
-      JSON.stringify(Array.from({ length: 4_097 }, (_, index) => ({ schema: "s", name: String(index) })))
+      JSON.stringify(Array.from({ length: 4_097 }, (_, index) => ({ schema: "s", name: String(index), kind: "table" })))
     ],
     [
       "aggregate UTF-8 bytes",
-      JSON.stringify(Array.from({ length: 17 }, (_, index) => ({ schema: String(index), name: "😀".repeat(1_024) })))
+      JSON.stringify(
+        Array.from({ length: 17 }, (_, index) => ({ schema: String(index), name: "😀".repeat(1_024), kind: "table" }))
+      )
     ],
     ["serialized output", " ".repeat(256 * 1024) + "[]"]
   ])("refuses invalid %s metadata", (_name, output) => {

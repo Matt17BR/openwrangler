@@ -909,13 +909,19 @@ identifiers differ only by case. Notebook `DuckDBPyRelation` values are captured
 connection for serialized viewing only. Closing releases Open Wrangler's references and never closes the user's
 connection. See the [capture requirements and costs](#sessions-and-generated-code).
 
-**Open Wrangler: Open DuckDB Table** chooses a local database and one base table without SQL. It supports viewing,
-filters, sorts and profiles through a retained read-only connection. Multiple tables from the same database can stay
-open in one Python runtime. Close all its viewers before using a writer. Views, SQL editing, cleaning, code generation and
-exports remain unavailable for database tables; references to DuckDB file editing above mean CSV, TSV, Parquet and JSONL.
-Computed columns keep their native expressions and can change between queries. No immutable snapshot is promised.
-If a page extends beyond its reported row total, it is refused while the previous view is retained. Use stable inputs
-for repeatable filtering and counts; other differences between volatile evaluations may not be detected.
+**Open Wrangler: Open DuckDB Table** chooses a local database and one table or view without SQL. It supports viewing,
+filters, sorts and profiles through a retained read-only connection. Multiple tables and views from the same database
+can stay open in one Python runtime. Close all its viewers before using a writer. SQL editing, cleaning, code generation
+and exports remain unavailable for database tables and views; references to DuckDB file editing above mean CSV, TSV,
+Parquet and JSONL.
+
+Opening a view runs it once and keeps the result in a temporary table owned by that viewer, so every page, filter, sort
+and profile reads the same rows and an expensive view is not recomputed. The copy uses DuckDB memory and the viewer's
+private spill directory and is removed when the viewer closes. A slow view takes as long to open as its query takes to
+run, and runtime recovery runs it again. Tables are read in place: computed columns keep their native expressions and
+can change between queries. If a table page extends beyond its reported row total, it is refused while the previous
+view is retained. Use stable inputs for repeatable filtering and counts; other differences between volatile
+evaluations may not be detected.
 Readers share DuckDB's worker, memory and spill resources. If the database file changes while a viewer remains open,
 close its existing viewers before opening the replacement. Different path aliases are not guaranteed to share a reader.
 Current and minimum native owners cover exact table selection, WAL preservation, writer conflicts and cleanup.
@@ -925,7 +931,8 @@ query-memory allowance. Other memory-limited queries can still fail; see the
 The installed file-input journey verifies the command, both pickers, exact selected-table rows, filtering and reader
 cleanup in [macOS/Windows](https://github.com/Matt17BR/openwrangler/actions/runs/34947969563) and
 [Linux](https://github.com/Matt17BR/openwrangler/actions/runs/34947972421) VS Code. These source-build checks preserve
-the database bytes; they do not qualify views or simultaneous viewers.
+the database bytes; they do not qualify simultaneous viewers. Runtime tests cover view listing, one-time evaluation,
+recursive and failing views, and snapshot cleanup.
 
 ## PySpark live-notebook viewing
 
@@ -972,19 +979,19 @@ semantics. The existing daily-core journey owns the installed command, file pick
 
 These dispositions do not block stable publication unless a release starts advertising the capability.
 
-| Surface                                                                                   | Current disposition                                                                                     |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                     |
-| Transpose and recursive flattening                                                        | Unavailable; see the supported List and Struct operations above                                         |
-| General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                             |
-| Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design   |
-| Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                          |
-| Natural-language and Copilot operations                                                   | Unavailable                                                                                             |
-| DuckDB Excel and database views                                                           | Unsupported; use Pandas or Polars for Excel files; database base tables have a viewing-only entry point |
-| Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                                |
-| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                            |
-| VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental       |
-| Localization and telemetry                                                                | Deferred product breadth                                                                                |
-| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                                |
+| Surface                                                                                   | Current disposition                                                                                   |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Cleaning-step reorder                                                                     | Deferred; edit and delete earlier steps are supported, but no move primitive exists                   |
+| Transpose and recursive flattening                                                        | Unavailable; see the supported List and Struct operations above                                       |
+| General windows, partitioned ranking, and data-quality assertions                         | Unavailable as built-in operations; Dense Rank is available                                           |
+| Joins and merge                                                                           | Deferred until multi-source identity, lifecycle, persistence, and source-immutability have one design |
+| Portable cleaning recipes and batch apply                                                 | No public recipe format or batch runner; exported native scripts can be reused                        |
+| Natural-language and Copilot operations                                                   | Unavailable                                                                                           |
+| DuckDB Excel files                                                                        | Unsupported; use Pandas or Polars                                                                     |
+| Debugger variables and non-dataframe list, dictionary, array, tensor, or scalar renderers | Deferred entry-point and data-model work                                                              |
+| Browser, code-server, virtual-workspace, and Remote SSH hosts                             | Not release-qualified; the desktop target is VS Code and editors based on it                          |
+| VS Code-based desktop editors                                                             | Bounded Linux Cursor platform smoke is representative; broader compatibility remains experimental     |
+| Localization and telemetry                                                                | Deferred product breadth                                                                              |
+| Broader cross-engine CSV codec parity and polished row-header presentation                | Deferred                                                                                              |
 
 Current proposals and their scope are tracked in the [product roadmap](product-roadmap.md).

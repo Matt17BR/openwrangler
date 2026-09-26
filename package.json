@@ -607,7 +607,7 @@
           {
             "id": "openData",
             "title": "Open files or notebook variables",
-            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. Use [Open DuckDB Table](command:openWrangler.openDuckDBTable) to view a table in a local database. Use the notebook toolbar for live Python or R dataframes. On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document from its editor or Explorer menu."
+            "description": "Choose [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel. Use [Open DuckDB Table](command:openWrangler.openDuckDBTable) to browse a table or view in a local database. Use the notebook toolbar for live Python or R dataframes. On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document from its editor or Explorer menu."
           },
           {
             "id": "explore",
