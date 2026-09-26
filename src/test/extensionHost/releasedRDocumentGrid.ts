@@ -130,6 +130,6 @@ export function createReleasedRDocumentGrid({
     assert.equal(first.page.totalRows, 120);
     assert.equal(first.page.rows[0]?.values[0]?.display, "240");
     assert.equal(first.page.rows[0]?.values[1]?.display, "B");
-    assert.equal(first.page.rows[0]?.values[2]?.display, "240");
+    assert.equal(first.page.rows[0]?.values[2]?.display, "240.0");
   };
 }

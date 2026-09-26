@@ -608,7 +608,7 @@ export function createReleasedRDocumentJourney({
             ["3", "NA", "NA", "2.5"]
           ]
         },
-        { name: "legacy.xls", columns: ["name", "value", "active"], rows: [["first", "1", "TRUE"]] }
+        { name: "legacy.xls", columns: ["name", "value", "active"], rows: [["first", "1.0", "TRUE"]] }
       ]) {
         const active = await open(source(scenario.name));
         await checkCells(active, scenario.columns, scenario.rows);
@@ -637,12 +637,12 @@ export function createReleasedRDocumentJourney({
         parquetPage.page.rows.slice(0, 2).map((row) => row.values[7]?.display),
         ["0", "9223372036854775807"]
       );
-      assert.equal(parquetPage.page.rows[1]?.values[4]?.display, "2041-05-10T11:56:53.685247");
+      assert.equal(parquetPage.page.rows[1]?.values[4]?.display, "2041-05-10T13:56:53.685247+02:00");
       assert.deepEqual(
         parquetPage.page.rows.map((row) => row.values.slice(8).map((cell) => cell.display)),
         [
-          ["2026-03-29T02:30:00.000000000", "2026-03-29T02:30:00.000000000Z"],
-          ["2026-03-29T02:30:00.000000001", "2026-03-29T02:30:00.000000001Z"],
+          ["2026-03-29T02:30:00", "2026-03-29T02:30:00+00:00"],
+          ["2026-03-29T02:30:00.000000001", "2026-03-29T02:30:00.000000001+00:00"],
           ["NA", "NA"]
         ]
       );
@@ -655,7 +655,7 @@ export function createReleasedRDocumentJourney({
       await workbench.keyboard.press("End");
       const preciseCell = app.locator('td[data-grid-row="0"][data-grid-column="9"] .gridCellText');
       await preciseCell.waitFor({ state: "visible", timeout: 10_000 });
-      assert.equal(await preciseCell.textContent(), "2026-03-29T02:30:00.000000000Z");
+      assert.equal(await preciseCell.textContent(), "2026-03-29T02:30:00+00:00");
       await closeSessions();
 
       const excelUri = source("r-file-input.xlsx");
@@ -665,13 +665,13 @@ export function createReleasedRDocumentJourney({
         ["id", "text", "flag", "amount", "at", "same", "same", ""]
       );
       assert.deepEqual(excel.metadata.shape, { rows: 3, columns: 8 });
-      const excelPage = await assertReleasedSessionPage(testing, excel, "1", "jupyter-r-file-excel");
+      const excelPage = await assertReleasedSessionPage(testing, excel, "1.0", "jupyter-r-file-excel");
       assert.deepEqual(
         excelPage.page.rows.map((row) => row.values.slice(0, 4).map((cell) => cell.display)),
         [
-          ["1", "  é  ", "TRUE", "2.5"],
-          ["2", "NA", "FALSE", "NA"],
-          ["3", "NA", "NA", "-0.5"]
+          ["1.0", "  é  ", "TRUE", "2.5"],
+          ["2.0", "NA", "FALSE", "NA"],
+          ["3.0", "NA", "NA", "-0.5"]
         ]
       );
       assert.equal(excelPage.page.rows[1]?.values[1]?.kind, "string");
@@ -703,11 +703,11 @@ export function createReleasedRDocumentJourney({
       app = await checkCells(
         selected,
         ["true_zero", "cached_zero", "cached_three", "uncached", "error", "whitespace"],
-        [["0", "0", "3", "NA", "NA", "NA"]]
+        [["0.0", "0.0", "3.0", "NA", "NA", "NA"]]
       );
       const cachedThree = app.locator('td[data-grid-row="0"][data-grid-column="2"] .gridCellText');
       await cachedThree.waitFor({ state: "visible", timeout: 10_000 });
-      assert.equal(await cachedThree.textContent(), "3");
+      assert.equal(await cachedThree.textContent(), "3.0");
       const search = app.getByRole("combobox", { name: "Column", exact: true });
       await search.fill("whitespace");
       await app.getByRole("option", { name: /^whitespace,/u }).waitFor({ state: "visible", timeout: 10_000 });

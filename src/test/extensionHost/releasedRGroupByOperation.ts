@@ -94,13 +94,13 @@ export async function exerciseReleasedRGroupByOperation(
   assert.ok(totalScoreColumn, "The R Group and aggregate preview must expose its total_score output.");
   await waitForLocatorText(
     app.locator(`td[data-grid-row="0"][data-grid-column="${totalScoreColumn.position}"]`),
-    (text) => text.trim() === "181503",
+    (text) => text.trim() === "181503.0",
     10_000,
     "the first visible R grouped sum"
   );
   await waitForLocatorText(
     app.locator(`td[data-grid-row="1"][data-grid-column="${totalScoreColumn.position}"]`),
-    (text) => text.trim() === "545112",
+    (text) => text.trim() === "545112.0",
     10_000,
     "the second visible R grouped sum"
   );

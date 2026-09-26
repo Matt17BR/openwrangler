@@ -160,7 +160,7 @@ export function createReleasedRGridJourney({
     await filterPanel.getByRole("button", { name: /Search values/iu }).click();
     const scoreValue = filterPanel.locator(".valueList label.checkboxRow").filter({ hasText: "1200" }).first();
     await scoreValue.waitFor({ state: "visible", timeout: 30_000 });
-    assert.equal((await scoreValue.locator("span").innerText()).trim(), "1200");
+    assert.equal((await scoreValue.locator("span").innerText()).trim(), "1200.0");
     assert.equal((await scoreValue.locator("small").innerText()).trim(), "1");
     await scoreValue.getByRole("checkbox").check();
     await waitFor(
@@ -225,13 +225,13 @@ export function createReleasedRGridJourney({
         kind: "typedSelection",
         version: 1,
         columnType: "float",
-        cell: { kind: "number", raw: 1200, display: "1200", isNull: false, isNaN: false }
+        cell: { kind: "number", raw: 1200, display: "1200.0", isNull: false, isNaN: false }
       }
     ]);
     assert.deepEqual(groupFilter?.predicates, [{ kind: "predicate", operator: "equals", value: "B" }]);
     await filterPanel.getByText("2 filtered columns", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await filterPanel
-      .getByRole("button", { name: "Remove equals 1200 (number) filter from score", exact: true })
+      .getByRole("button", { name: "Remove equals 1200.0 (number) filter from score", exact: true })
       .waitFor({ state: "visible", timeout: 10_000 });
     await filterPanel
       .getByRole("button", { name: 'Remove equals "B" filter from group', exact: true })
@@ -245,7 +245,7 @@ export function createReleasedRGridJourney({
     for (const [column, expected] of [
       [0, "1200"],
       [1, "B"],
-      [2, "1200"]
+      [2, "1200.0"]
     ] as const) {
       await waitForLocatorText(
         app.locator(`td[data-grid-row="0"][data-grid-column="${column}"]`),
@@ -312,7 +312,7 @@ export function createReleasedRGridJourney({
         rowLabel: row.rowLabel,
         values: row.values.slice(0, 3).map((cell) => cell.display)
       })),
-      [{ id: "r:r:1199", rowLabel: "case-1200", values: ["1200", "B", "1200"] }]
+      [{ id: "r:r:1199", rowLabel: "case-1200", values: ["1200", "B", "1200.0"] }]
     );
 
     await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
