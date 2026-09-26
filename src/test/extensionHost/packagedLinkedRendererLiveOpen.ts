@@ -293,7 +293,8 @@ export function createPackagedLinkedRendererLiveOpen(
           nullCount: 0,
           nanCount: 0,
           distinctCount: 2,
-          topValues: [7, 5].map((value) => ({
+          // Tied counts keep data order; the viewing sort does not reorder profiles.
+          topValues: [5, 7].map((value) => ({
             value: String(value),
             count: 1,
             selectionValue: {
