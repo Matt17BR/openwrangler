@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NumericVisualization } from "../shared/protocol";
+import type { NumericSummary, NumericVisualization } from "../shared/protocol";
 import { NumericHistogram } from "../webviews/visualizations/NumericHistogram";
 
 const visualization: NumericVisualization = {
@@ -19,7 +19,7 @@ describe("NumericHistogram", () => {
 
   it("keeps every bar visible while pointer and keyboard share the active-bin status", () => {
     const { container } = render(<NumericHistogram visualization={visualization} compact onSelectBin={vi.fn()} />);
-    const control = screen.getByRole("button", { name: /1-2\.5: 100 rows/u });
+    const control = screen.getByRole("button", { name: /1 to 2\.5: 100 rows/u });
     const status = container.querySelector<HTMLElement>(".miniChartCaption");
     const bins = [...container.querySelectorAll<SVGGElement>(".numericHistogramBin")];
     Object.defineProperty(control, "getBoundingClientRect", {
@@ -32,27 +32,27 @@ describe("NumericHistogram", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
     act(() => control.focus());
-    expect(status).toHaveTextContent("1-2.5: 100 rows");
+    expect(status).toHaveTextContent("1 to 2.5: 100 rows");
     expect(bins[0]).toHaveClass("active");
     expect(bins[1]).not.toHaveClass("active");
 
     fireEvent.pointerMove(control, { clientX: 120 });
-    expect(status).toHaveTextContent("2.5-4: 1 row");
+    expect(status).toHaveTextContent("2.5 to 4: 1 row");
     expect(bins[0]).not.toHaveClass("active");
     expect(bins[1]).toHaveClass("active");
-    expect(control).toHaveAccessibleName("2.5-4: 1 row (1%); both bounds included");
+    expect(control).toHaveAccessibleName("2.5 to 4: 1 row (1%); both bounds included");
 
     fireEvent.pointerLeave(control);
-    expect(status).toHaveTextContent("1-2.5: 100 rows");
+    expect(status).toHaveTextContent("1 to 2.5: 100 rows");
     expect(bins[0]).toHaveClass("active");
 
     fireEvent.keyDown(control, { key: "ArrowRight" });
-    expect(status).toHaveTextContent("2.5-4: 1 row");
+    expect(status).toHaveTextContent("2.5 to 4: 1 row");
     expect(bins[1]).toHaveClass("active");
     expect(document.activeElement).toBe(control);
 
     fireEvent.scroll(window);
-    expect(status).toHaveTextContent("2.5-4: 1 row");
+    expect(status).toHaveTextContent("2.5 to 4: 1 row");
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
@@ -83,9 +83,9 @@ describe("NumericHistogram", () => {
       });
       const expectActiveBin = (index: number) => {
         const bin = distribution.bins[index];
-        expect(status).toHaveTextContent(`${bin.min}-${bin.max}: 1 row`);
+        expect(status).toHaveTextContent(`${bin.min} to ${bin.max}: 1 row`);
         expect(control).toHaveAccessibleName(
-          `${bin.min}-${bin.max}: 1 row (25%); ${index === 3 ? "both bounds included" : "lower bound included, upper bound excluded"}`
+          `${bin.min} to ${bin.max}: 1 row (25%); ${index === 3 ? "both bounds included" : "lower bound included, upper bound excluded"}`
         );
         expect(bars.filter((bar) => bar.classList.contains("active"))).toEqual([bars[index]]);
         expect(control).toHaveFocus();
@@ -120,19 +120,19 @@ describe("NumericHistogram", () => {
         onSelectBin={vi.fn()}
       />
     );
-    const control = screen.getByRole("button", { name: /1-2\.5: 99% \(100 rows\)/u });
+    const control = screen.getByRole("button", { name: /1 to 2\.5: 99% \(100 rows\)/u });
     const status = container.querySelector<HTMLElement>(".miniChartCaption");
 
     act(() => control.focus());
-    expect(status).toHaveTextContent("1-2.5: 99%");
-    expect(status).toHaveAttribute("title", "1-2.5: 99% (100 rows); lower bound included, upper bound excluded");
+    expect(status).toHaveTextContent("1 to 2.5: 99%");
+    expect(status).toHaveAttribute("title", "1 to 2.5: 99% (100 rows); lower bound included, upper bound excluded");
     expect(control.getAttribute("aria-label")?.startsWith(status?.textContent ?? "unavailable")).toBe(true);
     expect(status).not.toHaveAttribute("role");
     expect(status).not.toHaveAttribute("aria-live");
 
     fireEvent.keyDown(control, { key: "End" });
-    expect(status).toHaveTextContent("2.5-4: 1%");
-    expect(control).toHaveAccessibleName("2.5-4: 1% (1 row); both bounds included");
+    expect(status).toHaveTextContent("2.5 to 4: 1%");
+    expect(control).toHaveAccessibleName("2.5 to 4: 1% (1 row); both bounds included");
     expect(control.getAttribute("aria-label")?.startsWith(status?.textContent ?? "unavailable")).toBe(true);
 
     rerender(
@@ -146,14 +146,59 @@ describe("NumericHistogram", () => {
     );
     expect(status).toHaveTextContent("10 to 20 · 1 bins");
     expect(status).not.toHaveClass("active");
-    expect(control).toHaveAccessibleName("10-20: 100% (3 rows); both bounds included");
+    expect(control).toHaveAccessibleName("10 to 20: 100% (3 rows); both bounds included");
     expect(document.activeElement).toBe(control);
+  });
+
+  it("labels outer edges with the profile's Min and Max and keeps interior edges exact", () => {
+    const wide: NumericVisualization = {
+      kind: "numeric",
+      bins: [
+        { min: -406_851, max: 70_298_905.5, count: 3 },
+        { min: 70_298_905.5, max: 141_004_662, count: 1 }
+      ]
+    };
+    const summary: NumericSummary = { min: -406_851, max: 141_004_662 };
+    const { container, rerender } = render(
+      <NumericHistogram visualization={wide} summary={summary} compact onSelectBin={vi.fn()} />
+    );
+    const caption = container.querySelector<HTMLElement>(".miniChartCaption");
+    expect(caption).toHaveTextContent("-406,851 to 141,004,662 · 2 bins");
+    expect(screen.getByRole("group")).toHaveAccessibleName(
+      "numeric distribution with 2 bins; range -406,851 to 141,004,662."
+    );
+
+    const control = screen.getByRole("button");
+    act(() => control.focus());
+    fireEvent.keyDown(control, { key: "Home" });
+    expect(control).toHaveAccessibleName(
+      "-406,851 to 70,298,905.5: 3 rows (75%); lower bound included, upper bound excluded"
+    );
+
+    const exact = { kind: "decimal", raw: "0.1000000000000000055", display: "0.1000000000000000055" } as const;
+    rerender(
+      <NumericHistogram
+        visualization={{
+          kind: "numeric",
+          bins: [
+            { min: 0.1, max: 0.123456789012, count: 1 },
+            { min: 0.123456789012, max: 0.2, count: 1 }
+          ]
+        }}
+        summary={{ min: 0.1, max: 0.2, exactMin: { ...exact, isNull: false, isNaN: false } }}
+        compact
+        onSelectBin={vi.fn()}
+      />
+    );
+    expect(caption).toHaveTextContent("0.1000000000000000055 to 0.2 · 2 bins");
+    fireEvent.keyDown(control, { key: "End" });
+    expect(control).toHaveAccessibleName("0.123456789 to 0.2: 1 row (50%); both bounds included");
   });
 
   it("selects the same active bin with pointer and keyboard input", () => {
     const onSelectBin = vi.fn();
     render(<NumericHistogram visualization={visualization} compact onSelectBin={onSelectBin} />);
-    const control = screen.getByRole("button", { name: /1-2\.5: 100 rows/u });
+    const control = screen.getByRole("button", { name: /1 to 2\.5: 100 rows/u });
     Object.defineProperty(control, "getBoundingClientRect", {
       configurable: true,
       value: () => ({ left: 0, right: 160, top: 0, bottom: 36, width: 160, height: 36, x: 0, y: 0 })

@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
-import type { NumericVisualization } from "../../shared/protocol";
+import type { NumericSummary, NumericVisualization } from "../../shared/protocol";
+import { numericExtremumDisplay } from "../numericSummary";
 import { formatProfilePercent, type ProfileValueMode } from "../profileValueMode";
 
 interface NumericHistogramProps {
   visualization: NumericVisualization;
+  summary?: NumericSummary;
   compact?: boolean;
   valueMode?: ProfileValueMode;
   percentDenominator?: number;
@@ -25,6 +27,7 @@ interface ActiveHistogramBin {
 
 export function NumericHistogram({
   visualization,
+  summary,
   compact = false,
   valueMode = "count",
   percentDenominator,
@@ -41,12 +44,13 @@ export function NumericHistogram({
   const width = compact ? 160 : 320;
   const height = compact ? 36 : 92;
   const barWidth = visualization.bins.length > 0 ? width / visualization.bins.length : width;
+  const formatEdge = useMemo(() => histogramEdgeFormatter(summary), [summary]);
   const rangeStart = visualization.bins.at(0)?.min;
   const rangeEnd = visualization.bins.at(-1)?.max;
   const rangeLabel =
     rangeStart === undefined || rangeEnd === undefined
       ? "No finite values"
-      : `${formatHistogramValue(rangeStart)} to ${formatHistogramValue(rangeEnd)}`;
+      : `${formatEdge(rangeStart)} to ${formatEdge(rangeEnd)}`;
   const chartLabel = `numeric distribution with ${visualization.bins.length} bins; range ${rangeLabel}.`;
   const denominator = Math.max(
     0,
@@ -57,14 +61,20 @@ export function NumericHistogram({
   const activeBinIndex = hoveredBinIndex ?? focusedBinIndex;
   const activeBin = activeBinIndex === undefined ? undefined : visualization.bins[activeBinIndex];
   const activeBinLabel = activeBin
-    ? histogramBinLabel(activeBin, denominator, valueMode, activeBinIndex === visualization.bins.length - 1)
+    ? histogramBinLabel(activeBin, denominator, valueMode, activeBinIndex === visualization.bins.length - 1, formatEdge)
     : undefined;
-  const activeBinStatus = activeBin ? histogramBinStatus(activeBin, denominator, valueMode) : undefined;
+  const activeBinStatus = activeBin ? histogramBinStatus(activeBin, denominator, valueMode, formatEdge) : undefined;
   const interactive = onSelectBin !== undefined;
   const currentBinIndex = activeBinIndex ?? 0;
   const currentBin = visualization.bins[currentBinIndex];
   const currentBinLabel = currentBin
-    ? histogramBinLabel(currentBin, denominator, valueMode, currentBinIndex === visualization.bins.length - 1)
+    ? histogramBinLabel(
+        currentBin,
+        denominator,
+        valueMode,
+        currentBinIndex === visualization.bins.length - 1,
+        formatEdge
+      )
     : "No finite values";
 
   const binIndexAt = (clientX: number, element: Element): number => {
@@ -192,26 +202,41 @@ export function NumericHistogram({
 function histogramBinStatus(
   bin: NumericVisualization["bins"][number],
   denominator: number,
-  valueMode: ProfileValueMode
+  valueMode: ProfileValueMode,
+  formatEdge: (value: number) => string
 ): string {
   const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
   const value = valueMode === "count" ? count : formatProfilePercent(bin.count, denominator);
-  return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}`;
+  return `${formatEdge(bin.min)} to ${formatEdge(bin.max)}: ${value}`;
 }
 
 function histogramBinLabel(
   bin: NumericVisualization["bins"][number],
   denominator: number,
   valueMode: ProfileValueMode,
-  upperInclusive: boolean
+  upperInclusive: boolean,
+  formatEdge: (value: number) => string
 ): string {
   const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
   const percent = formatProfilePercent(bin.count, denominator);
   const value = valueMode === "count" ? `${count} (${percent})` : `${percent} (${count})`;
   const boundary = upperInclusive ? "both bounds included" : "lower bound included, upper bound excluded";
-  return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}; ${boundary}`;
+  return `${formatEdge(bin.min)} to ${formatEdge(bin.max)}: ${value}; ${boundary}`;
 }
 
-function formatHistogramValue(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumSignificantDigits: 5 }).format(value);
+const maximumInteriorEdgeDigits = 10;
+
+// Edges equal to the column's minimum or maximum reuse the profile's Min and
+// Max text so both read identically; other edges keep enough digits to be exact.
+export function histogramEdgeFormatter(summary: NumericSummary | undefined): (value: number) => string {
+  const minimum = summary ? numericExtremumDisplay(summary, "min") : undefined;
+  const maximum = summary ? numericExtremumDisplay(summary, "max") : undefined;
+  return (value) => {
+    if (minimum && value === summary?.min) return minimum.display;
+    if (maximum && value === summary?.max) return maximum.display;
+    if (Number.isInteger(value)) return value.toLocaleString();
+    let digits = 1;
+    while (digits < maximumInteriorEdgeDigits && Number(value.toPrecision(digits)) !== value) digits += 1;
+    return new Intl.NumberFormat(undefined, { maximumSignificantDigits: digits }).format(value);
+  };
 }

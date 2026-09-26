@@ -629,7 +629,7 @@ describe("SummaryPanel", () => {
     render(<Harness />);
 
     const firstBin = screen.getByRole("button", {
-      name: "10-11: 1 row (33.3%); lower bound included, upper bound excluded"
+      name: "10 to 11: 1 row (33.3%); lower bound included, upper bound excluded"
     });
     fireEvent.click(firstBin);
     expect(onApply).toHaveBeenLastCalledWith({
@@ -650,13 +650,13 @@ describe("SummaryPanel", () => {
 
     act(() => firstBin.focus());
     fireEvent.keyDown(firstBin, { key: "End" });
-    expect(firstBin).toHaveAccessibleName("11-12: 2 rows (66.7%); both bounds included");
+    expect(firstBin).toHaveAccessibleName("11 to 12: 2 rows (66.7%); both bounds included");
     fireEvent.keyDown(firstBin, { key: "Home" });
-    expect(firstBin).toHaveAccessibleName("10-11: 1 row (33.3%); lower bound included, upper bound excluded");
+    expect(firstBin).toHaveAccessibleName("10 to 11: 1 row (33.3%); lower bound included, upper bound excluded");
     fireEvent.keyDown(firstBin, { key: "ArrowRight" });
-    expect(firstBin).toHaveAccessibleName("11-12: 2 rows (66.7%); both bounds included");
+    expect(firstBin).toHaveAccessibleName("11 to 12: 2 rows (66.7%); both bounds included");
     fireEvent.keyDown(firstBin, { key: "ArrowLeft" });
-    expect(firstBin).toHaveAccessibleName("10-11: 1 row (33.3%); lower bound included, upper bound excluded");
+    expect(firstBin).toHaveAccessibleName("10 to 11: 1 row (33.3%); lower bound included, upper bound excluded");
     fireEvent.keyDown(firstBin, { key: "ArrowRight" });
     fireEvent.keyDown(firstBin, { key: "Enter" });
     expect(onApply).toHaveBeenLastCalledWith({
