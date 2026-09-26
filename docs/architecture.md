@@ -1273,8 +1273,9 @@ creates and closes its own hardened connection, and any `DuckDBPyRelation` is de
 closes. DuckDB never converts through Pandas, Polars, or Arrow, and extension auto-install, autoload, and external-file
 caching remain disabled.
 
-Parquet sources take their private row identity from DuckDB's `file_row_number`, unless the file already has a column
-of that name. A window row number would serialize every later scan. When row IDs follow source order, viewing sorts
+Parquet sources take their private row identity from DuckDB's `file_row_number`, and database tables and view
+snapshots from `rowid`, unless the source already has a column of that name. A window row number would serialize every
+later scan. Table row IDs can have gaps after deletes; only their order and uniqueness matter. When row IDs follow source order, viewing sorts
 break ties by row ID; other sorts keep a window tie-break. Counts, profiles, statistics and value choices read the
 filtered relation without its sort. Top-value ties use the row ID when it follows source order and a window position
 otherwise.
@@ -1299,7 +1300,8 @@ leases keep their referenced frames alive. Preview, replay and inspection can re
 page and transport limits do not bound capture work, memory or temporary disk use.
 
 Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
-scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
+scope. They reuse the same SQL-plan, page and profile owners. Viewers of one database share its native thread setting,
+so dataset statistics limit it to one thread only while any viewer's grouped statistics query runs. Native spill files belong to a private temporary
 directory, removed after the last reserved reader closes; DuckDB's database-adjacent default is not used. External access is
 disabled. SQL editing is unsupported. A table's stored defaults and computed columns retain native behavior, so
 computed values may change between requests; only a view is read from a snapshot.

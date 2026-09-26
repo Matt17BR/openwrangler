@@ -222,6 +222,42 @@ def test_duckdb_database_view_is_evaluated_once_per_session(
     assert database_file.read_bytes() == before
 
 
+def test_duckdb_database_tables_number_rows_without_a_window_scan(database_file: Path) -> None:
+    with duckdb.connect(str(database_file)) as writer:
+        writer.execute("CREATE TABLE gaps AS SELECT range AS id, range % 2 AS parity FROM range(6)")
+        writer.execute("DELETE FROM gaps WHERE id = 2")
+        writer.execute('CREATE TABLE named ("RowId" INTEGER, parity INTEGER)')
+        writer.execute("INSERT INTO named VALUES (10, 1), (11, 0), (12, 1)")
+        writer.execute("CHECKPOINT")
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    model = {"logic": "and", "filters": [], "sort": [{"column": "parity", "direction": "desc", "nulls": "last"}]}
+    try:
+        for table, expected in [
+            ("gaps", [["1", "1"], ["3", "1"], ["5", "1"], ["0", "0"], ["4", "0"]]),
+            ("named", [["10", "1"], ["12", "1"], ["11", "0"]]),
+        ]:
+            opened = manager.open_session(
+                {
+                    "kind": "file",
+                    "path": str(database_file),
+                    "label": database_file.name,
+                    "importOptions": {"duckdbSchema": "main", "duckdbTable": table},
+                },
+                backend="duckdb",
+            )
+            session_id = opened["metadata"]["sessionId"]
+            original = manager.sessions[session_id].original
+            assert isinstance(original, DuckDBSqlPlan)
+            # A user column named rowid shadows DuckDB's pseudo-column.
+            assert ("row_number() OVER" in original.sql) == (table == "named")
+            page = manager.get_page(session_id, 0, 0, 10, model)["page"]
+            assert [[cell["display"] for cell in row["values"]] for row in page["rows"]] == expected
+            assert len({row["id"] for row in page["rows"]}) == len(expected)
+            manager.close_session(session_id, 0)
+    finally:
+        manager.close_all()
+
+
 def test_duckdb_database_query_fetch_and_close_are_serialized(database_file: Path) -> None:
     engine = DuckDBEngine()
     frame = engine.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "generated_values"})
@@ -271,6 +307,17 @@ def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_f
         temporary = Path(reservation.temporary.name)
         assert temporary.exists() and temporary.parent != database_file.parent
         assert first._database_connection is not second._database_connection
+
+        def threads(engine: DuckDBEngine) -> int:
+            with engine._tracked_connection() as connection:
+                return connection.execute("SELECT current_setting('threads')").fetchone()[0]
+
+        default_threads = threads(first)
+        with first._tracked_connection() as connection, first._single_threaded(connection):
+            second.header_stats(second_frame)
+            # The overlapping statistics query still owns the shared setting.
+            assert threads(second) == 1
+        assert threads(second) == default_threads
         assert second.header_stats(second_frame) == {
             "missingCells": 1,
             "missingRows": 1,
@@ -289,7 +336,7 @@ def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_f
                     "SELECT current_setting('threads'), current_setting('temp_directory'), "
                     "current_setting('enable_external_access'), current_setting('autoload_known_extensions'), "
                     "current_setting('autoinstall_known_extensions'), current_setting('enable_external_file_cache')"
-                ).fetchone() == (1, str(temporary), False, False, False, False)
+                ).fetchone() == (default_threads, str(temporary), False, False, False, False)
         with pytest.raises(EngineError, match="table or view is no longer available"):
             failed.read_file(str(database_file), {"duckdbSchema": "main", "duckdbTable": "missing"})
         assert failed._closed and failed._database_reservation is None

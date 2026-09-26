@@ -23,6 +23,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R profiles of large numeric columns take about half as long, with the same exact means, sums and distinct counts.
 - R opens Parquet files with nanosecond or timezone-free timestamps and 64-bit integers faster; an 11.7-million-row file now opens in about 5.5 seconds instead of 6.5.
 - R profiles, duplicate-row counts and value choices are exact on dataframes of any size. Large columns now show exact distinct counts, top values and medians instead of sampled charts or `n/a`, and Filters lists exact counts without a sample note.
+- DuckDB database tables sort and profile about three times faster. Profiling every column of an 11.7-million-row table now takes about 3 seconds instead of 11.5, and dataset statistics no longer leave later queries on that database single-threaded.
 
 ### Fixed
 
