@@ -21,6 +21,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Pandas opens large files faster and with less memory. With pandas 3, adding Open Wrangler's row identity no longer copies every column when a file opens or a cleaning step applies; an 11.7-million-row Parquet file now opens in about 3 seconds instead of 7.
 - Value choices and top values show the grid's text in Pandas, Polars and DuckDB, including datetimes and single-precision floats such as `0.1`. Polars datetime cells now match the other engines, without trailing zero fractions.
 - Datetime value searches find a `T` or space between the date and time, including at the start of the search.
 - Pandas counts missing text, missing categories and NaN in non-float columns as missing values rather than NaN, as Polars and DuckDB do.
