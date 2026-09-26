@@ -1103,6 +1103,11 @@ function registerNativeViewsTransactional(
     }),
     registerCommand("openWrangler.undoStep", () => OpenWranglerPanel.sendEditorAction({ action: "undoStep" })),
     registerCommand("openWrangler.redoStep", () => OpenWranglerPanel.sendEditorAction({ action: "redoStep" })),
+    registerCommand("openWrangler.goToRow", () => {
+      if (!OpenWranglerPanel.sendEditorAction({ action: "goToRow" })) {
+        void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before going to a row.");
+      }
+    }),
     registerCommand("openWrangler.copyCode", async () => {
       const acquired = await codePreview.acquireCodeForAction();
       if (acquired.kind !== "available") return reportCodePreviewActionFailure(acquired, "copying");

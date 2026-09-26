@@ -231,12 +231,40 @@
   padding: 2px;
 }
 
-.visibleRowsStatus {
+.gridRowLocator {
+  align-items: center;
+  display: inline-flex;
   flex: 1 0 auto;
+  flex-wrap: wrap;
+  gap: 3px;
   min-width: max-content;
+}
+
+.visibleRowsStatus {
+  cursor: pointer;
   overflow-wrap: anywhere;
   padding: 0 4px;
   white-space: nowrap;
+}
+
+.goToRowForm {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.goToRowInput {
+  min-height: 22px;
+  width: 16ch;
+}
+
+.goToRowSubmit {
+  padding-inline: 6px;
+}
+
+.goToRowError {
+  color: var(--vscode-errorForeground);
 }
 
 .gridClipboardControls {

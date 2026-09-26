@@ -157,6 +157,7 @@
     "onCommand:openWrangler.selectStep",
     "onCommand:openWrangler.undoStep",
     "onCommand:openWrangler.redoStep",
+    "onCommand:openWrangler.goToRow",
     "onCommand:openWrangler.openViewSort",
     "onCommand:openWrangler.moveViewSortUp",
     "onCommand:openWrangler.moveViewSortDown",
@@ -383,6 +384,11 @@
         "icon": "$(redo)"
       },
       {
+        "command": "openWrangler.goToRow",
+        "title": "Open Wrangler: Go to Row",
+        "icon": "$(search)"
+      },
+      {
         "command": "openWrangler.openViewSort",
         "title": "Open Wrangler: Edit View Sorts",
         "icon": "$(list-ordered)"
@@ -471,6 +477,11 @@
         "key": "ctrl+alt+z",
         "mac": "cmd+alt+z",
         "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+      },
+      {
+        "command": "openWrangler.goToRow",
+        "key": "ctrl+g",
+        "when": "activeCustomEditorId == openWrangler.viewer"
       }
     ],
     "viewsContainers": {

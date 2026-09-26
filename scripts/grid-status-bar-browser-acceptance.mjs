@@ -255,7 +255,9 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       const selectionStatus = bar.querySelector(".gridClipboardSelectionStatus");
       const app = bar.closest(".app");
       const dataGrid = bar.closest(".dataGrid");
-      const primaryActions = [...bar.querySelectorAll(".gridNavigationButton, .gridClipboardControls button")];
+      const primaryActions = [...bar.querySelectorAll(".gridNavigationButton, .gridClipboardControls button")].filter(
+        (action) => !action.closest(".gridRowLocator")
+      );
       const rangeBounds = rangeStatus?.getBoundingClientRect();
       const visibleRowTextBounds = (() => {
         if (!rangeStatus) return undefined;
@@ -483,7 +485,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
     forcedStyles.appOverflow > 1 ||
     forcedStyles.documentOverflow > 1 ||
     forcedStyles.clippedChildren > 0 ||
-    forcedStyles.navigation.length !== 2 ||
+    forcedStyles.navigation.length !== 3 ||
     forcedStyles.navigation.some(
       ({ borderStyle, borderWidth, forcedColorAdjust, opacity, iconVisible }) =>
         borderStyle !== "solid" ||

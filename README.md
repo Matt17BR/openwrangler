@@ -20,8 +20,8 @@ make changes visually, and keep the generated Python or R code.
 _Inspect missing values and distributions beside the rows you are exploring._
 
 Select a column to see its profile, then click a category or histogram bin to filter the view. Search for columns,
-combine filters, order sort keys, and copy selections. The dataset summary shows empty fields, unusual values and
-repeated records before you decide what to change.
+jump to a row with `Ctrl+G`, combine filters, order sort keys, and copy selections. The dataset summary shows empty
+fields, unusual values and repeated records before you decide what to change.
 
 ## Install
 

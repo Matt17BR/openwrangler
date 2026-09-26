@@ -27,6 +27,7 @@ import {
   scrollTopForLogicalRow
 } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
+import { GoToRow } from "./GoToRow";
 import type { GridCellCoordinate } from "./gridClipboard";
 import type { ProfileValueMode } from "../profileValueMode";
 import { useGridHeaderProfiles } from "./GridHeaderProfileValues";
@@ -63,6 +64,7 @@ interface DataGridProps {
   viewContextId?: string;
   goToColumnId?: string;
   goToColumnRequestId?: number;
+  goToRowRequestId?: number;
   viewState?: GridViewState;
   viewStateRestoreVersion?: number;
   diff?: DataDiff;
@@ -130,6 +132,7 @@ export function DataGrid({
   viewContextId,
   goToColumnId,
   goToColumnRequestId,
+  goToRowRequestId = 0,
   viewState = defaultViewState,
   viewStateRestoreVersion = 0,
   diff,
@@ -158,6 +161,7 @@ export function DataGrid({
   onViewStateChange = ignoreViewStateChange
 }: DataGridProps) {
   const logicalRowExtent = liveGridLogicalRowExtent(page);
+  const addressableRowCount = page.totalRows ?? page.offset + page.rows.length;
   const hasMoreRows = liveGridPageHasMore(page);
   const { rowAxisHeader, hasRowLabels, rowHeaderWidth } = useGridRowHeaderLayout(
     metadata.sessionId,
@@ -230,6 +234,13 @@ export function DataGrid({
     row: viewState.viewport.firstVisibleRow,
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
+  const [goToRowOpen, setGoToRowOpen] = useState(false);
+  const handledGoToRowRequest = useRef(goToRowRequestId);
+  useEffect(() => {
+    if (goToRowRequestId === handledGoToRowRequest.current) return;
+    handledGoToRowRequest.current = goToRowRequestId;
+    setGoToRowOpen(true);
+  }, [goToRowRequestId]);
   const cellActionMenu = useCellActionMenuLifecycle({
     prepareFocus: (coordinate) => {
       pointerSelectionFocusRequest.current = coordinate;
@@ -1005,7 +1016,15 @@ export function DataGrid({
         viewport: { firstVisibleRow: bounded, scrollLeft }
       });
     }
-    onPage(block);
+    if (block !== page.offset || bounded >= page.offset + page.rows.length) onPage(block);
+  };
+
+  const goToRow = (row: number) => {
+    if (busy) return;
+    const column = Math.max(0, Math.min(focusedCell.column, metadata.schema.length - 1));
+    gridClipboard.selectCell({ row, column }, false);
+    setFocusedCell({ row, column });
+    goToPage(row, true);
   };
 
   return (
@@ -1472,23 +1491,35 @@ export function DataGrid({
         >
           <span className="codicon codicon-chevron-right" aria-hidden="true" />
         </button>
-        <span
-          className="visibleRowsStatus"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          aria-label="Loaded rows"
-        >
-          {page.totalRows === 0
-            ? "No rows"
-            : page.totalRows === null
-              ? `Rows ${(page.offset + 1).toLocaleString()} to ${(
-                  page.offset + page.rows.length
-                ).toLocaleString()} · total appears after the last page`
-              : `Rows ${(page.offset + 1).toLocaleString()} to ${Math.min(
-                  page.offset + page.rows.length,
-                  page.totalRows
-                ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
+        <span className="gridRowLocator">
+          <span
+            className="visibleRowsStatus"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label="Loaded rows"
+            onClick={() => {
+              if (addressableRowCount > 0) setGoToRowOpen(true);
+            }}
+          >
+            {page.totalRows === 0
+              ? "No rows"
+              : page.totalRows === null
+                ? `Rows ${(page.offset + 1).toLocaleString()} to ${(
+                    page.offset + page.rows.length
+                  ).toLocaleString()} · total appears after the last page`
+                : `Rows ${(page.offset + 1).toLocaleString()} to ${Math.min(
+                    page.offset + page.rows.length,
+                    page.totalRows
+                  ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
+          </span>
+          <GoToRow
+            rowCount={addressableRowCount}
+            open={goToRowOpen}
+            busy={busy}
+            onOpenChange={setGoToRowOpen}
+            onGoToRow={goToRow}
+          />
         </span>
         <span id={gridSelectionInstructionsId} className="gridClipboardAnnouncement">
           {gridSelectionInstructions}

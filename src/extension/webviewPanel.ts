@@ -2510,7 +2510,8 @@ type NonSortEditorAction =
   | "applyDraft"
   | "discardDraft"
   | "undoStep"
-  | "redoStep";
+  | "redoStep"
+  | "goToRow";
 
 export type EditorActionMessage =
   | ({ action: "clearFilterColumn" } & ViewFilterRemovalTarget)

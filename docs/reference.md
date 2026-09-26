@@ -39,6 +39,7 @@
 | `openWrangler.selectStep`                     | Open Wrangler: Inspect Applied Step                            |
 | `openWrangler.undoStep`                       | Open Wrangler: Undo Latest Step                                |
 | `openWrangler.redoStep`                       | Open Wrangler: Redo Latest Undone Step                         |
+| `openWrangler.goToRow`                        | Open Wrangler: Go to Row                                       |
 | `openWrangler.openViewSort`                   | Open Wrangler: Edit View Sorts                                 |
 | `openWrangler.moveViewSortUp`                 | Open Wrangler: Move View Sort Up                               |
 | `openWrangler.moveViewSortDown`               | Open Wrangler: Move View Sort Down                             |
@@ -61,6 +62,7 @@
 | `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
 | `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
 | `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
+| `openWrangler.goToRow`        | `ctrl+g`        | `ctrl+g`      | `activeCustomEditorId == openWrangler.viewer`                               |
 
 ## Settings
 

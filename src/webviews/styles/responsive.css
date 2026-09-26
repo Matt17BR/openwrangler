@@ -218,10 +218,13 @@
     grid-template-columns: auto auto auto minmax(0, 1fr);
   }
 
-  .visibleRowsStatus {
+  .gridRowLocator {
     grid-column: 1 / -1;
     grid-row: 2;
     min-width: 0;
+  }
+
+  .visibleRowsStatus {
     white-space: normal;
   }
 

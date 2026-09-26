@@ -617,6 +617,7 @@ export async function run(): Promise<void> {
     "openWrangler.editLatestStep",
     "openWrangler.selectStep",
     "openWrangler.undoStep",
+    "openWrangler.goToRow",
     "openWrangler.copyCode",
     "openWrangler.exportCode",
     "openWrangler.insertNotebookCode",
@@ -920,6 +921,12 @@ export async function run(): Promise<void> {
         key: "ctrl+alt+z",
         mac: "cmd+alt+z",
         when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+      },
+      {
+        command: "openWrangler.goToRow",
+        key: "ctrl+g",
+        mac: undefined,
+        when: "activeCustomEditorId == openWrangler.viewer"
       }
     ]
   );
