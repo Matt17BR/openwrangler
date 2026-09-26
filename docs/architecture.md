@@ -1617,7 +1617,11 @@ Source and destination identity checks still protect the input from exports.
 
 Parquet input uses Arrow 23.0.1.1 or newer for one data read. `nanoparquet` 0.5.1 or newer validates physical and
 logical footer metadata before that read. It admits flat Boolean, text, floating-point, signed integer and Date
-columns, with reader-preserved factor metadata. Integer64 input also requires `bit64`. Modern `INT` and
+columns, with reader-preserved factor metadata. When the first row group has 65,536 to 1,048,576 rows, plain text
+columns whose first-group dictionary is at most an eighth of that group's rows are read as dictionary codes, so each
+repeated string is decoded once, then expanded to the same character vector. Stored dictionaries still load as
+factors. Every column converts eagerly instead of through Arrow's lazy vectors, so later full scans read ordinary R
+memory. Integer64 input also requires `bit64`. Modern `INT` and
 [legacy integer annotations](https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-integer-convertedtype)
 accept 8, 16 and 32 bits only on physical INT32, and 64 bits only on physical INT64. Legacy annotations apply only when
 the logical annotation is absent; a local TIMESTAMP never falls back to its legacy timestamp annotation.

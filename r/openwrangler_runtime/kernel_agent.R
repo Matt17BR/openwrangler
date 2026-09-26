@@ -8183,7 +8183,33 @@ openwrangler_r_kernel_agent <- local({
       }
       refuse_field(index, "annotation is not supported by the native reader")
     }, character(1L), USE.NAMES = FALSE)
-    table <- base::tryCatch(arrow::read_parquet(path, as_data_frame = FALSE), error = function(error) {
+    # Low-cardinality text reads as dictionary codes, so each distinct string becomes an R string once. The
+    # first row group decides, and only when it is bounded; unique text reads faster as plain strings.
+    dictionary_text <- base::integer()
+    group_rows <- metadata$row_groups$num_rows
+    candidates <- base::which(kinds == "text")
+    if (base::length(candidates) != 0L && base::length(group_rows) != 0L &&
+        group_rows[[1L]] >= 65536 && group_rows[[1L]] <= 1048576) {
+      dictionary_text <- base::tryCatch({
+        stored <- arrow::ParquetFileReader$create(path)$GetSchema()
+        candidates <- candidates[base::vapply(candidates, function(index) {
+          base::identical(stored[[index]]$type$ToString(), "string")
+        }, base::logical(1L))]
+        probe_properties <- arrow::ParquetArrowReaderProperties$create()
+        for (index in candidates) probe_properties$set_read_dictionary(index - 1L, TRUE)
+        probe <- arrow::ParquetFileReader$create(path, props = probe_properties)$ReadRowGroup(0L, candidates - 1L)
+        sizes <- base::vapply(base::seq_along(candidates), function(position) {
+          column <- probe[[position]]
+          base::sum(base::vapply(base::seq_len(column$num_chunks) - 1L, function(chunk) {
+            base::as.double(column$chunk(chunk)$dictionary()$length())
+          }, base::numeric(1L)))
+        }, base::numeric(1L))
+        candidates[sizes * 8 <= group_rows[[1L]]]
+      }, error = function(error) base::integer())
+    }
+    properties <- arrow::ParquetArrowReaderProperties$create()
+    for (index in dictionary_text) properties$set_read_dictionary(index - 1L, TRUE)
+    table <- base::tryCatch(arrow::read_parquet(path, as_data_frame = FALSE, props = properties), error = function(error) {
       base::stop("R Parquet input could not be decoded by Arrow. Check that the file is a valid Parquet file.", call. = FALSE)
     })
     if (!base::identical(base::names(table), fields$name) || table$num_rows != metadata$file_meta_data$num_rows[[1L]]) {
@@ -8192,12 +8218,16 @@ openwrangler_r_kernel_agent <- local({
     if (table$num_rows > .Machine$integer.max) base::stop("R Parquet input exceeds the native row limit", call. = FALSE)
     result <- base::vector("list", table$num_columns)
     base::names(result) <- base::names(table)
+    # Arrow's lazy vectors convert element by element on every access, which slows each later full scan.
+    altrep <- base::options(arrow.use_altrep = FALSE)
+    base::on.exit(base::options(altrep), add = TRUE)
     for (index in base::seq_along(result)) {
       column <- table[[index]]
       type <- column$type
       kind <- type$ToString()
       refuse <- function(reason) refuse_field(index, reason)
-      nulls <- arrow::call_function("is_null", column)$as_vector()
+      # Arrow nulls always convert to R missing values, so equal counts mean no present value became missing.
+      null_count <- column$null_count
       value <- if (base::inherits(type, "Timestamp")) {
         unit <- c("s", "ms", "us", "ns")[[type$unit() + 1L]]
         if (!unit %in% c("ms", "us", "ns")) refuse("timestamp unit must be milliseconds, microseconds or nanoseconds")
@@ -8222,7 +8252,7 @@ openwrangler_r_kernel_agent <- local({
         } else {
           require_clock()
           parsed <- naive_time_from_ticks(ticks, unit, refuse)
-          if (!base::identical(base::is.na(parsed), nulls)) {
+          if (base::sum(base::is.na(parsed)) != null_count) {
             refuse("timestamps cannot be represented exactly by the native clock type")
           }
           if (adjusted) clock::as_sys_time(parsed) else parsed
@@ -8232,7 +8262,7 @@ openwrangler_r_kernel_agent <- local({
         scale <- c(s = 1, ms = 1000, us = 1000000, ns = 1000000000)[[unit]]
         ticks <- column$cast(arrow::int64())$cast(arrow::float64(), safe = FALSE)$as_vector()
         seconds <- ticks / scale
-        if (base::any(!nulls & (base::abs(ticks) >= 2251799813685248 | base::round(seconds * scale) != ticks))) {
+        if (base::any(base::abs(ticks) >= 2251799813685248 | base::round(seconds * scale) != ticks, na.rm = TRUE)) {
           refuse("duration ticks exceed the exact native reader range")
         }
         base::structure(seconds, class = "difftime", units = "secs")
@@ -8242,26 +8272,28 @@ openwrangler_r_kernel_agent <- local({
         native <- base::tryCatch(column$cast(arrow::int64())$as_vector(),
           error = function(error) refuse("unsigned values exceed the native signed integer range"), finally = base::options(downcast))
         if (!base::inherits(native, "integer64")) native <- bit64::as.integer64(native)
-        if (!base::identical(base::is.na(native), nulls)) refuse("native integer missing sentinels are present source values")
+        if (base::sum(base::is.na(native)) != null_count) refuse("native integer missing sentinels are present source values")
         native
       } else if (kind %in% c("int8", "int16", "int32", "uint8", "uint16", "uint32")) {
         native <- column$as_vector()
-        if (!base::identical(base::is.na(native), nulls)) refuse("native integer missing sentinels are present source values")
-        if (base::any(!nulls & (native < -.Machine$integer.max | native > .Machine$integer.max))) refuse("integer values exceed the native signed integer range")
+        if (base::sum(base::is.na(native)) != null_count) refuse("native integer missing sentinels are present source values")
+        if (base::any(native < -.Machine$integer.max | native > .Machine$integer.max, na.rm = TRUE)) refuse("integer values exceed the native signed integer range")
         base::as.integer(native)
       } else if (kind %in% c("date32[day]", "date64[ms]")) {
         native <- column$as_vector()
-        if (!base::inherits(native, "Date") || !base::identical(base::is.na(native), nulls)) refuse("dates cannot be represented exactly by the native reader")
+        if (!base::inherits(native, "Date") || base::sum(base::is.na(native)) != null_count) refuse("dates cannot be represented exactly by the native reader")
         base::structure(base::as.double(native), class = "Date")
+      } else if (index %in% dictionary_text && base::inherits(type, "DictionaryType") && type$value_type$ToString() == "string") {
+        codes <- column$as_vector()
+        if (!base::is.factor(codes)) refuse("dictionary values are not a supported native factor")
+        levels <- base::attr(codes, "levels", exact = TRUE)
+        base::attributes(codes) <- NULL
+        levels[codes]
       } else if (base::inherits(type, "DictionaryType") && type$value_type$ToString() == "string") {
         native <- column$as_vector()
         if (!base::is.factor(native)) refuse("dictionary values are not a supported native factor")
         native
-      } else if (base::identical(kind, "string")) {
-        # Arrow's lazy character vectors rebuild every string on each full scan.
-        altrep <- base::options(arrow.use_altrep = FALSE)
-        base::tryCatch(column$as_vector(), finally = base::options(altrep))
-      } else if (kind %in% c("bool", "float", "double")) {
+      } else if (kind %in% c("string", "bool", "float", "double")) {
         column$as_vector()
       } else {
         refuse("only supported flat scalar columns can be opened in native R")
