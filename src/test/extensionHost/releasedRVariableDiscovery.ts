@@ -132,8 +132,17 @@ export function createReleasedRVariableDiscovery({
         await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
       }
       picker = await activateReleasedNotebookVariableAction(workbench, notebook);
+      // The picker renders only the rows that fit, so each name is filtered into view.
+      const input = picker.locator(".quick-input-box input:visible").first();
       for (const [name, flavor] of variables) {
-        const row = await releasedJupyterQuickPickRow(picker, name);
+        await input.fill(name);
+        const deadline = Date.now() + 10_000;
+        let row: Locator | undefined;
+        do {
+          row = await releasedJupyterQuickPickRow(picker, name);
+          if (row) break;
+          await workbench.waitForTimeout(50);
+        } while (Date.now() < deadline);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
           (await row.innerText()).replace(/\s+/gu, " "),
