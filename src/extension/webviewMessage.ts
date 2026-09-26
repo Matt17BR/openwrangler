@@ -32,6 +32,7 @@ export type WebviewRequest =
   | { kind: "prioritizeViewRequest"; viewRequestId: string }
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
+  | { kind: "cancelImportChange" }
   | {
       kind: "rewriteCleaningPlan";
       action: "applyDraft" | "deleteStep";
@@ -144,6 +145,9 @@ export function decodeWebviewMessage(
   }
   if (message.kind === "clearStepInspection") {
     return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
+  }
+  if (message.kind === "cancelImportChange") {
+    return hasExactKeys(message, ["kind"]) ? { kind: "cancelImportChange" } : undefined;
   }
   if (message.kind === "rewriteCleaningPlan") {
     return hasExactKeys(message, ["kind", "action", "stepId", "offset", "limit", "columnOffset", "columnLimit"]) &&

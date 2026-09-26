@@ -8,6 +8,7 @@ import type {
   PageResponse,
   SessionMetadata,
   SessionMode,
+  RLibrary,
   SessionOpenedResponse,
   SessionSource,
   TransformStep
@@ -15,8 +16,13 @@ import type {
 import { reconcileViewFilterModel } from "../shared/filterModel";
 import type { PersistedViewingState } from "../shared/viewState";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
-import type { BridgeRequestOptions } from "./dataBridge";
-import { persistedSessionState } from "./sessionPersistence";
+import { translatePlanColumns } from "../shared/transformStepReferences";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import {
+  persistedSessionState,
+  type DecodedPersistedSessionState,
+  type PersistedCleaningState
+} from "./sessionPersistence";
 import { sessionOpenedResponseMismatch } from "./sessionResponseValidation";
 import {
   persistenceUnavailableError,
@@ -45,6 +51,15 @@ export interface RuntimeReconfigurationSession extends SessionResponseState {
   backendPreference?: DataBackend;
   closing: boolean;
   recoveryRequired: boolean;
+}
+
+/** The runtime that replaces a file session and the work it replays. */
+export interface FileReplacementTarget {
+  readonly delegate: OpenWranglerBridge;
+  /** Set exactly when the target engine is R. */
+  readonly rLibrary: RLibrary | undefined;
+  /** The current plan, only its first applied steps, or the work saved for the target. */
+  readonly plan: "current" | { readonly steps: number } | DecodedPersistedSessionState;
 }
 
 export interface RuntimeReconfigurationHooks {
@@ -511,7 +526,8 @@ export class SessionRuntimeReconfigurer {
     session: RuntimeReconfigurationSession,
     source: SessionSource,
     options: BridgeRequestOptions | undefined,
-    hooks: RuntimeReconfigurationHooks
+    hooks: RuntimeReconfigurationHooks,
+    target: FileReplacementTarget = { delegate: session.delegate, rLibrary: session.metadata.rLibrary, plan: "current" }
   ): Promise<OpenWranglerResponse> {
     if (!hooks.isCurrent()) {
       return protocolError(
@@ -522,14 +538,37 @@ export class SessionRuntimeReconfigurer {
       );
     }
 
-    const persisted = persistedSessionState(
+    const current = persistedSessionState(
       session.metadata,
       gridState(session.viewState),
       session.draftBaseView?.filterModel
     );
+    const saved = typeof target.plan === "object" && "backend" in target.plan ? target.plan : undefined;
+    const kept = typeof target.plan === "object" && "steps" in target.plan ? target.plan.steps : undefined;
+    if (kept !== undefined && (!Number.isSafeInteger(kept) || kept < 0 || kept > current.cleaning.steps.length)) {
+      return protocolError(
+        "invalid_import_options",
+        `Choose between 0 and ${current.cleaning.steps.length} applied steps to keep.`,
+        true,
+        session.publicId
+      );
+    }
+    let cleaning: PersistedCleaningState = saved
+      ? saved.cleaning
+      : kept === undefined
+        ? current.cleaning
+        : { steps: current.cleaning.steps.slice(0, kept) };
+    let view: PersistedViewingState = saved?.view ?? current.view;
+    const sameDelegate = target.delegate === session.delegate;
     const previous = replacementSnapshot(session);
     const candidateSessionId = randomUUID();
-    const candidateRequest = replacementOpenRequest(session, source, candidateSessionId, options?.backendPreference);
+    const candidateRequest = replacementOpenRequest(
+      session,
+      source,
+      candidateSessionId,
+      options?.backendPreference,
+      target.rLibrary
+    );
     if (!isOpenWranglerRequest(candidateRequest)) {
       return protocolError(
         "invalid_import_options",
@@ -545,13 +584,14 @@ export class SessionRuntimeReconfigurer {
       if (candidateCleanupAttempted) return;
       candidateCleanupAttempted = true;
       await this.runtimeCleanup.close(
-        candidate ?? candidateShell(session, candidateSessionId),
+        candidate ?? candidateShell(session, candidateSessionId, target.delegate),
         "import candidate",
         runtimeCleanupOptions(),
         true
       );
     };
     const recoverConfirmedRuntime = async (): Promise<void> => {
+      if (!sameDelegate) return;
       const recovered = hooks.isCurrent() && (await hooks.recoverConfirmedRuntime());
       session.recoveryRequired = !recovered;
     };
@@ -562,7 +602,7 @@ export class SessionRuntimeReconfigurer {
       if (candidateRequest.source.kind === "file")
         candidateSourceProtection = await captureSessionSourceFiles(candidateRequest.source);
       if (!hooks.isCurrent()) throw new ReconfigurationSupersededError();
-      response = await session.delegate.request(candidateRequest, options);
+      response = await target.delegate.request(candidateRequest, options);
     } catch (error) {
       await cleanupCandidate();
       await recoverConfirmedRuntime();
@@ -600,7 +640,7 @@ export class SessionRuntimeReconfigurer {
       );
     }
 
-    candidate = runtimeCandidate(session, candidateSessionId, response.metadata);
+    candidate = runtimeCandidate(session, candidateSessionId, response.metadata, target.delegate);
     candidate.sourceProtection = candidateSourceProtection;
     const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
     if (openedMismatch) {
@@ -612,8 +652,24 @@ export class SessionRuntimeReconfigurer {
         session.publicId
       );
     }
-    if (candidateRequest.source.kind === "file" && isFileDataBackend(response.metadata.backend)) {
+    if (
+      candidateRequest.source.kind === "file" &&
+      (isFileDataBackend(response.metadata.backend) || response.metadata.backend === "r")
+    ) {
       candidate.sourceSchema = structuredClone(response.metadata.schema);
+    }
+    if (!saved && (session.metadata.backend === "r") !== (response.metadata.backend === "r")) {
+      const moved = moveToSourceSchema(cleaning, view, session.sourceSchema, candidate.sourceSchema);
+      if (typeof moved === "string") {
+        await cleanupCandidate();
+        return protocolError(
+          "import_state_replay_failed",
+          `${moved} The active session was left unchanged.`,
+          true,
+          session.publicId
+        );
+      }
+      ({ cleaning, view } = moved);
     }
     if (options?.cancellation?.isCancellationRequested) {
       await cleanupCandidate();
@@ -637,7 +693,7 @@ export class SessionRuntimeReconfigurer {
     try {
       await this.runtimeStateRestorer.restoreCleaningState(
         candidate,
-        persisted.cleaning,
+        cleaning,
         candidateRequest.columnOffset,
         candidateRequest.columnLimit,
         options,
@@ -646,7 +702,7 @@ export class SessionRuntimeReconfigurer {
       assertCandidateCurrent();
       page = await this.runtimeStateRestorer.restoreOneViewingState(
         candidate,
-        persisted.view,
+        view,
         candidateRequest.pageSize,
         candidateRequest.columnOffset,
         candidateRequest.columnLimit,
@@ -817,6 +873,7 @@ function canRollbackReplacement(
 }
 
 function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: RuntimeReplacementSnapshot): void {
+  session.delegate = snapshot.runtime.delegate;
   session.runtimeId = snapshot.runtime.runtimeId;
   session.runtimeRevision = snapshot.runtime.runtimeRevision;
   session.publicRevision = snapshot.publicRevision;
@@ -838,12 +895,16 @@ function restoreReplacement(session: RuntimeReconfigurationSession, snapshot: Ru
   else delete session.backendPreference;
 }
 
-function candidateShell(session: RuntimeReconfigurationSession, runtimeId: string): RuntimeSessionState {
+function candidateShell(
+  session: RuntimeReconfigurationSession,
+  runtimeId: string,
+  delegate = session.delegate
+): RuntimeSessionState {
   return {
     publicId: session.publicId,
     runtimeId,
     runtimeRevision: 0,
-    delegate: session.delegate,
+    delegate,
     metadata: session.metadata,
     code: "",
     viewState: session.viewState
@@ -853,14 +914,15 @@ function candidateShell(session: RuntimeReconfigurationSession, runtimeId: strin
 function runtimeCandidate(
   session: RuntimeReconfigurationSession,
   runtimeId: string,
-  metadata: SessionMetadata
+  metadata: SessionMetadata,
+  delegate = session.delegate
 ): RuntimeSessionState {
   return {
     sourceProtection: session.sourceProtection,
     publicId: session.publicId,
     runtimeId,
     runtimeRevision: metadata.revision,
-    delegate: session.delegate,
+    delegate,
     metadata,
     code: "",
     viewChangeEpoch: session.viewChangeEpoch ?? 0,
@@ -875,6 +937,7 @@ function publishCandidate(
   request: OpenSessionRequest,
   publicRevision: number
 ): void {
+  session.delegate = candidate.delegate;
   session.runtimeId = candidate.runtimeId;
   session.runtimeRevision = candidate.runtimeRevision;
   session.publicRevision = publicRevision;
@@ -898,11 +961,13 @@ function replacementOpenRequest(
   session: RuntimeReconfigurationSession,
   source: SessionSource,
   requestedSessionId: string,
-  backendPreference: BridgeRequestOptions["backendPreference"] = session.backendPreference
+  backendPreference: BridgeRequestOptions["backendPreference"] = session.backendPreference,
+  rLibrary?: RLibrary
 ): OpenSessionRequest {
   const {
     source: _previousSource,
     backend: _confirmedBackend,
+    rLibrary: _previousLibrary,
     requestedSessionId: _previousRequestedSessionId,
     ...stableRequest
   } = session.openRequest;
@@ -911,7 +976,52 @@ function replacementOpenRequest(
     kind: "openSession",
     source,
     requestedSessionId,
-    ...(backendPreference && backendPreference !== "auto" ? { backend: backendPreference } : {})
+    ...(rLibrary !== undefined
+      ? { backend: "r", rLibrary }
+      : backendPreference && backendPreference !== "auto"
+        ? { backend: backendPreference }
+        : {})
+  };
+}
+
+/**
+ * Python engines and R name the same file's source columns differently, so moving between them rebinds every
+ * source-column reference by position. The engines must read the same column names in the same order.
+ */
+function moveToSourceSchema(
+  cleaning: PersistedCleaningState,
+  view: PersistedViewingState,
+  from: readonly ColumnSchema[] | undefined,
+  to: readonly ColumnSchema[] | undefined
+): { cleaning: PersistedCleaningState; view: PersistedViewingState } | string {
+  const { draftStep } = cleaning;
+  const steps = draftStep ? [...cleaning.steps, draftStep] : cleaning.steps;
+  const aligned =
+    from !== undefined &&
+    to !== undefined &&
+    from.length === to.length &&
+    from.every((column, index) => column.name === to[index].name);
+  if (!aligned) {
+    if (steps.length > 0 || !from || !to)
+      return "The selected engine reads this file's columns differently, so the cleaning steps cannot move to it.";
+    return { cleaning, view };
+  }
+  const targets = new Map(from.map((column, index) => [column.id, to[index]]));
+  const translated = translatePlanColumns(steps, from, targets);
+  if (typeof translated === "string") return translated;
+  const ids = new Map(from.map((column, index) => [column.id, to[index].id]));
+  const moved = (id: string): string => ids.get(id) ?? id;
+  return {
+    cleaning: {
+      ...cleaning,
+      steps: draftStep ? translated.slice(0, -1) : translated,
+      ...(draftStep ? { draftStep: translated.at(-1) } : {})
+    },
+    view: {
+      ...view,
+      columnWidths: new Map([...view.columnWidths].map(([id, width]) => [moved(id), width])),
+      ...(view.selectedColumnId === undefined ? {} : { selectedColumnId: moved(view.selectedColumnId) })
+    }
   };
 }
 

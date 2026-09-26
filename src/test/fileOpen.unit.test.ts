@@ -12,6 +12,7 @@ import type { ColumnSchema, SessionSource } from "../shared/protocol";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
 import { isSessionSource } from "../shared/protocolValidation";
 import type { RFileBridgeFactory } from "../extension/files/fileOpen";
+import type { FileEngineBridgeSelector } from "../extension/webviewPanel";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 
@@ -21,6 +22,7 @@ const fileMocks = vi.hoisted(() => ({
   createPanel: vi.fn(),
   panelConstructor: vi.fn(),
   changeActiveImportOptions: vi.fn(async () => false),
+  registerFileEngineBridges: vi.fn((_selector: FileEngineBridgeSelector) => ({ dispose: () => undefined })),
   detectImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
   bridgeRequest: vi.fn<OpenWranglerBridge["request"]>(async () => {
     throw new Error("Unsupported files must not start Python.");
@@ -188,6 +190,10 @@ vi.mock("../extension/webviewPanel", () => ({
 
     static changeActiveImportOptions(): Promise<boolean> {
       return fileMocks.changeActiveImportOptions();
+    }
+
+    static registerFileEngineBridges(selector: FileEngineBridgeSelector): unknown {
+      return fileMocks.registerFileEngineBridges(selector);
     }
 
     constructor(...args: unknown[]) {
@@ -754,95 +760,34 @@ describe("file launch command", () => {
     }
   );
 
-  it.each([true, false])(
-    "keeps explicit R engine handoff source-bound (owner remains current: %s)",
-    async (remainsCurrent) => {
-      let release!: (bridge: OpenWranglerBridge) => void;
-      const held = new Promise<OpenWranglerBridge>((resolve) => {
-        release = resolve;
-      });
-      let entered!: () => void;
-      const started = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      const nativeBridge = { request: vi.fn(), onIdle: vi.fn() };
-      const createRBridge = vi.fn((_source: SessionSource) => {
-        entered();
-        return held;
-      });
-      const { context } = register(createRBridge);
-      const source: SessionSource = {
-        kind: "file",
-        label: "original.csv",
-        path: "/workspace/original.csv",
-        uri: "file:///workspace/original.csv",
-        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: false }
-      };
-      const expected = structuredClone(source);
-      let current = true;
-      const opening = command("openWrangler.internal.openFileWithEngine")(source, "r", () => current);
-      try {
-        await started;
-        source.path = "/workspace/later.csv";
-        source.uri = "file:///workspace/later.csv";
-        source.importOptions!.delimiter = ",";
-        fileMocks.activeTextUri = vscode.Uri.file("/workspace/unrelated.csv");
-        current = remainsCurrent;
-        release(nativeBridge);
-        await opening;
-        expect(createRBridge).toHaveBeenCalledExactlyOnceWith(expected);
-        expect(createRBridge.mock.calls[0]![0]).not.toBe(source);
-        expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
-        expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
-        expect(nativeBridge.request).not.toHaveBeenCalled();
-        if (remainsCurrent) {
-          expect(fileMocks.createPanel).toHaveBeenCalledExactlyOnceWith(
-            context,
-            nativeBridge,
-            expected,
-            "r",
-            "r",
-            undefined,
-            "base"
-          );
-          expect(nativeBridge.onIdle).not.toHaveBeenCalled();
-        } else {
-          expect(fileMocks.createPanel).not.toHaveBeenCalled();
-          expect(nativeBridge.onIdle).toHaveBeenCalledOnce();
-        }
-        expect(fileMocks.showErrorMessage).not.toHaveBeenCalled();
-      } finally {
-        release(nativeBridge);
-        await opening;
-      }
-    }
-  );
-
-  it.each([
-    { kind: "file", label: "missing.csv", path: "/workspace/missing.csv" },
-    { kind: "file", label: "relative.csv", path: "relative.csv", uri: "file:///workspace/relative.csv" },
-    { kind: "file", label: "different.csv", path: "/workspace/different.csv", uri: "file:///workspace/other.csv" },
-    {
+  it("runs Python engines on the shared bridge and R on a bridge bound to the exact source", async () => {
+    const nativeBridge = { request: vi.fn(), onIdle: vi.fn() };
+    const createRBridge = vi.fn(async (_source: SessionSource) => nativeBridge);
+    const { bridge } = register(createRBridge);
+    const select = fileMocks.registerFileEngineBridges.mock.calls.at(-1)![0];
+    const source: SessionSource = {
       kind: "file",
-      label: "remote.csv",
-      path: "/workspace/remote.csv",
-      uri: "vscode-remote://host/workspace/remote.csv"
-    },
-    {
-      kind: "notebookVariable",
-      label: "frame",
-      variableName: "frame",
-      path: "/workspace/frame.csv",
-      uri: "file:///workspace/frame.csv"
-    }
-  ])("refuses an invalid explicit file-engine source $label before acquiring R", async (source) => {
-    const createRBridge = vi.fn();
-    register(createRBridge);
-    await command("openWrangler.internal.openFileWithEngine")(source, "r", () => true);
+      label: "original.csv",
+      path: "/workspace/original.csv",
+      uri: "file:///workspace/original.csv",
+      importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: false }
+    };
+
+    await expect(select(source, { backend: "pandas" })).resolves.toBe(bridge);
     expect(createRBridge).not.toHaveBeenCalled();
-    expect(fileMocks.createPanel).not.toHaveBeenCalled();
-    expect(fileMocks.stat).not.toHaveBeenCalled();
-    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
+    await expect(select(source, { backend: "r", rLibrary: "dplyr" })).resolves.toBe(nativeBridge);
+    expect(createRBridge).toHaveBeenCalledExactlyOnceWith(source);
+  });
+
+  it("explains that R is unavailable without a native R file owner", async () => {
+    register();
+    const select = fileMocks.registerFileEngineBridges.mock.calls.at(-1)![0];
+    await expect(
+      select(
+        { kind: "file", label: "a.csv", path: "/workspace/a.csv", uri: "file:///workspace/a.csv" },
+        { backend: "r" }
+      )
+    ).rejects.toThrow("Native R file opening is unavailable in this extension host.");
   });
 
   it("reports an unsupported R file instead of silently falling back to Python", async () => {

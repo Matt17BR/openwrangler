@@ -67,7 +67,9 @@ _Search or browse cleaning operations, then configure the selected step._
    into the notebook or R document that opened the data. Cleaned data exports to a separate CSV or Parquet file, so
    the source is never overwritten.
 
-Files open in Editing unless `openWrangler.fileStartMode` is set to `viewing`.
+Files open in Editing unless `openWrangler.fileStartMode` is set to `viewing`. The engine picker in the toolbar switches
+a file between Pandas, Polars, DuckDB and the R libraries in the same tab and replays your steps. If a step can't run with
+the new engine, Open Wrangler asks before leaving it behind.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/workflow.png"><img alt="A Polars formula draft with an added column, Apply and Discard actions, and generated Python code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/workflow.png" width="960"></a>
 

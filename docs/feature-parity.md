@@ -635,9 +635,11 @@ Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or le
 Python interpreter or file engine is available. The engine picker, engine badge and panel title name every engine the
 same way: **Python · Pandas**, **Python · Polars**, **Python · DuckDB**, **R · base**, **R · dplyr**, **R · data.table**
 and **R · collapse**.
-Switching between Python file engines replays work in the current tab. Crossing between Python and R opens the file in
-a new tab, restoring steps saved for the selected engine and R library; the original tab keeps its work.
-R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
+Every engine switch for a file, including between Python and R and between R libraries, happens in the current tab and
+replays its steps and draft, with a progress bar and Cancel. When a step can't run with the target engine, or the
+target has other saved work for the file, the engine picker says so and a dialog offers the available choices; saved work
+for the previous engine is kept, so switching back restores it. R import-options changes also reopen in the current tab.
+**Open Another File with This Plan** also accepts confirmed built-in R file plans.
 
 R CSV/TSV imports accept UTF-8, explicit UTF-8-lossy, UTF-16LE/BE, ISO-8859-1 and Windows-1252, with distinct ASCII
 delimiter/quote choices and LF, CRLF or CR records, including exact line endings inside quoted fields. Quotes must
@@ -710,12 +712,11 @@ preserves the admitted frame class.
 Grouped and indexed objects remain unsupported. For data.table duplicate operations, the owning R environment's
 numeric-rounding option controls equality; other operation-specific limits below continue to apply.
 
-Choosing another library from an open R editor opens an **editing copy**. It starts from the captured original source
+For a file, choosing another library switches the current tab, like any other engine switch. For a live R variable,
+choosing another library opens an **editing copy**. It starts from the captured original source
 and replays applied steps. The original remains open with its draft, redo history and view; these are not transferred
 to the copy. Applied Custom Code executes again after an explicit confirmation and may have side effects. If this
 editor already has a copy using the target library, use that copy. Separately opened live editors remain independent.
-An existing file editor or saved file plan for the target library must be opened separately rather than overwritten. For files, choose
-**Open file separately** in the confirmation to use that library's saved plan, or the original file if none exists.
 If the retained source is still live, it is verified and captured when the runtime opens the copy.
 Copies made from an already isolated source retain that snapshot.
 Opening the picker does not freeze live values. Live sessions remain tied to the exact kernel, terminal or document process; copying does not move work to another R environment.
@@ -744,8 +745,7 @@ display error from native R's truncating format. Source values keep their origin
 and existing One Hot column names retain their native formatting.
 
 Selecting data.table or collapse still opens these Parquet files with exact viewing, filters, sorts, profiles and
-export. Cleaning is unavailable while they contain clock columns; use the engine picker to create an editing copy
-with base R or dplyr. Actual data.table frames and nested values containing clock records remain unsupported.
+export. Cleaning is unavailable while they contain clock columns; use the engine picker to switch to base R or dplyr. Actual data.table frames and nested values containing clock records remain unsupported.
 
 Format Datetime, Convert Type, Fill, Group By, pivots and By Example do not support clock columns. In base/dplyr,
 other operations remain available when clock columns are not inputs or grouping/identifier keys.

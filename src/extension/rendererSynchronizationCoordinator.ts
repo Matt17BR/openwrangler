@@ -1,6 +1,11 @@
 import type { OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
 import { createSecureNonce } from "./secureNonce";
 
+export interface ImportActivity {
+  readonly activity: string;
+  readonly pendingEngine?: string;
+}
+
 const DEFAULT_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const DEFAULT_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_STARTUP_RECOVERY_ATTEMPTS = 2;
@@ -35,6 +40,8 @@ export interface RendererSynchronizationCallbacks {
   /** Recovery has a session, but its replacement is not yet accepted by the renderer. */
   readonly isSnapshotPending?: () => boolean;
   readonly isImportBusy: () => boolean;
+  /** What a busy import or engine change is doing, shown beside the grid, and the engine it is switching to. */
+  readonly importActivity?: () => ImportActivity | undefined;
   readonly ensureSessionOpen: () => Promise<void>;
   readonly clearStepInspection: () => void;
   readonly layoutTransitionPending: () => boolean;
@@ -499,7 +506,9 @@ export class RendererSynchronizationCoordinator {
     if (this.pendingPreReadyImportResponse) {
       if (!(await this.postMessage(this.pendingPreReadyImportResponse))) return;
     }
-    if (!(await this.postMessage({ kind: "importOptionsState", busy: this.callbacks.isImportBusy() }))) return;
+    const busy = this.callbacks.isImportBusy();
+    const activity = busy ? this.callbacks.importActivity?.() : undefined;
+    if (!(await this.postMessage({ kind: "importOptionsState", busy, ...activity }))) return;
     if (!isCurrent()) {
       this.synchronizationRequested = true;
       return;

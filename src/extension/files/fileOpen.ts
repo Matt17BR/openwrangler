@@ -1,13 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import {
-  isRLibrary,
-  type ColumnSchema,
-  type DataBackend,
-  type RLibrary,
-  type SessionSource
-} from "../../shared/protocol";
-import { isSessionSource } from "../../shared/protocolValidation";
+import type { ColumnSchema, DataBackend, RLibrary, SessionSource } from "../../shared/protocol";
 import {
   FileBackendUnavailableError,
   type CancellationTokenLike,
@@ -223,36 +216,11 @@ export const registerFileCommands = (
     }
   };
   context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "openWrangler.internal.openFileWithEngine",
-      async (source: unknown, backend: unknown, isCurrent: unknown, rLibrary: unknown) => {
-        if (
-          !isSessionSource(source) ||
-          source.kind !== "file" ||
-          !source.path ||
-          !path.isAbsolute(source.path) ||
-          !source.uri ||
-          typeof backend !== "string" ||
-          !fileDataBackends.has(backend as FileDataBackend) ||
-          typeof isCurrent !== "function" ||
-          (rLibrary !== undefined && (backend !== "r" || !isRLibrary(rLibrary)))
-        )
-          return;
-        const current = isCurrent as () => boolean;
-        const captured = structuredClone(source);
-        const uri = vscode.Uri.parse(captured.uri as string, true);
-        const library = isRLibrary(rLibrary) ? rLibrary : configuredRLibrary(uri);
-        if (
-          !current() ||
-          uri.scheme !== "file" ||
-          path.resolve(uri.fsPath) !== path.resolve(captured.path as string) ||
-          !(await validateFileTarget(uri)) ||
-          !current()
-        )
-          return;
-        await openSource(captured, backend as FileDataBackend, current, library);
-      }
-    )
+    OpenWranglerPanel.registerFileEngineBridges(async (source, engine) => {
+      if (engine.backend !== "r") return bridge;
+      if (!createRBridge) throw new Error("Native R file opening is unavailable in this extension host.");
+      return createRBridge(source);
+    })
   );
   const databaseOpens = new Set<vscode.CancellationTokenSource>();
   context.subscriptions.push({

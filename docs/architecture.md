@@ -103,10 +103,18 @@ retain their concrete backend and logical Auto preference on restore; they do no
 **Open Wrangler: Open File Path** reads the configured default and creates a fresh panel, including after a failed
 open. Restoring a custom editor instead preserves its previously confirmed backend.
 
-R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux, macOS or Windows. Choosing between R and a Python engine opens a separate panel with that engine's own saved plan, if any;
-it does not translate the original panel's steps or discard its state. The host carries the exact file, session and
-revision through the picker and cancels an unhanded runtime when that owner retires. R file import-options changes
-also open a separate session because the native process is bound to its original source and options.
+R selection opens local CSV, TSV, Parquet, JSONL/NDJSON or Excel files through an owned `Rscript` process on Linux, macOS or Windows.
+Each R process is bound to one file and its import options. Every engine switch and import-options change reconfigures the
+same panel: the panel resolves the target runtime (the shared Python bridge, the current R process, or a new R process for
+the exact source), and the coordinator opens a candidate there, replays the chosen plan, publishes it under the same public
+session ID and hands session ownership to the target bridge. A failed candidate closes alone and leaves the original
+runtime in place; a replaced runtime is released when nothing else uses it.
+Between R and Python, steps move only when both engines read the same column names in the same order; the coordinator
+translates source column IDs (`c:source:N` and `r:c:N`) by position, including column widths and the selected column.
+Custom Code replays only between R libraries, Extract Struct Fields needs Polars, DuckDB or R, and Explode List needs
+Polars or R. The panel asks before leaving such steps behind. Saved work for the target that this tab has built on (a
+step-ID prefix) gives way to the tab's work, and saved work that continues this tab's exact steps is restored; the panel
+asks which to keep only when neither holds. Saved work for the previous engine stays stored, so switching back restores it.
 
 **Open DuckDB Table** resolves a local regular file, its resource-scoped Python interpreter and a bounded native
 catalog of non-temporary tables and views before asking for one. Discovery closes its reader before the picker opens.
@@ -1551,11 +1559,9 @@ keeps its draft, redo and viewing state. Applied-step inspection clears when foc
 for ordinary editor changes. Ordinary grid and profile reads after capture do not invalidate the copy; pending mutations,
 changed revisions, lost execution owners and unsettled runtime work still prevent it from publishing.
 The candidate starts without a draft or redo history and remains private through replay and validation.
-For files, an existing target-library editor, pending copy or saved plan prevents
-replacement. Live copies check editors and pending copies within their captured bridge family; separately opened live
-sessions remain independent, even when they read the same variable. Failure closes only the candidate; closing either published editor preserves the other's runtime ownership.
-For files, **Open file separately** uses the existing file-opening path and that library's saved plan, if any.
-As with file-plan copying, a completed durable save survives later cancellation even if the candidate is not published.
+Copies exist only for live R sources; file sessions switch libraries in place (see Local files above). A copy checks
+editors and pending copies within its captured bridge family; separately opened live sessions remain independent, even
+when they read the same variable. Failure closes only the candidate; closing either published editor preserves the other's runtime ownership.
 Native R reports missing or incompatible selected packages for the exact environment without silently changing
 libraries. Failed local file opens offer the repair flow below; live notebooks and terminals retain manual guidance.
 

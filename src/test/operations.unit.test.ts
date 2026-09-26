@@ -3,8 +3,10 @@ import {
   canEditLatestStep,
   canStartOperation,
   operationCatalog,
+  stepReplaysOnEngine,
   supportedOperationCatalog,
-  supportsOperation
+  supportsOperation,
+  type FileEngine
 } from "../shared/operations";
 import type { SourceCapabilities } from "../shared/protocol";
 import type { TransformStep } from "../shared/protocol";
@@ -101,5 +103,38 @@ describe("operation entry-point predicates", () => {
     expect(canEditLatestStep({ mode: "editing", capabilities: renameOnlyCapabilities, steps: [appliedStep] })).toBe(
       false
     );
+  });
+});
+
+describe("stepReplaysOnEngine", () => {
+  const polars: FileEngine = { backend: "polars" };
+  const pandas: FileEngine = { backend: "pandas" };
+  const duckdb: FileEngine = { backend: "duckdb" };
+  const base: FileEngine = { backend: "r", rLibrary: "base" };
+  const dplyr: FileEngine = { backend: "r", rLibrary: "dplyr" };
+  const column = { id: "c:0", name: "items" };
+  const custom: TransformStep = { id: "custom", kind: "customCode", params: { code: "result <- df" } };
+  const struct: TransformStep = {
+    id: "struct",
+    kind: "extractStructFields",
+    params: { column, fields: [{ field: "a", newColumn: "items_a" }] }
+  };
+  const explode: TransformStep = { id: "explode", kind: "explodeList", params: { column } };
+
+  it.each([
+    [custom, base, dplyr, true],
+    [custom, polars, pandas, false],
+    [custom, base, polars, false],
+    [custom, polars, base, false],
+    [struct, polars, duckdb, true],
+    [struct, duckdb, base, true],
+    [struct, polars, pandas, false],
+    [explode, polars, base, true],
+    [explode, base, polars, true],
+    [explode, polars, duckdb, false],
+    [explode, polars, pandas, false],
+    [appliedStep, base, pandas, true]
+  ] as const)("replays %j from %j on %j: %s", (step, from, to, replays) => {
+    expect(stepReplaysOnEngine(step, from, to)).toBe(replays);
   });
 });

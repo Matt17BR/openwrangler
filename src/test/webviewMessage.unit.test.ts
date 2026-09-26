@@ -35,6 +35,7 @@ describe("webview message decoding", () => {
       { kind: "changeImportOptions", actionId: controlId }
     ],
     [{ kind: "changeBackend" }, { kind: "changeBackend" }],
+    [{ kind: "cancelImportChange" }, { kind: "cancelImportChange" }],
     [{ kind: "installRuntimeDependencies" }, { kind: "installRuntimeDependencies" }],
     [{ kind: "exportData" }, { kind: "exportData" }],
     [{ kind: "keepCopiedPlan" }, { kind: "keepCopiedPlan" }],

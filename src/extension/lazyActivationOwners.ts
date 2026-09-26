@@ -30,8 +30,7 @@ const FILE_COMMANDS = [
   "openWrangler.openFile",
   "openWrangler.openPath",
   "openWrangler.openDuckDBTable",
-  "openWrangler.openFileWithPlan",
-  "openWrangler.internal.openFileWithEngine"
+  "openWrangler.openFileWithPlan"
 ] as const;
 const PICKLE_COMMANDS = ["openWrangler.convertTrustedPickle"] as const;
 const NOTEBOOK_COMMANDS = [
@@ -578,7 +577,7 @@ export class LazyActivationOwners implements vscode.Disposable {
       const native = rFile.createRFileBridge(this.context, source);
       try {
         const coordinated = bindDelegate ? bindDelegate(native) : session.coordinator.createBridge(native);
-        return { ...coordinated, onIdle: () => native.onIdle() };
+        return Object.assign(coordinated, { onIdle: () => native.onIdle() });
       } catch (error) {
         native.onIdle();
         throw error;

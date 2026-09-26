@@ -1,4 +1,5 @@
 import * as path from "path";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
   DataBackend,
@@ -11,7 +12,8 @@ import type {
   SessionMetadata,
   SessionMode,
   SessionOpenedResponse,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
 import { engineLabel, isDuckDBTableSource, rLibraries, sourceDisplayLabel } from "../shared/protocol";
 import {
@@ -26,7 +28,14 @@ import { canRequestLiveSessionMode, sessionModeAction } from "../shared/sessionM
 import type { ViewFilterRemovalTarget } from "../shared/filterModel";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
-import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "./dataBridge";
+import { operationByKind, stepReplaysOnEngine, type FileEngine } from "../shared/operations";
+import type {
+  BridgeRequestOptions,
+  FileReconfigurationOptions,
+  OpenWranglerBridge,
+  SavedFileWork,
+  SessionRuntimeReplacement
+} from "./dataBridge";
 import {
   configuredRLibrary,
   getSetting,
@@ -36,10 +45,11 @@ import {
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 import { dependencyGuardRecoveryGuidance } from "./pythonDependencyState";
-import { automaticBackends, type FileDataBackend } from "./pythonEnvironmentModel";
+import { automaticBackends } from "./pythonEnvironmentModel";
 import { supportsRFileExecution } from "./r/rscriptPath";
 import {
   RendererSynchronizationCoordinator,
+  type ImportActivity,
   type RendererImportPreparation,
   type RendererSynchronizationIdentity
 } from "./rendererSynchronizationCoordinator";
@@ -64,11 +74,26 @@ interface PendingRuntimeReplacement {
 
 interface FailedBackendChange {
   readonly source: SessionSource;
-  readonly backend: FileDataBackend;
+  readonly engine: FileEngine;
+  readonly plan: NonNullable<FileReconfigurationOptions["plan"]>;
   readonly sessionId: string;
   readonly revision: number;
   readonly generation: number;
 }
+
+/** What switching this tab to one engine would do with its cleaning work. */
+interface EngineSwitch {
+  readonly engine: FileEngine;
+  readonly current: boolean;
+  readonly saved: SavedFileWork | undefined;
+  /** Applied steps before the first one the engine cannot replay. */
+  readonly portableSteps: number;
+  /** The first applied step, or the draft, that the engine cannot replay. */
+  readonly blocked: TransformStep | undefined;
+}
+
+/** Resolves the coordinated bridge that runs a file with an engine. */
+export type FileEngineBridgeSelector = (source: SessionSource, engine: FileEngine) => Promise<OpenWranglerBridge>;
 
 export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
   try {
@@ -82,6 +107,7 @@ export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
   private static readonly panels = new Set<OpenWranglerPanel>();
+  private static fileEngineBridges: FileEngineBridgeSelector | undefined;
   private sessionId: string | undefined;
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
@@ -105,6 +131,8 @@ export class OpenWranglerPanel {
   >();
   private pendingRuntimeReplacement: PendingRuntimeReplacement | undefined;
   private changingImportOptions = false;
+  private importActivity: ImportActivity | undefined;
+  private replacementSubscription: { dispose(): void } | undefined;
   private readonly rendererSync: RendererSynchronizationCoordinator;
   private codePreviewReveal: { sessionId: string; pending: boolean } | undefined;
   private unpublishedAuthoritativeSnapshot = false;
@@ -124,9 +152,9 @@ export class OpenWranglerPanel {
   constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: OpenWranglerBridge,
+    private bridge: OpenWranglerBridge,
     private source: SessionSource,
-    private readonly backend?: DataBackend,
+    private backend?: DataBackend,
     openImmediately = true,
     private backendPreference: DataBackend | "auto" = backend ?? "auto",
     private readonly initialMode?: SessionMode,
@@ -193,6 +221,7 @@ export class OpenWranglerPanel {
       getOpenResponse: () => this.openResponse,
       isSnapshotPending: () => this.currentRuntimeReplacement() !== undefined,
       isImportBusy: () => this.changingImportOptions,
+      importActivity: () => this.importActivity,
       ensureSessionOpen: () => this.open(),
       clearStepInspection: () => {
         if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
@@ -211,19 +240,7 @@ export class OpenWranglerPanel {
       },
       reportDiagnostic: (message) => this.bridge.reportDiagnostic?.(message)
     });
-    const replacementSubscription = this.bridge.onDidReplaceRuntime?.((replacement) => {
-      if (this.disposed || this.sessionId !== replacement.sessionId || !replacement.isCurrent()) return;
-      this.pendingRuntimeReplacement = {
-        replacement,
-        rendererGeneration: this.rendererSync.rendererGeneration,
-        context: this.recoveryContext(null)
-      };
-      this.rendererSync.invalidate();
-      this.rendererSync.clearStartupRecoveryTimer();
-      // Let the reporting request enrol before deciding whether an idle read is needed.
-      void Promise.resolve().then(() => this.scheduleRecoveryRefresh());
-    });
-    if (replacementSubscription) this.disposables.push(replacementSubscription);
+    this.subscribeToRuntimeReplacement();
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),
       undefined,
@@ -533,6 +550,32 @@ export class OpenWranglerPanel {
     }
   }
 
+  /** Registers how panels reach each file engine's runtime; the file commands own the bridges. */
+  static registerFileEngineBridges(selector: FileEngineBridgeSelector): vscode.Disposable {
+    OpenWranglerPanel.fileEngineBridges = selector;
+    return {
+      dispose: () => {
+        if (OpenWranglerPanel.fileEngineBridges === selector) OpenWranglerPanel.fileEngineBridges = undefined;
+      }
+    };
+  }
+
+  private subscribeToRuntimeReplacement(): void {
+    this.replacementSubscription?.dispose();
+    this.replacementSubscription = this.bridge.onDidReplaceRuntime?.((replacement) => {
+      if (this.disposed || this.sessionId !== replacement.sessionId || !replacement.isCurrent()) return;
+      this.pendingRuntimeReplacement = {
+        replacement,
+        rendererGeneration: this.rendererSync.rendererGeneration,
+        context: this.recoveryContext(null)
+      };
+      this.rendererSync.invalidate();
+      this.rendererSync.clearStartupRecoveryTimer();
+      // Let the reporting request enrol before deciding whether an idle read is needed.
+      void Promise.resolve().then(() => this.scheduleRecoveryRefresh());
+    });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -562,6 +605,8 @@ export class OpenWranglerPanel {
       void this.closing.catch(() => undefined);
       this.sessionId = undefined;
     }
+    this.replacementSubscription?.dispose();
+    this.replacementSubscription = undefined;
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }
@@ -697,6 +742,10 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "cancelImportChange") {
+      if (this.importActivity) this.importChangeCancellation?.cancel();
+      return;
+    }
     if (decoded.kind === "clearStepInspection") {
       if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
       return;
@@ -1169,11 +1218,9 @@ export class OpenWranglerPanel {
     const cancellation = new vscode.CancellationTokenSource();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = cancellation;
-    const originalSource = this.source;
-    const originalSessionId = this.sessionId;
-    const originalRevision = this.sessionRevision;
     const announceBusy = !this.changingImportOptions;
     this.changingImportOptions = true;
+    let targetBridge: OpenWranglerBridge | undefined;
     try {
       if (announceBusy) {
         await this.postRendererMessage({ kind: "importOptionsState", busy: true });
@@ -1232,22 +1279,6 @@ export class OpenWranglerPanel {
         ...this.source,
         ...(importOptions === undefined ? { importOptions: undefined } : { importOptions })
       };
-      if ((this.snapshot?.metadata.backend ?? this.backend) === "r") {
-        await vscode.commands.executeCommand(
-          "openWrangler.internal.openFileWithEngine",
-          nextSource,
-          "r",
-          () =>
-            !this.disposed &&
-            generation === this.openAttemptGeneration &&
-            originalSource === this.source &&
-            originalSessionId === this.sessionId &&
-            originalRevision === this.sessionRevision &&
-            !cancellation.token.isCancellationRequested,
-          this.snapshot?.metadata.rLibrary ?? this.rLibrary
-        );
-        return;
-      }
       if (!this.sessionId) {
         const previousSource = this.source;
         this.source = nextSource;
@@ -1261,35 +1292,18 @@ export class OpenWranglerPanel {
         return;
       }
 
-      if (!this.bridge.reconfigureFileSession) {
-        await this.postUnpublishedAuthoritativeSnapshot();
-        await this.postImportResponse({
-          kind: "error",
-          code: "import_reconfiguration_unavailable",
-          message: "This Open Wrangler session does not support changing import options.",
-          recoverable: true
-        });
-        return;
-      }
-      const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, nextSource, {
+      const metadata = this.snapshot?.metadata;
+      const engine = metadata && fileEngine(metadata);
+      if (!engine) return;
+      this.importActivity = { activity: "Reopening with the new import options…" };
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true, ...this.importActivity });
+      targetBridge = await this.fileEngineBridge(nextSource, engine);
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      const response = await this.reconfigureOnBridge(targetBridge, this.sessionId, this.sessionRevision, nextSource, {
         cancellation: cancellation.token
       });
-      if (response.kind === "sessionOpened") {
-        this.invalidateRendererSynchronization();
-        this.source = response.metadata.source;
-        this.openResponse = response;
-        this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.metadata.revision;
-        this.snapshot = response;
-        this.snapshotViewContextId = undefined;
-        this.latestPageViewRequestId = undefined;
-        this.unpublishedAuthoritativeSnapshot = true;
-        await this.rememberConfirmedFileImportOptions(response.metadata);
-      }
+      if (response.kind === "sessionOpened") await this.adoptReconfiguredSession(response);
       if (this.disposed || generation !== this.openAttemptGeneration) return;
-      if (response.kind === "sessionOpened") {
-        if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
-      }
       if (response.kind !== "sessionOpened") await this.postUnpublishedAuthoritativeSnapshot();
       await this.postImportResponse(response);
     } catch (error) {
@@ -1302,6 +1316,7 @@ export class OpenWranglerPanel {
         recoverable: true
       });
     } finally {
+      if (targetBridge && targetBridge !== this.bridge) targetBridge.onIdle?.();
       if (this.importChangeCancellation === cancellation) {
         this.importChangeCancellation = undefined;
         cancellation.dispose();
@@ -1336,11 +1351,16 @@ export class OpenWranglerPanel {
       await this.opening.catch(() => undefined);
       if (this.disposed || generation !== this.openAttemptGeneration || !this.sessionId || !this.snapshot) return;
     }
+    if (this.source.kind !== "file") {
+      await this.changeLiveRLibrary(generation);
+      return;
+    }
 
     const cancellation = new vscode.CancellationTokenSource();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = cancellation;
     this.changingImportOptions = true;
+    let targetBridge: OpenWranglerBridge | undefined;
     try {
       await this.postRendererMessage({ kind: "importOptionsState", busy: true });
       const source = this.source;
@@ -1353,172 +1373,58 @@ export class OpenWranglerPanel {
         sessionId === this.sessionId &&
         revision === this.sessionRevision &&
         !cancellation.token.isCancellationRequested;
-      const currentBackend = this.snapshot.metadata.backend;
-      const copy = currentBackend === "r" ? this.bridge.captureRLibraryCopy?.(sessionId, revision) : undefined;
-      const compatibleBackends: Array<FileDataBackend | "r"> = source.kind === "file" ? automaticBackends(source) : [];
-      if (
-        fileSourceUri(source)?.scheme === "file" &&
-        /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/iu.test(source.path ?? "")
-      ) {
-        if (!current()) return;
-        if (supportsRFileExecution()) compatibleBackends.push("r");
-      }
-      if (currentBackend === "r" && !compatibleBackends.includes("r")) compatibleBackends.push("r");
-      const currentLibrary = this.snapshot.metadata.rLibrary;
-      const selected = retry
-        ? { backend: retry.backend, rLibrary: undefined }
-        : await vscode.window.showQuickPick(
-            compatibleBackends.flatMap<vscode.QuickPickItem & { backend: FileDataBackend | "r"; rLibrary?: RLibrary }>(
-              (candidate) =>
-                candidate === "r"
-                  ? rLibraries.map((library) => ({
-                      label: engineLabel("r", library),
-                      description:
-                        currentBackend === "r" && currentLibrary === library
-                          ? "Current"
-                          : currentBackend === "r"
-                            ? "Open editing copy"
-                            : "Reopen file in new tab",
-                      backend: candidate,
-                      rLibrary: library
-                    }))
-                  : [
-                      {
-                        label: engineLabel(candidate),
-                        description:
-                          candidate === currentBackend
-                            ? "Current"
-                            : currentBackend === "r"
-                              ? "Reopen file in new tab"
-                              : "Switch in this tab",
-                        backend: candidate,
-                        rLibrary: undefined
-                      }
-                    ]
-            ),
-            {
-              title: "Dataframe engine",
-              placeHolder: `Current: ${engineLabel(currentBackend, currentLibrary)}`,
-              matchOnDescription: true
-            },
-            cancellation.token
-          );
-      const backend = selected?.backend;
-      if (!backend || !current()) {
-        return;
-      }
-      if (!compatibleBackends.includes(backend)) {
-        await this.post({
-          kind: "error",
-          code: "unsupported_backend",
-          message: `${engineLabel(backend, selected?.rLibrary)} cannot open this file with its current import options.`,
-          recoverable: true,
-          sessionId: this.sessionId
-        });
-        return;
-      }
-      if (backend === currentBackend && (backend !== "r" || selected?.rLibrary === currentLibrary)) return;
-
-      if (backend === "r" && currentBackend === "r" && (!copy || "kind" in copy)) {
-        await this.post(
-          copy ?? {
-            kind: "error",
-            code: "r_library_copy_unavailable",
-            message:
-              "This R session cannot open an editing copy right now. Wait for pending work to finish and try again.",
-            recoverable: true,
-            sessionId
-          }
-        );
-        return;
-      }
-      if (backend === "r" && currentBackend === "r" && copy && !("kind" in copy) && selected?.rLibrary) {
-        const targetLibrary = selected.rLibrary;
-        const confirmation = await vscode.window.showWarningMessage(
-          `Open an editing copy with ${engineLabel("r", targetLibrary)}?`,
-          {
-            modal: true,
-            detail: `The new tab replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"} from this session's captured source. This tab keeps its draft, redo history and view. The copy has no draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? ` Open file separately reloads the file and restores steps saved for ${engineLabel("r", targetLibrary)}.` : ""}`
-          },
-          "Open editing copy",
-          ...(source.kind === "file" ? ["Open file separately"] : [])
-        );
-        if (confirmation === "Open file separately" && source.kind === "file" && current()) {
-          await vscode.commands.executeCommand(
-            "openWrangler.internal.openFileWithEngine",
-            source,
-            "r",
-            current,
-            targetLibrary
-          );
-          return;
-        }
-        if (confirmation !== "Open editing copy" || !current() || !copy.isCurrent()) return;
-        const copyBridge = copy.createBridge(targetLibrary);
-        OpenWranglerPanel.create(this.context, copyBridge, copy.source, "r", "r", "editing", targetLibrary);
-        return;
-      }
-
-      if (backend === "r" || currentBackend === "r") {
-        await vscode.commands.executeCommand(
-          "openWrangler.internal.openFileWithEngine",
-          source,
-          backend,
-          current,
-          ...(selected?.rLibrary ? [selected.rLibrary] : [])
-        );
-        return;
-      }
-      if (!this.bridge.reconfigureFileSession) return;
-
       const metadata = this.snapshot.metadata;
-      if (!retry && (metadata.steps.length > 0 || metadata.draftStep)) {
-        const applied = metadata.steps.length;
-        const planDescription = [
-          applied > 0 ? `${applied} applied ${applied === 1 ? "step" : "steps"}` : undefined,
-          metadata.draftStep ? "the current draft" : undefined
-        ]
-          .filter((value): value is string => Boolean(value))
-          .join(" and ");
-        const confirmation = await vscode.window.showWarningMessage(
-          `Switch to ${engineLabel(backend)}?`,
-          {
-            modal: true,
-            detail: `Open Wrangler will replay ${planDescription} with ${engineLabel(backend)}. If replay fails, the current ${engineLabel(currentBackend)} session stays open.`
-          },
-          "Replay and switch"
-        );
-        if (
-          confirmation !== "Replay and switch" ||
-          cancellation.token.isCancellationRequested ||
-          this.disposed ||
-          generation !== this.openAttemptGeneration
-        ) {
-          return;
-        }
+      const from = fileEngine(metadata);
+      if (!from) return;
+      const engines: FileEngine[] = automaticBackends(source).map((backend) => ({ backend }));
+      if (
+        from.backend === "r" ||
+        (fileSourceUri(source)?.scheme === "file" &&
+          /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/iu.test(source.path ?? "") &&
+          supportsRFileExecution())
+      ) {
+        engines.push(...rLibraries.map((rLibrary) => ({ backend: "r" as const, rLibrary })));
       }
+      const switches = engines.map((engine) => this.engineSwitch(metadata, from, engine));
+      const picked =
+        retry?.engine ??
+        (await vscode.window.showQuickPick(
+          switches.map((candidate) => ({
+            label: engineLabel(candidate.engine.backend, candidate.engine.rLibrary),
+            description: engineSwitchDescription(metadata, candidate),
+            ...candidate.engine
+          })),
+          {
+            title: "Dataframe engine",
+            placeHolder: `Current: ${engineLabel(from.backend, from.rLibrary)}`,
+            matchOnDescription: true
+          },
+          cancellation.token
+        ));
+      const selected = picked && switches.find((candidate) => sameEngine(candidate.engine, picked));
+      if (!selected || selected.current || !current()) return;
+      const plan = retry?.plan ?? (await chooseEngineSwitchPlan(metadata, from, selected));
+      if (!plan || !current()) return;
 
       await this.drainForwardedRequests();
-      if (
-        this.disposed ||
-        generation !== this.openAttemptGeneration ||
-        cancellation.token.isCancellationRequested ||
-        !this.sessionId ||
-        (retry !== undefined && !this.isCurrentBackendChange(retry))
-      ) {
-        return;
-      }
-      const attempt = retry ?? {
-        source: this.source,
-        backend,
-        sessionId: this.sessionId,
-        revision: this.sessionRevision,
+      if (!current() || (retry !== undefined && !this.isCurrentBackendChange(retry))) return;
+      const attempt: FailedBackendChange = retry ?? {
+        source,
+        engine: selected.engine,
+        plan,
+        sessionId,
+        revision,
         generation
       };
+      const pendingEngine = engineLabel(attempt.engine.backend, attempt.engine.rLibrary);
+      this.importActivity = { activity: `Switching to ${pendingEngine}…`, pendingEngine };
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true, ...this.importActivity });
+      targetBridge = await this.fileEngineBridge(attempt.source, attempt.engine);
+      if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
       if (retry) {
         await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: true });
         if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
-        const ready = await this.bridge.installFileDependencies?.(attempt.source, attempt.backend, {
+        const ready = await targetBridge.installFileDependencies?.(attempt.source, attempt.engine.backend, {
           cancellation: cancellation.token
         });
         if (!ready || !this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
@@ -1527,26 +1433,24 @@ export class OpenWranglerPanel {
           return;
         }
       }
-      const response = await this.bridge.reconfigureFileSession(attempt.sessionId, attempt.revision, attempt.source, {
-        cancellation: cancellation.token,
-        backendPreference: backend
-      });
+      const response = await this.reconfigureOnBridge(
+        targetBridge,
+        attempt.sessionId,
+        attempt.revision,
+        attempt.source,
+        {
+          cancellation: cancellation.token,
+          backendPreference: attempt.engine.backend,
+          ...(attempt.engine.rLibrary ? { rLibrary: attempt.engine.rLibrary } : {}),
+          plan: attempt.plan
+        }
+      );
       if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
       this.failedBackendChange =
         response.kind === "error" && response.code === "missing_dependencies" ? attempt : undefined;
       if (response.kind === "sessionOpened") {
-        this.invalidateRendererSynchronization();
-        this.backendPreference = backend;
-        this.source = response.metadata.source;
-        this.openResponse = response;
-        this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.metadata.revision;
-        this.snapshot = response;
-        this.snapshotViewContextId = undefined;
-        this.latestPageViewRequestId = undefined;
-        this.unpublishedAuthoritativeSnapshot = true;
-        await this.rememberConfirmedFileImportOptions(response.metadata);
-        if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
+        this.backendPreference = attempt.engine.backend;
+        await this.adoptReconfiguredSession(response);
       } else {
         await this.postUnpublishedAuthoritativeSnapshot();
       }
@@ -1568,6 +1472,164 @@ export class OpenWranglerPanel {
         sessionId: this.sessionId
       });
     } finally {
+      if (targetBridge && targetBridge !== this.bridge) targetBridge.onIdle?.();
+      if (this.importChangeCancellation === cancellation) {
+        this.importChangeCancellation = undefined;
+        cancellation.dispose();
+      }
+      await this.finishImportChange(generation);
+    }
+  }
+
+  private engineSwitch(metadata: SessionMetadata, from: FileEngine, engine: FileEngine): EngineSwitch {
+    if (sameEngine(from, engine))
+      return { engine, current: true, saved: undefined, portableSteps: metadata.steps.length, blocked: undefined };
+    const blockedIndex = metadata.steps.findIndex((step) => !stepReplaysOnEngine(step, from, engine));
+    const draft = metadata.draftStep;
+    return {
+      engine,
+      current: false,
+      saved: this.bridge.savedFileWork?.(this.source, engine),
+      portableSteps: blockedIndex < 0 ? metadata.steps.length : blockedIndex,
+      blocked:
+        blockedIndex >= 0
+          ? metadata.steps[blockedIndex]
+          : draft && !stepReplaysOnEngine(draft, from, engine)
+            ? draft
+            : undefined
+    };
+  }
+
+  /** Python engines share one runtime, and one R runtime serves every library for the same import options. */
+  private async fileEngineBridge(source: SessionSource, engine: FileEngine): Promise<OpenWranglerBridge> {
+    const current = this.snapshot?.metadata.backend;
+    if (
+      engine.backend === "r"
+        ? current === "r" && isDeepStrictEqual(source.importOptions, this.source.importOptions)
+        : current !== "r"
+    )
+      return this.bridge;
+    const select = OpenWranglerPanel.fileEngineBridges;
+    if (!select) throw new Error(`${engineLabel(engine.backend, engine.rLibrary)} is unavailable in this window.`);
+    return select(source, engine);
+  }
+
+  private async reconfigureOnBridge(
+    target: OpenWranglerBridge,
+    sessionId: string,
+    revision: number,
+    source: SessionSource,
+    options: FileReconfigurationOptions
+  ): Promise<OpenWranglerResponse> {
+    if (!this.bridge.reconfigureFileSession) {
+      return {
+        kind: "error",
+        code: "import_reconfiguration_unavailable",
+        message: "This Open Wrangler session does not support changing its file configuration.",
+        recoverable: true
+      };
+    }
+    const response = await this.bridge.reconfigureFileSession(
+      sessionId,
+      revision,
+      source,
+      target === this.bridge ? options : { ...options, targetBridge: target }
+    );
+    if (response.kind === "sessionOpened" && target !== this.bridge) {
+      this.bridge = target;
+      this.subscribeToRuntimeReplacement();
+    }
+    return response;
+  }
+
+  private async adoptReconfiguredSession(response: SessionOpenedResponse): Promise<void> {
+    this.invalidateRendererSynchronization();
+    const blockSizeChanged =
+      fetchGridBlockSize(this.backend).pageSize !== fetchGridBlockSize(response.metadata.backend).pageSize;
+    this.source = response.metadata.source;
+    this.openResponse = response;
+    this.sessionId = response.metadata.sessionId;
+    this.sessionRevision = response.metadata.revision;
+    this.snapshot = response;
+    this.snapshotViewContextId = undefined;
+    this.latestPageViewRequestId = undefined;
+    this.unpublishedAuthoritativeSnapshot = true;
+    await this.rememberConfirmedFileImportOptions(response.metadata);
+    if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
+    if (blockSizeChanged) this.rendererSync.replaceRenderer();
+  }
+
+  /** Live R sources keep their captured frame, so another library opens as an editing copy of it. */
+  private async changeLiveRLibrary(generation: number): Promise<void> {
+    if (!this.sessionId || !this.snapshot) return;
+    const cancellation = new vscode.CancellationTokenSource();
+    this.importChangeCancellation?.dispose();
+    this.importChangeCancellation = cancellation;
+    this.changingImportOptions = true;
+    try {
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true });
+      const source = this.source;
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      const current = (): boolean =>
+        !this.disposed &&
+        generation === this.openAttemptGeneration &&
+        source === this.source &&
+        sessionId === this.sessionId &&
+        revision === this.sessionRevision &&
+        !cancellation.token.isCancellationRequested;
+      const copy = this.bridge.captureRLibraryCopy?.(sessionId, revision);
+      const currentLibrary = this.snapshot.metadata.rLibrary;
+      const selected = await vscode.window.showQuickPick(
+        rLibraries.map((library) => ({
+          label: engineLabel("r", library),
+          description: library === currentLibrary ? "Current" : "Open editing copy",
+          rLibrary: library
+        })),
+        {
+          title: "Dataframe engine",
+          placeHolder: `Current: ${engineLabel("r", currentLibrary)}`,
+          matchOnDescription: true
+        },
+        cancellation.token
+      );
+      if (!selected || selected.rLibrary === currentLibrary || !current()) return;
+      if (!copy || "kind" in copy) {
+        await this.post(
+          copy ?? {
+            kind: "error",
+            code: "r_library_copy_unavailable",
+            message:
+              "This R session cannot open an editing copy right now. Wait for pending work to finish and try again.",
+            recoverable: true,
+            sessionId
+          }
+        );
+        return;
+      }
+      const targetLibrary = selected.rLibrary;
+      if (copy.appliedStepCount > 0) {
+        const confirmation = await vscode.window.showWarningMessage(
+          `Open an editing copy with ${engineLabel("r", targetLibrary)}?`,
+          {
+            modal: true,
+            detail: `The new tab replays ${countText(copy.appliedStepCount, "applied step")} from this session's captured source. This tab keeps its draft, redo history and view.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}`
+          },
+          "Open editing copy"
+        );
+        if (confirmation !== "Open editing copy") return;
+      }
+      if (!current() || !copy.isCurrent()) return;
+      OpenWranglerPanel.create(
+        this.context,
+        copy.createBridge(targetLibrary),
+        copy.source,
+        "r",
+        "r",
+        "editing",
+        targetLibrary
+      );
+    } finally {
       if (this.importChangeCancellation === cancellation) {
         this.importChangeCancellation = undefined;
         cancellation.dispose();
@@ -1579,6 +1641,7 @@ export class OpenWranglerPanel {
   private async finishImportChange(generation: number): Promise<void> {
     if (this.disposed || generation !== this.openAttemptGeneration) return;
     this.changingImportOptions = false;
+    this.importActivity = undefined;
     if (this.rendererSync.rendererReady) await this.enqueueRendererSynchronization(false);
     if (this.disposed || generation !== this.openAttemptGeneration) return;
     if (!this.rendererSync.rendererReady || this.currentRuntimeReplacement()) {
@@ -2319,6 +2382,7 @@ export class OpenWranglerPanel {
 
   private async rememberConfirmedFileImportOptions(metadata: SessionMetadata): Promise<void> {
     const { source, backend, rLibrary } = metadata;
+    this.backend = backend;
     this.rLibrary = rLibrary;
     this.panel.title = `Open Wrangler: ${sourceDisplayLabel(source)} (${engineLabel(backend, rLibrary)})`;
     const uri = fileSourceUri(source);
@@ -2391,6 +2455,156 @@ export class OpenWranglerPanel {
 </body>
 </html>`;
   }
+}
+
+function fileEngine(metadata: SessionMetadata): FileEngine | undefined {
+  const { backend, rLibrary } = metadata;
+  if (backend === "r") return { backend, rLibrary: rLibrary ?? "base" };
+  return backend === "pandas" || backend === "polars" || backend === "duckdb" ? { backend } : undefined;
+}
+
+function sameEngine(left: FileEngine, right: FileEngine): boolean {
+  return left.backend === right.backend && (left.backend !== "r" || left.rLibrary === right.rLibrary);
+}
+
+function countText(count: number, noun: string): string {
+  return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function stepsText(count: number): string {
+  return count === 1 ? "step" : countText(count, "step");
+}
+
+function workText(steps: number, draft: boolean): string {
+  return [steps > 0 ? countText(steps, "applied step") : undefined, draft ? "a draft" : undefined]
+    .filter((part): part is string => part !== undefined)
+    .join(" and ");
+}
+
+/** Applying a draft keeps its step ID, so saved work that this tab has built on is a prefix of the tab's work. */
+function tabContainsSavedWork(metadata: SessionMetadata, saved: SavedFileWork): boolean {
+  const { draftStep } = saved;
+  return (
+    saved.steps.every((step, index) => metadata.steps[index]?.id === step.id) &&
+    (draftStep === undefined ||
+      draftStep.id === metadata.steps[saved.steps.length]?.id ||
+      (saved.steps.length === metadata.steps.length && draftStep.id === metadata.draftStep?.id))
+  );
+}
+
+/** Edit latest keeps a step's ID, so restoring saved work over this tab needs every tab step to match a saved one. */
+function savedWorkContainsTab(metadata: SessionMetadata, saved: SavedFileWork): boolean {
+  const same = (step: TransformStep, other: TransformStep | undefined) =>
+    other !== undefined && stepSignature(step) === stepSignature(other);
+  const { steps, draftStep } = metadata;
+  return (
+    steps.every((step, index) => same(step, saved.steps[index])) &&
+    (draftStep === undefined ||
+      same(draftStep, saved.steps[steps.length]) ||
+      (steps.length === saved.steps.length && same(draftStep, saved.draftStep)))
+  );
+}
+
+const sourceColumnId = /^(?:c:source:|r:c:)(0|[1-9][0-9]*)$/u;
+
+/** Python engines name a file's source columns `c:source:N` and R `r:c:N`, so source references compare by position. */
+function stepSignature(value: unknown, key?: string): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stepSignature(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const fields = Object.entries(value)
+      .filter(([, field]) => field !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${fields.map(([name, field]) => `${JSON.stringify(name)}:${stepSignature(field, name)}`).join(",")}}`;
+  }
+  return JSON.stringify(key === "id" && typeof value === "string" ? value.replace(sourceColumnId, "source:$1") : value);
+}
+
+function engineSwitchDescription(metadata: SessionMetadata, target: EngineSwitch): string | undefined {
+  if (target.current) return "Current";
+  const { saved, blocked } = target;
+  const otherSaved = saved && !tabContainsSavedWork(metadata, saved) ? saved : undefined;
+  if (otherSaved && savedWorkContainsTab(metadata, otherSaved))
+    return `Restores ${workText(otherSaved.steps.length, otherSaved.draftStep !== undefined)}`;
+  if (blocked) return `${operationByKind(blocked.kind).title} can't move`;
+  if (otherSaved) return "Has other saved work";
+  const hasWork = metadata.steps.length > 0 || metadata.draftStep !== undefined;
+  return hasWork ? `Replays ${workText(metadata.steps.length, metadata.draftStep !== undefined)}` : undefined;
+}
+
+function blockedReason(step: TransformStep, from: FileEngine): string {
+  const title = operationByKind(step.kind).title;
+  switch (step.kind) {
+    case "customCode":
+      return `${title} is written for ${from.backend === "r" ? "R" : engineLabel(from.backend)} dataframes.`;
+    case "extractStructFields":
+      return `${title} needs Python · Polars, Python · DuckDB or R.`;
+    case "explodeList":
+      return `${title} needs Python · Polars or R.`;
+    default:
+      return `${title} can't run with the selected engine.`;
+  }
+}
+
+/**
+ * Asks only when the switch would lose work: the target has saved work that differs from this tab's, or a step cannot
+ * replay there. The source engine keeps its own saved work either way.
+ */
+async function chooseEngineSwitchPlan(
+  metadata: SessionMetadata,
+  from: FileEngine,
+  target: EngineSwitch
+): Promise<FileReconfigurationOptions["plan"] | undefined> {
+  const hasDraft = metadata.draftStep !== undefined;
+  const conflicting = target.saved && !tabContainsSavedWork(metadata, target.saved) ? target.saved : undefined;
+  const { blocked } = target;
+  if (!conflicting && !blocked) return "current";
+  if (conflicting && savedWorkContainsTab(metadata, conflicting)) return "saved";
+
+  const toLabel = engineLabel(target.engine.backend, target.engine.rLibrary);
+  const restoresSource = `Switching back to ${engineLabel(from.backend, from.rLibrary)} restores this tab's work.`;
+  const draftOnly = target.portableSteps === metadata.steps.length;
+  const keep = draftOnly
+    ? { label: "Switch without the draft", plan: { steps: target.portableSteps } }
+    : target.portableSteps > 0
+      ? { label: `Replay the first ${stepsText(target.portableSteps)}`, plan: { steps: target.portableSteps } }
+      : undefined;
+  if (!conflicting) {
+    if (!blocked) return "current";
+    const fresh = "Start without steps";
+    const choices = draftOnly
+      ? metadata.steps.length > 0
+        ? "The applied steps can move without the draft."
+        : `${toLabel} can start without the draft.`
+      : keep
+        ? `You can replay the ${stepsText(target.portableSteps)} before it or start without steps.`
+        : `${toLabel} can start without steps.`;
+    const choice = await vscode.window.showWarningMessage(
+      `${operationByKind(blocked.kind).title} can't run with ${toLabel}`,
+      { modal: true, detail: `${blockedReason(blocked, from)} ${choices} ${restoresSource}` },
+      ...(keep ? [keep.label] : []),
+      ...(draftOnly ? [] : [fresh])
+    );
+    if (keep && choice === keep.label) return keep.plan;
+    return choice === fresh ? { steps: 0 } : undefined;
+  }
+  const restore = "Restore saved work";
+  const carry = blocked ? keep : { label: "Use this tab's work", plan: "current" as const };
+  const choice = await vscode.window.showWarningMessage(
+    `${toLabel} has other saved work for this file`,
+    {
+      modal: true,
+      detail: [
+        `It has ${workText(conflicting.steps.length, conflicting.draftStep !== undefined)}.`,
+        `This tab has ${workText(metadata.steps.length, hasDraft)}.`,
+        ...(blocked ? [blockedReason(blocked, from)] : []),
+        restoresSource
+      ].join(" ")
+    },
+    restore,
+    ...(carry ? [carry.label] : [])
+  );
+  if (choice === restore) return "saved";
+  return carry && choice === carry.label ? carry.plan : undefined;
 }
 
 function fetchGridBlockSize(
