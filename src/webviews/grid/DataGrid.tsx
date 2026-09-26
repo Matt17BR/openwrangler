@@ -166,7 +166,8 @@ export function DataGrid({
   const { rowAxisHeader, hasRowLabels, rowHeaderWidth } = useGridRowHeaderLayout(
     metadata.sessionId,
     metadata.rowAxis,
-    page.rows
+    page.rows,
+    addressableRowCount
   );
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata.schema), [metadata.schema]);
   const diffPresentation = useMemo(

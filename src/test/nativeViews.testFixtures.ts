@@ -18,7 +18,7 @@ interface TestTreeNode {
   cleaningStepHandle?: unknown;
 }
 interface TestTreeProvider {
-  getChildren(): TestTreeNode[];
+  getChildren(element?: TestTreeNode): TestTreeNode[];
   onDidChangeTreeData?(listener: (node: TestTreeNode | undefined) => unknown): { dispose(): void };
 }
 interface TestWebviewViewProvider {
@@ -144,7 +144,7 @@ vi.mock("vscode", () => {
   return {
     EventEmitter,
     TreeItem,
-    TreeItemCollapsibleState: { None: 0 },
+    TreeItemCollapsibleState: { None: 0, Expanded: 2 },
     ThemeIcon,
     ThemeColor,
     Uri,
@@ -372,6 +372,17 @@ function treeChildren(id: string): TestTreeNode[] {
   return provider.getChildren();
 }
 
+function treeLeaves(id: string): TestTreeNode[] {
+  const provider = nativeMocks.treeDataProviders.get(id);
+  if (!provider) throw new Error(`Expected ${id} to be registered.`);
+  const leaves = (nodes: TestTreeNode[]): TestTreeNode[] =>
+    nodes.flatMap((node) => {
+      const children = provider.getChildren(node);
+      return children.length === 0 ? [node] : leaves(children);
+    });
+  return leaves(provider.getChildren());
+}
+
 function nodePresentation(node: TestTreeNode): [string, string | undefined] {
   return [node.label, node.description];
 }
@@ -594,6 +605,7 @@ export {
   snapshot,
   snapshotWithDraft,
   treeChildren,
+  treeLeaves,
   uncancelledViewToken,
   vscodeUri
 };

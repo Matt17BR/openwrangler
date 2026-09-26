@@ -203,7 +203,7 @@
   .gridProfileControls,
   .profileValueToggle.compact button,
   .headerProfilesButton {
-    font-size: 10px;
+    font-size: var(--ow-font-size-caption);
   }
 
   .profileValueToggle.compact button,
@@ -248,7 +248,7 @@
   }
 }
 
-@container (max-width: 313px) {
+@container (max-width: 323px) {
   .gridProfileControls {
     grid-column: 1 / -1;
     grid-row: 3;

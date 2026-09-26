@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { DataRow, RowAxis } from "../../shared/protocol";
 
-const numericRowHeaderWidth = 58;
+const minimumRowHeaderWidth = 58;
 const maximumLabeledRowHeaderWidth = 180;
 const rowLabelCharacterWidth = 8;
 const rowLabelHorizontalPadding = 20;
@@ -23,12 +23,13 @@ interface GridRowHeaderLayout {
 export function useGridRowHeaderLayout(
   sessionId: string,
   rowAxis: RowAxis | undefined,
-  rows: readonly DataRow[]
+  rows: readonly DataRow[],
+  rowCount: number
 ): GridRowHeaderLayout {
   const rowAxisHeader = rowAxisHeaderLabel(rowAxis);
   const axisSignature = rowAxisSignature(rowAxis);
   const hasLabels = rows.some((row) => row.rowLabel !== undefined) || rowAxisHeader !== undefined;
-  const nextWidth = rowHeaderWidthForRows(rows, rowAxisHeader);
+  const nextWidth = rowHeaderWidthForRows(rows, rowCount, rowAxisHeader);
   const [state, setState] = useState<GridRowHeaderLayoutState>({
     sessionId,
     axisSignature,
@@ -42,6 +43,8 @@ export function useGridRowHeaderLayout(
   } else if (hasLabels) {
     const width = Math.max(state.width, nextWidth);
     if (!state.hasLabels || width !== state.width) resolved = { ...state, hasLabels: true, width };
+  } else if (!state.hasLabels && state.width !== nextWidth) {
+    resolved = { ...state, width: nextWidth };
   }
   if (resolved !== state) setState(resolved);
 
@@ -63,14 +66,17 @@ function rowAxisHeaderLabel(rowAxis: RowAxis | undefined): string | undefined {
   return names.length > 0 ? names.join(" / ") : "Index";
 }
 
-function rowHeaderWidthForRows(rows: readonly DataRow[], header?: string): number {
+function rowHeaderWidthForRows(rows: readonly DataRow[], rowCount: number, header?: string): number {
   const longestLabel = rows.reduce(
     (longest, row) => Math.max(longest, row.rowLabel === undefined ? 0 : Array.from(row.rowLabel).length),
     header === undefined ? 0 : Array.from(header).length
   );
-  if (longestLabel === 0) return numericRowHeaderWidth;
+  if (longestLabel === 0) {
+    const longestRowNumber = String(Math.max(1, rowCount)).length;
+    return Math.max(minimumRowHeaderWidth, longestRowNumber * rowLabelCharacterWidth + rowLabelHorizontalPadding);
+  }
   return Math.min(
     maximumLabeledRowHeaderWidth,
-    Math.max(numericRowHeaderWidth, longestLabel * rowLabelCharacterWidth + rowLabelHorizontalPadding)
+    Math.max(minimumRowHeaderWidth, longestLabel * rowLabelCharacterWidth + rowLabelHorizontalPadding)
   );
 }

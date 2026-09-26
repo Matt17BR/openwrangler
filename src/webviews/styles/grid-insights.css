@@ -2,7 +2,7 @@
   container-type: inline-size;
   color: var(--vscode-descriptionForeground);
   display: grid;
-  font-size: 11px;
+  font-size: var(--ow-font-size-small);
   gap: 5px;
   line-height: 1.25;
   min-width: 0;
@@ -12,7 +12,6 @@
 
 .exactSummaryStats {
   display: grid;
-  font-size: 10px;
   gap: 2px 6px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -52,7 +51,7 @@
 }
 
 thead:has(.numericHistogram) {
-  --header-distribution-size: 56px;
+  --header-distribution-size: calc(45px + 1.25 * var(--ow-font-size-caption));
 }
 
 thead:has(.categoryMiniChart > :nth-child(2)) {
@@ -134,7 +133,7 @@ thead:has(.categoryMiniChart > :nth-child(4)) {
 .miniChartCaption,
 .miniChartLegend {
   color: var(--vscode-descriptionForeground);
-  font-size: 9px;
+  font-size: var(--ow-font-size-caption);
   line-height: 1.25;
 }
 
@@ -240,6 +239,11 @@ button.categoryMiniRow.interactive:focus-visible {
   border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
 }
 
+.categoryMiniRow small {
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
 .categoryMiniLabel {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -257,7 +261,6 @@ button.categoryMiniRow.interactive:focus-visible {
 .datetimeMiniChart {
   color: var(--vscode-descriptionForeground);
   display: grid;
-  font-size: 10px;
   gap: 2px;
   margin-top: 4px;
   min-width: 0;

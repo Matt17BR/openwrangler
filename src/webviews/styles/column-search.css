@@ -7,7 +7,7 @@
   max-width: 420px;
   min-width: 140px;
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
 }
 
 .columnSearchControl {
@@ -112,7 +112,7 @@
 .columnSearchType,
 .columnSearchPosition {
   color: var(--vscode-descriptionForeground);
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
 }
 
 .columnSearchResults [role="option"].active .columnSearchType,
