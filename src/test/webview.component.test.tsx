@@ -3218,9 +3218,9 @@ describe("App toolbar", () => {
       }
     });
     const engine = screen.getByRole("button", {
-      name: "Change dataframe engine. Current engine: Base R"
+      name: "Change dataframe engine. Current engine: R · base"
     });
-    expect(engine).toHaveTextContent("Base R");
+    expect(engine).toHaveTextContent("R · base");
     expect(engine).toBeEnabled();
     fireEvent.click(engine!);
     expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "changeBackend" });
@@ -3292,7 +3292,7 @@ describe("App toolbar", () => {
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
 
     const backend = await screen.findByRole("button", {
-      name: "Change dataframe engine. Current engine: Polars"
+      name: "Change dataframe engine. Current engine: Python · Polars"
     });
     expect(backend).toHaveTextContent("Polars");
     expect(backend.querySelector(".codicon-chevron-down")).not.toBeNull();
@@ -3383,7 +3383,7 @@ describe("App file import options", () => {
       summaries: []
     });
 
-    expect(await screen.findByText("PySpark")).toBeVisible();
+    expect(await screen.findByText("Python · PySpark")).toBeVisible();
     expect(screen.queryByText("Experimental")).not.toBeInTheDocument();
     const orderingBadge = screen.getByText("Source order").closest("summary");
     expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
@@ -3790,7 +3790,7 @@ describe("App file import options", () => {
       summaries: []
     });
 
-    expect(await screen.findByText("PySpark")).toBeVisible();
+    expect(await screen.findByText("Python · PySpark")).toBeVisible();
     expect(screen.queryByText("Source order")).not.toBeInTheDocument();
     const orderingBadge = screen.getByText("Sorted").closest("summary");
     expect(orderingBadge).toHaveAttribute("data-session-badge", "ordering");
@@ -5204,7 +5204,7 @@ describe("App file import options", () => {
       expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "Add step" })).toHaveAttribute(
         "title",
-        expect.stringContaining("Choose Base R or dplyr in the engine picker")
+        expect.stringContaining("Choose R · base or R · dplyr in the engine picker")
       );
       expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
       const picker = screen.getByRole("button", { name: /Change dataframe engine. Current engine: R/u });

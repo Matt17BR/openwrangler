@@ -9,11 +9,10 @@ import type {
   TransformStep
 } from "../shared/protocol";
 import {
-  dataBackendLabel,
+  engineLabel,
   formatSessionRowCount,
   isExactGridPage,
   isDuckDBTableSource,
-  rLibraryLabel,
   sourceDisplayLabel,
   supportsViewingCapability
 } from "../shared/protocol";
@@ -2439,26 +2438,16 @@ export function App() {
                   data-session-badge="backend"
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
-                  aria-label={
-                    metadata.backend === "r" && metadata.rLibrary
-                      ? `Change dataframe engine. Current engine: ${metadata.rLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(metadata.rLibrary)}`}`
-                      : `Change dataframe engine. Current engine: ${dataBackendLabel(metadata.backend)}`
-                  }
+                  aria-label={`Change dataframe engine. Current engine: ${engineLabel(metadata.backend, metadata.rLibrary)}`}
                   title="Change dataframe engine"
                   onClick={() => vscode.postMessage({ kind: "changeBackend" })}
                 >
-                  <span>
-                    {metadata.backend === "r" && metadata.rLibrary
-                      ? metadata.rLibrary === "base"
-                        ? "Base R"
-                        : `R · ${rLibraryLabel(metadata.rLibrary)}`
-                      : dataBackendLabel(metadata.backend)}
-                  </span>
+                  <span>{engineLabel(metadata.backend, metadata.rLibrary)}</span>
                   <span className="codicon codicon-chevron-down" aria-hidden="true" />
                 </button>
               ) : (
                 <span className="sessionBadge backendBadge" data-session-badge="backend">
-                  {dataBackendLabel(metadata.backend)}
+                  {engineLabel(metadata.backend, metadata.rLibrary)}
                 </span>
               )}
               {snapshotMode && (

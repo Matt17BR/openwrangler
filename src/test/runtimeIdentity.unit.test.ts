@@ -50,7 +50,7 @@ describe("host runtime identity", () => {
   });
 
   it("labels only the canonical R cleaning libraries", () => {
-    expect(rLibraries.map(rLibraryLabel)).toEqual(["Base R", "dplyr", "data.table", "collapse"]);
+    expect(rLibraries.map(rLibraryLabel)).toEqual(["base", "dplyr", "data.table", "collapse"]);
     for (const library of rLibraries) expect(isRLibrary(library)).toBe(true);
     for (const invalid of [undefined, null, "", "R", "r.base", "tidyverse", "data.frame", "DPLYR", 0]) {
       expect(isRLibrary(invalid)).toBe(false);

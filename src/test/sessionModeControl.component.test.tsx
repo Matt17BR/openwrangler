@@ -163,16 +163,16 @@ describe("SessionModeControl", () => {
     fireEvent.click(screen.getByText("viewing").closest("summary")!);
     expect(
       screen.getByText(
-        "This R library supports viewing precise timestamps. Choose Base R or dplyr in the engine picker to add cleaning steps."
+        "This R library supports viewing precise timestamps. Choose R · base or R · dplyr in the engine picker to add cleaning steps."
       )
     ).toBeVisible();
-    expect(screen.getByText(/Choose Base R or dplyr in the engine picker/u)).toBeVisible();
-    expect(cleaningUnavailableReason(precise)).toContain("Choose Base R or dplyr");
+    expect(screen.getByText(/Choose R · base or R · dplyr in the engine picker/u)).toBeVisible();
+    expect(cleaningUnavailableReason(precise)).toContain("Choose R · base or R · dplyr");
     rerender(<SessionModeControl metadata={{ ...precise, mode: "editing" }} busy={false} onSwitch={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Switch to Viewing" })).toBeEnabled();
-    expect(screen.getByText(/Choose Base R or dplyr in the engine picker/u)).toBeVisible();
+    expect(screen.getByText(/Choose R · base or R · dplyr in the engine picker/u)).toBeVisible();
     expect(cleaningUnavailableReason({ ...precise, mode: "editing" })).toBe(
-      "Choose Base R or dplyr in the engine picker to clean precise timestamps."
+      "Choose R · base or R · dplyr in the engine picker to clean precise timestamps."
     );
   });
 

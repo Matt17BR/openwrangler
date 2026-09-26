@@ -632,7 +632,9 @@ The [architecture](architecture.md#native-r) defines frame, precision, source an
 In **2.6**, local R files use a base `data.frame` with the existing R cleaning operations. File sessions can restore saved plans;
 live R notebook, document and terminal sessions do not use workspace persistence.
 Select R explicitly in the engine picker or `openWrangler.defaultBackend`, or let Auto select R when no compatible
-Python interpreter or file engine is available. The engine picker identifies Python and R choices and shows their action.
+Python interpreter or file engine is available. The engine picker, engine badge and panel title name every engine the
+same way: **Python · Pandas**, **Python · Polars**, **Python · DuckDB**, **R · base**, **R · dplyr**, **R · data.table**
+and **R · collapse**.
 Switching between Python file engines replays work in the current tab. Crossing between Python and R opens the file in
 a new tab, restoring steps saved for the selected engine and R library; the original tab keeps its work.
 R import-options changes also create a separate session. **Open Another File with This Plan** also accepts confirmed built-in R file plans.
@@ -691,12 +693,12 @@ In **2.6**, new R sessions can select base R, dplyr, data.table or collapse for 
 `openWrangler.defaultRLibrary` defaults to `base`; file restoration preserves its confirmed selection. File engine
 choices and the R toolbar show the library independently of the input's base `data.frame`, tibble or `data.table` class.
 
-| Choice     | Required package in the owning R environment                       |
-| ---------- | ------------------------------------------------------------------ |
-| Base R     | Existing native R operations; Pivot Wider also requires data.table |
-| dplyr      | dplyr 1.2.1 or newer                                               |
-| data.table | data.table 1.18.2.1 or newer                                       |
-| collapse   | collapse 2.1.7 or newer                                            |
+| Choice         | Required package in the owning R environment                       |
+| -------------- | ------------------------------------------------------------------ |
+| R · base       | Existing native R operations; Pivot Wider also requires data.table |
+| R · dplyr      | dplyr 1.2.1 or newer                                               |
+| R · data.table | data.table 1.18.2.1 or newer                                       |
+| R · collapse   | collapse 2.1.7 or newer                                            |
 
 All choices retain the existing type and reader requirements. Base R keeps the established native R operations,
 including the data.table helper for Pivot Wider. Non-base choices use the selected package for built-in cleaning

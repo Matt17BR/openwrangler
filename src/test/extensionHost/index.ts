@@ -1960,7 +1960,7 @@ async function exerciseReleasedREditingJourney(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
     ["row_id", "group", "score", "label"]
   );
-  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R · base");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -7280,7 +7280,7 @@ async function exercisePackagedBackendSwitchJourney(
       `The ${current} renderer must acknowledge the current session before its engine badge is clicked.`
     );
     const badge = app.getByRole("button", {
-      name: `Change dataframe engine. Current engine: ${current}`,
+      name: `Change dataframe engine. Current engine: Python · ${current}`,
       exact: true
     });
     await badge.waitFor({ state: "visible", timeout: 10_000 });
@@ -9123,7 +9123,7 @@ async function captureReleasedJupyterPolarsDraft(
   const modeBadge = app.locator('[data-session-badge="mode"]');
   await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
   await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal((await backendBadge.innerText()).trim(), "POLARS");
+  assert.equal((await backendBadge.innerText()).trim(), "Python · Polars");
   assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "EDITING");
   const toolbarBox = await app.locator(".toolbar").boundingBox();
   const allBadges = app.locator("[data-session-badge]");
@@ -9422,7 +9422,7 @@ async function captureReleasedJupyterDuckDbRelation(
     const modeBadge = app.locator('[data-session-badge="mode"]');
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
-    assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "DUCKDB");
+    assert.equal((await backendBadge.innerText()).trim(), "Python · DuckDB");
     assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING");
     assert.equal(await app.getByRole("button", { name: "Switch to Editing" }).count(), 1);
     const toolbarBox = await app.locator(".toolbar").boundingBox();
@@ -9787,7 +9787,7 @@ async function captureReleasedJupyterPySparkLive(
     assert.ok(app, "The PySpark screenshot requires the exact live Open Wrangler renderer.");
     const backendBadge = app.locator('[data-session-badge="backend"]');
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
-    assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
+    assert.equal((await backendBadge.innerText()).trim(), "Python · PySpark");
     const orderingBadge = app.locator('[data-session-badge="ordering"]');
     const modeBadge = app.locator('[data-session-badge="mode"]');
     assert.equal(await app.locator('[data-session-badge="experimental"]').count(), 0);
@@ -15666,7 +15666,7 @@ async function visiblePersistedPanelSnapshot(
   assert.equal(active.viewState.viewport.firstVisibleRow, PERSISTED_PANEL_FIRST_VISIBLE_ROW);
   assert.ok(active.viewState.viewport.scrollLeft > 0, "The restored horizontal viewport must remain nonzero.");
 
-  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "POLARS");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "Python · Polars");
   const cleaningPlan = app.getByRole("group", { name: "Cleaning plan" });
   await cleaningPlan.waitFor({ state: "visible", timeout: 10_000 });
   const appliedStepText = (await cleaningPlan.innerText()).replace(/\s+/gu, " ").trim();

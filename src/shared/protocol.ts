@@ -68,7 +68,7 @@ export function isRLibrary(value: unknown): value is RLibrary {
 export function rLibraryLabel(library: RLibrary): string {
   switch (library) {
     case "base":
-      return "Base R";
+      return "base";
     case "dplyr":
       return "dplyr";
     case "data.table":
@@ -76,6 +76,11 @@ export function rLibraryLabel(library: RLibrary): string {
     case "collapse":
       return "collapse";
   }
+}
+
+/** The engine label shared by the badge, engine picker, panel title and messages, such as "Python · Polars" or "R · base". */
+export function engineLabel(backend: DataBackend, rLibrary?: RLibrary): string {
+  return backend === "r" ? `R · ${rLibraryLabel(rLibrary ?? "base")}` : `Python · ${dataBackendLabel(backend)}`;
 }
 
 export function isSessionBoundRequest(request: OpenWranglerRequest): request is SessionBoundRequest {

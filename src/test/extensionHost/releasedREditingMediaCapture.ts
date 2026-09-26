@@ -224,7 +224,7 @@ export function createReleasedREditingMediaCapture({
       await revealCodePreviewOperationLine(exactCodePreview, ".ow_result <- .ow_group_by", "total_revenue");
 
       app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
-      assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
+      assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R · base");
       assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
       const review = app.getByRole("region", { name: "Draft review" });
       await review.waitFor({ state: "visible", timeout: 10_000 });

@@ -47,7 +47,7 @@ export function sessionModeLabel(metadata: SessionMetadata): string {
 
 export function sessionModeDescription(metadata: SessionMetadata): string {
   if (rCleaningRestricted(metadata)) {
-    return "This R library supports viewing precise timestamps. Choose Base R or dplyr in the engine picker to add cleaning steps.";
+    return "This R library supports viewing precise timestamps. Choose R · base or R · dplyr in the engine picker to add cleaning steps.";
   }
   if (metadata.mode === "editing") {
     const editingDescription = "Editing builds a separate cleaning plan. Open Wrangler keeps the source unchanged.";
@@ -72,7 +72,7 @@ export function sessionModeDescription(metadata: SessionMetadata): string {
 
 export function cleaningUnavailableReason(metadata: SessionMetadata): string {
   if (rCleaningRestricted(metadata)) {
-    return "Choose Base R or dplyr in the engine picker to clean precise timestamps.";
+    return "Choose R · base or R · dplyr in the engine picker to clean precise timestamps.";
   }
   if (metadata.mode === "editing") {
     return metadata.draftStep

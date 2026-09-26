@@ -1603,7 +1603,7 @@ describe("native state and presentation commands", () => {
     ).toBe(true);
     const summaryRows = treeChildren("openWrangler.summary");
     expect(summaryRows.map(nodePresentation)).toEqual([
-      ["Saved sales preview", "Polars · viewing"],
+      ["Saved sales preview", "Python · Polars · viewing"],
       ["Shape", "4 × 3"],
       ["Columns", "3"],
       ["Selected column", "score"],
@@ -1931,20 +1931,20 @@ describe("native state and presentation commands", () => {
       };
       registered.setActiveSession(restricted);
       expect(posted.at(-1)).toMatchObject({
-        code: expect.stringContaining("Choose Base R or dplyr in the engine picker"),
+        code: expect.stringContaining("Choose R · base or R · dplyr in the engine picker"),
         editable: false,
         runtimeIdentity: { runtimeLanguage: "r", codeDialect: `r.${rLibrary}` }
       });
       expect(treeChildren("openWrangler.operations")).toEqual([
         expect.objectContaining({
           label: "Cleaning unavailable",
-          description: expect.stringContaining("Choose Base R or dplyr"),
+          description: expect.stringContaining("Choose R · base or R · dplyr"),
           command: undefined
         })
       ]);
       await expect(command("openWrangler.copyCode")()).resolves.toBe(false);
       expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
-        expect.stringContaining("Choose Base R or dplyr")
+        expect.stringContaining("Choose R · base or R · dplyr")
       );
     }
 
