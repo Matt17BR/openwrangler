@@ -53,9 +53,14 @@ report that every selected row and column must be loaded before copying. They do
 
 Select a column header with the pointer or `Enter`/`Space`; `Ctrl/Cmd+Space` is the explicit spreadsheet-style
 shortcut. The footer reports that the whole filtered and sorted column is selected while Open Wrangler prepares it one
-projected page at a time. **Copy column** becomes available only after preparation succeeds. A later click or
-`Ctrl/Cmd+C` writes the prepared data in that user gesture, and moving to another cell or data view discards the
-prepared column. Column copy starts with the column header and does not include row labels.
+projected page at a time, and **Copy column when ready** copies it as soon as preparation finishes. Once prepared, a
+click or `Ctrl/Cmd+C` writes the data in that user gesture, and moving to another cell or data view discards the
+prepared column. The footer's **Copy column** copies the selected column, or the focused cell's column when no header
+is selected. Column copy starts with the column header and does not include row labels.
+
+The clipboard holds up to 100,000 cells or 4 MiB. A longer column copies its leading values that fit: the action reads
+**Copy first N values**, its tooltip gives the column's total, and the result says how many values were copied. A
+column with more than 99,999 rows, or an unknown row count, is read only when you copy it.
 
 PySpark traversal remains contiguous even after the total becomes exact. In that backend, `Ctrl/Cmd+End` advances
 only to the next permitted block instead of skipping directly to the final row.

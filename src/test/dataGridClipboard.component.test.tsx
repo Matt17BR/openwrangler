@@ -1512,19 +1512,16 @@ describe("DataGrid clipboard interactions", () => {
     renderGrid("view-a", visiblePage, threeRowMetadata);
 
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
-    const firstRequest = latestColumnRequest();
-    expect(firstRequest).toMatchObject({
+    const request = latestColumnRequest();
+    expect(request).toMatchObject({
       purpose: "clipboardColumn",
       viewContextId: "view-a",
-      request: { kind: "getPage", offset: 0, limit: 2, columnOffset: 0, columnLimit: 1 }
+      request: { kind: "getPage", offset: 0, limit: 3, columnOffset: 0, columnLimit: 1 }
     });
     expect(screen.getByText("Whole filtered and sorted column city selected. Preparing copy.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy column" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy column when ready" })).toBeEnabled();
 
-    dispatchPage(firstRequest, threeRowMetadata, 0, 2, 3, [cell("=2+2"), cell("\t@cmd")]);
-    const secondRequest = latestColumnRequest();
-    expect(secondRequest.request).toMatchObject({ offset: 2, limit: 1, columnOffset: 0, columnLimit: 1 });
-    dispatchPage(secondRequest, threeRowMetadata, 2, 1, 3, [cell("contains\nline")]);
+    dispatchPage(request, threeRowMetadata, 0, 3, 3, [cell("=2+2"), cell("\t@cmd"), cell("contains\nline")]);
 
     const copyColumn = await screen.findByRole("button", { name: "Copy column" });
     expect(copyColumn).toBeEnabled();
@@ -1706,17 +1703,6 @@ describe("DataGrid clipboard interactions", () => {
       activeMetadata: { ...metadata, filteredShape: { rows: 0, columns: 2 } },
       activePage: { ...page, rows: [], totalRows: 0 },
       reason: "There are no rows in the current data view."
-    },
-    {
-      name: "known oversized",
-      viewContextId: "view-a",
-      activeMetadata: {
-        ...metadata,
-        shape: { rows: 100_000, columns: 2 },
-        filteredShape: { rows: 100_000, columns: 2 }
-      },
-      activePage: page,
-      reason: "Copy is limited to 100,000 cells. Select a smaller range."
     }
   ])(
     "disables every impossible $name whole-column action with one reason",
@@ -1885,22 +1871,119 @@ describe("DataGrid clipboard interactions", () => {
     expect(document.activeElement).toBe(salesHeader);
   });
 
-  it("rejects a known oversized column before any page or clipboard adapter call", () => {
-    renderGrid("view-a", page, {
+  it("selects an oversized column without reading it and copies its first 99,999 values on request", async () => {
+    const oversizedMetadata: SessionMetadata = {
       ...metadata,
       shape: { rows: 100_000, columns: 2 },
       filteredShape: { rows: 100_000, columns: 2 }
-    });
+    };
+    renderGrid("view-a", { ...page, totalRows: 100_000 }, oversizedMetadata);
 
     fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
-
     expect(vscodePostMessage).not.toHaveBeenCalled();
-    expect(writeText).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Copy column" })).toHaveAttribute(
+    expect(screen.getByText("Whole filtered and sorted column city selected, 100,000 rows.")).toBeTruthy();
+    const copyFirst = screen.getByRole("button", { name: "Copy first 99,999 values" });
+    expect(copyFirst).toBeEnabled();
+    expect(copyFirst).toHaveAttribute(
       "title",
-      "Copy is limited to 100,000 cells. Select a smaller range."
+      "The clipboard holds up to 100,000 cells or 4 MiB, so this copies the first 99,999 of 100,000 values. Export the data to keep every value."
     );
-    expect(screen.getByText("Copy is limited to 100,000 cells. Select a smaller range.")).toBeTruthy();
+
+    fireEvent.click(copyFirst);
+    const limits: number[] = [];
+    for (let offset = 0; offset < 99_999; offset += limits.at(-1) ?? 0) {
+      const request = latestColumnRequest();
+      expect(request.request.offset).toBe(offset);
+      limits.push(request.request.limit);
+      dispatchPage(
+        request,
+        oversizedMetadata,
+        offset,
+        request.request.limit,
+        100_000,
+        Array.from({ length: request.request.limit }, (_, index) => cell(`v${offset + index}`))
+      );
+    }
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(limits).toEqual([...Array.from({ length: 99 }, () => 1_000), 999]);
+    const lines = writeText.mock.calls[0]?.[0].split("\n");
+    expect(lines).toHaveLength(100_000);
+    expect(lines?.slice(0, 2)).toEqual(["city", "v0"]);
+    expect(lines?.at(-1)).toBe("v99998");
+    expect(
+      screen.getByText(
+        "Copied the first 99,999 of 100,000 values of column city and its header. The clipboard holds up to 100,000 cells or 4 MiB."
+      )
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Whole filtered and sorted column city selected; the first 99,999 of 100,000 values fit the clipboard."
+      )
+    ).toBeTruthy();
+  });
+
+  it("starts reading a selected oversized column when its header copy shortcut is pressed", () => {
+    const oversizedMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 250_000, columns: 2 },
+      filteredShape: { rows: 250_000, columns: 2 }
+    };
+    renderGrid("view-a", { ...page, totalRows: 250_000 }, oversizedMetadata);
+    const cityHeader = screen.getByRole("columnheader", { name: "city" });
+    fireEvent.click(cityHeader);
+    expect(vscodePostMessage).not.toHaveBeenCalled();
+
+    act(() => cityHeader.focus());
+    fireEvent.keyDown(cityHeader, { key: "c", ctrlKey: true });
+
+    expect(latestColumnRequest().request).toMatchObject({ offset: 0, limit: 1_000, columnOffset: 0, columnLimit: 1 });
+    expect(screen.getByText("Preparing column city. Copy will complete when it is ready.")).toBeTruthy();
+  });
+
+  it("copies the leading values that fit the 4 MiB clipboard text limit", async () => {
+    const threeRowMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 3, columns: 2 },
+      filteredShape: { rows: 3, columns: 2 }
+    };
+    renderGrid("view-a", { ...page, totalRows: 3 }, threeRowMetadata);
+    fireEvent.click(screen.getByRole("columnheader", { name: "city" }));
+    const large = "x".repeat(1_500_000);
+    dispatchPage(latestColumnRequest(), threeRowMetadata, 0, 3, 3, [
+      cell(`a${large}`),
+      cell(`b${large}`),
+      cell(`c${large}`)
+    ]);
+
+    const copyFirst = await screen.findByRole("button", { name: "Copy first 2 values" });
+    expect(copyFirst).toHaveAttribute(
+      "title",
+      "The clipboard holds up to 100,000 cells or 4 MiB, so this copies the first 2 of 3 values. Export the data to keep every value."
+    );
+    fireEvent.click(copyFirst);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`city\na${large}\nb${large}`));
+    expect(
+      screen.getByText(
+        "Copied the first 2 of 3 values of column city and its header. The clipboard holds up to 100,000 cells or 4 MiB."
+      )
+    ).toBeTruthy();
+  });
+
+  it("copies the focused cell's column from the footer", async () => {
+    renderGrid();
+    focusCell(screen.getByRole("cell", { name: "10.5" }));
+    const copyColumn = screen.getByRole("button", { name: "Copy column" });
+    expect(copyColumn).toBeEnabled();
+
+    fireEvent.click(copyColumn);
+    const request = latestColumnRequest();
+    expect(request.request).toMatchObject({ offset: 0, columnOffset: 1, columnLimit: 1 });
+    dispatchPage(request, metadata, 0, 2, 2, [numberCell(10.5), numberCell(-20)]);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("sales\n10.5\n-20"));
+    expect(screen.getByText("Copied column sales with 2 values and its header.")).toBeTruthy();
   });
 
   it("cancels preparation and ignores its page when the logical view changes", () => {
@@ -1915,7 +1998,7 @@ describe("DataGrid clipboard interactions", () => {
       viewRequestIds: [staleRequest.request.viewRequestId]
     });
     dispatchPage(staleRequest, metadata, 0, 2, 2, [cell("stale-secret"), cell("stale-secret")]);
-    expect(screen.getByRole("button", { name: "Copy column" })).toBeDisabled();
+    expect(screen.queryByText(/Whole filtered and sorted column city/u)).toBeNull();
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.queryByText(/stale-secret/u)).toBeNull();
   });

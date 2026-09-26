@@ -455,7 +455,7 @@ describe("grid clipboard contract", () => {
     if (result.ok) expect(result.payload.text).toBe(expectedText);
   });
 
-  it("enforces the exact UTF-8 cap incrementally across many logical-column pages", () => {
+  it("keeps the leading values that fit the exact UTF-8 cap across many logical-column pages", () => {
     const maximumBytes = 4 * 1024 * 1024;
     const fieldCount = 4_096;
     const unicodeChunk = "😀".repeat(255);
@@ -464,48 +464,47 @@ describe("grid clipboard contract", () => {
 
     for (const delta of [-1, 0, 1]) {
       const accumulator = createGridClipboardColumnAccumulator("h");
-      let failure;
       for (let index = 0; index < fieldCount; index += 1) {
-        failure = accumulator.append(
-          cell(unicodeChunk + (index === fieldCount - 1 ? "x".repeat(exactPadding + delta) : ""))
-        );
-        if (failure) break;
+        expect(
+          accumulator.append(cell(unicodeChunk + (index === fieldCount - 1 ? "x".repeat(exactPadding + delta) : "")))
+        ).toBeUndefined();
       }
-      if (delta <= 0) {
-        expect(failure).toBeUndefined();
-        const result = accumulator.finish();
-        expect(result.ok).toBe(true);
-        if (result.ok) expect(new TextEncoder().encode(result.payload.text).byteLength).toBe(maximumBytes + delta);
-      } else {
-        expect(failure).toEqual({
-          ok: false,
-          reason: "Copy is limited to 4 MiB of displayed text. Select a smaller range."
-        });
-        expect(failure).not.toHaveProperty("payload");
-        expect(JSON.stringify(failure)).not.toContain("😀");
-      }
+      const result = accumulator.finish();
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(accumulator.full).toBe(delta > 0);
+      expect(result.payload.rowCount).toBe(delta > 0 ? fieldCount - 1 : fieldCount);
+      expect(new TextEncoder().encode(result.payload.text).byteLength).toBe(
+        delta > 0 ? baseBytes - 255 * 4 - 1 : maximumBytes + delta
+      );
     }
   });
 
-  it("accepts 99,999 values after the header and rejects the next cell", () => {
+  it("fails when the first value alone exceeds the byte cap", () => {
+    const accumulator = createGridClipboardColumnAccumulator("h");
+    expect(accumulator.append(cell("x".repeat(4 * 1024 * 1024)))).toBeUndefined();
+    expect(accumulator.full).toBe(true);
+    expect(accumulator.finish()).toEqual({
+      ok: false,
+      reason: "The first value in this column is larger than the 4 MiB clipboard limit."
+    });
+  });
+
+  it("keeps 99,999 values after the header and ignores later cells", () => {
     const accumulator = createGridClipboardColumnAccumulator("column");
     for (let index = 0; index < 99_999; index += 1) {
       expect(accumulator.append(cell("x"))).toBeUndefined();
     }
-    const exactLimit = accumulator.finish();
-    expect(exactLimit.ok).toBe(true);
-    if (exactLimit.ok) {
-      expect(exactLimit.payload.rowCount).toBe(99_999);
-      expect(exactLimit.payload.rowCount + 1).toBe(100_000);
-    }
+    expect(accumulator.full).toBe(false);
+    expect(accumulator.append(cell("later-payload"))).toBeUndefined();
+    expect(accumulator.full).toBe(true);
 
-    const rejection = accumulator.append(cell("hostile-payload"));
-    expect(rejection).toEqual({
-      ok: false,
-      reason: "Copy is limited to 100,000 cells. Select a smaller range."
-    });
-    expect(rejection).not.toHaveProperty("payload");
-    expect(JSON.stringify(rejection)).not.toContain("hostile-payload");
+    const result = accumulator.finish();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.rowCount).toBe(99_999);
+      expect(result.payload.text).not.toContain("later-payload");
+    }
   });
 });
 

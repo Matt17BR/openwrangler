@@ -22,6 +22,8 @@ export interface GridClipboardController {
   copySettlementReceipt: GridClipboardSettlementReceipt;
   copy(mode: GridClipboardMode, ownsResult?: () => boolean): Promise<boolean>;
   copyColumn(columnOrOwnsResult?: ColumnSchema | (() => boolean)): Promise<boolean>;
+  /** The selected column header, or else the focused cell's column. */
+  focusedColumn: ColumnSchema | undefined;
   focusCell(coordinate: GridCellCoordinate): void;
   getSelectionGeneration(): number;
   isColumnSelected(columnId: string): boolean;
@@ -32,7 +34,6 @@ export interface GridClipboardController {
   selectCell(coordinate: GridCellCoordinate, extend: boolean): void;
   selectColumn(column: ColumnSchema): void;
   selectionDescription: string;
-  wholeColumnResult: GridClipboardResult;
 }
 
 export interface GridClipboardSettlementReceipt {
@@ -63,7 +64,6 @@ interface ExpectedResultRefreshReceipt {
 export function useGridClipboard({
   contextId,
   metadata,
-  pageSize,
   schema,
   page,
   initialCoordinate,
@@ -72,7 +72,6 @@ export function useGridClipboard({
 }: {
   contextId: string;
   metadata: SessionMetadata;
-  pageSize: number;
   schema: readonly ColumnSchema[];
   page: LiveGridPage;
   initialCoordinate: GridCellCoordinate;
@@ -104,7 +103,7 @@ export function useGridClipboard({
     },
     [onSelectionWillChange]
   );
-  const wholeColumn = useWholeColumnClipboard({ metadata, pageSize, viewContextId });
+  const wholeColumn = useWholeColumnClipboard({ metadata, viewContextId });
   const resetWholeColumn = wholeColumn.reset;
   const selectWholeColumn = wholeColumn.selectColumn;
   useLayoutEffect(() => {
@@ -287,12 +286,19 @@ export function useGridClipboard({
     };
   }, []);
 
+  const focusedColumn = wholeColumn.selectedColumnId
+    ? schema.find((column) => column.id === wholeColumn.selectedColumnId)
+    : selection.contextId === contextId
+      ? schema[selection.focus.column]
+      : undefined;
+
   return {
     columnCopyAction: wholeColumn.actionForColumn,
     announcement: wholeColumn.selectedColumnId ? wholeColumn.announcement : announcement,
     copy,
     copyColumn: wholeColumn.copy,
     copySettlementReceipt,
+    focusedColumn,
     focusCell,
     getSelectionGeneration: () => selectionGenerationRef.current,
     isColumnSelected: wholeColumn.isColumnSelected,
@@ -312,12 +318,14 @@ export function useGridClipboard({
       wholeColumn.selectionDescription ||
       (schema.length === 0 || page.rows.length === 0
         ? "No cells selected"
-        : gridClipboardSelectionDescription(selection, contextId)),
-    wholeColumnResult: wholeColumn.result
+        : gridClipboardSelectionDescription(selection, contextId))
   };
 }
 
 export function GridClipboardControls({ controller }: { controller: GridClipboardController }) {
+  const column = controller.focusedColumn;
+  const columnAction = column ? controller.columnCopyAction(column) : undefined;
+  const columnLabel = columnAction?.menuLabel ?? "Copy column";
   return (
     <div className="gridClipboardControls" role="group" aria-label="Copy grid selection">
       <span
@@ -351,13 +359,15 @@ export function GridClipboardControls({ controller }: { controller: GridClipboar
       <button
         type="button"
         className="gridClipboardButton"
-        aria-label="Copy column"
-        disabled={!controller.wholeColumnResult.ok}
-        title={controller.wholeColumnResult.ok ? "Copy column" : controller.wholeColumnResult.reason}
-        onClick={() => void controller.copyColumn()}
+        aria-label={columnLabel}
+        disabled={!column || columnAction?.disabled}
+        title={columnAction?.title ?? "Select a cell or column header to copy its column."}
+        onClick={() => {
+          if (column) void controller.copyColumn(column);
+        }}
       >
         <span className="codicon codicon-copy" aria-hidden="true" />
-        <span className="gridClipboardButtonLabel">Copy column</span>
+        <span className="gridClipboardButtonLabel">{columnLabel}</span>
       </button>
       <span
         className="gridClipboardAnnouncement"

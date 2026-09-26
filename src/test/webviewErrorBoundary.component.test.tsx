@@ -189,7 +189,7 @@ function RenderFailure(): never {
 }
 
 function WholeColumnClipboardListener() {
-  const clipboard = useWholeColumnClipboard({ metadata: clipboardMetadata, pageSize: 2, viewContextId: "view-a" });
+  const clipboard = useWholeColumnClipboard({ metadata: clipboardMetadata, viewContextId: "view-a" });
   return (
     <>
       <span>Whole-column listener ready</span>

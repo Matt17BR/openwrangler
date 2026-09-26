@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ColumnSchema, FilterModel, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { liveGridPageHasMore } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 import { reportWebviewFailure } from "../WebviewErrorBoundary";
 import { vscode } from "../vscodeApi";
 import {
-  clipboardCellLimitError,
   createGridClipboardColumnAccumulator,
   GridClipboardOwnershipChangedError,
   maximumClipboardColumnValues,
@@ -15,7 +14,8 @@ import {
   type GridClipboardWritePhase
 } from "./gridClipboard";
 
-type WholeColumnClipboardPhase = "idle" | "preparing" | "ready" | "error";
+/** "selected" defers reading a column that may exceed the clipboard limit until a copy is requested. */
+type WholeColumnClipboardPhase = "idle" | "selected" | "preparing" | "ready" | "error";
 
 interface WholeColumnClipboardState {
   phase: WholeColumnClipboardPhase;
@@ -26,6 +26,13 @@ interface WholeColumnClipboardState {
   result?: GridClipboardResult;
   reason?: string;
   rowCount?: number;
+  extent?: ColumnCopyExtent;
+}
+
+/** Whether the prepared values are the whole column or only the leading values that fit the clipboard. */
+interface ColumnCopyExtent {
+  truncated: boolean;
+  totalRows: number | null;
 }
 
 interface ColumnCopyOwner {
@@ -56,6 +63,7 @@ interface ActiveColumnWrite {
 }
 
 interface ColumnWriteRequest extends ColumnCopyOwner {
+  extent: ColumnCopyExtent;
   focusOwner?: HTMLElement;
   pendingTimeout?: number;
   requestId: string;
@@ -77,7 +85,6 @@ export interface WholeColumnClipboardController {
   copy(columnOrOwnsResult?: ColumnSchema | (() => boolean)): Promise<boolean>;
   isColumnSelected(columnId: string): boolean;
   reset(): void;
-  result: GridClipboardResult;
   selectColumn(column: ColumnSchema): void;
   selectedColumnId?: string;
   selectionDescription: string;
@@ -91,11 +98,9 @@ let columnRequestSequence = 0;
 
 export function useWholeColumnClipboard({
   metadata,
-  pageSize,
   viewContextId
 }: {
   metadata: SessionMetadata;
-  pageSize: number;
   viewContextId?: string;
 }): WholeColumnClipboardController {
   const [state, setState] = useState<WholeColumnClipboardState>({ phase: "idle" });
@@ -243,9 +248,7 @@ export function useWholeColumnClipboard({
             return;
           }
           publishState({ ...stateRef.current, copyRequested: false });
-          setAnnouncement(
-            `Copied column ${request.column.name} with ${request.result.payload.rowCount.toLocaleString()} values and its header.`
-          );
+          setAnnouncement(copiedColumnAnnouncement(request.column, request.result.payload.rowCount, request.extent));
         } catch (error) {
           if (writeGenerationTerminalRef.current) return;
           const ownershipChanged = error instanceof GridClipboardOwnershipChangedError;
@@ -296,6 +299,7 @@ export function useWholeColumnClipboard({
     async (
       owner: ColumnCopyOwner,
       result: Extract<GridClipboardResult, { ok: true }>,
+      extent: ColumnCopyExtent,
       focusOwner: HTMLElement | undefined
     ): Promise<boolean> => {
       if (!ownerIsCurrent(owner)) {
@@ -319,6 +323,7 @@ export function useWholeColumnClipboard({
       const deferred = createWriteSettlement();
       const request: ColumnWriteRequest = {
         ...owner,
+        extent,
         focusOwner,
         requestId: nextColumnRequestId("write-owner"),
         result,
@@ -347,7 +352,7 @@ export function useWholeColumnClipboard({
   );
 
   const finish = useCallback(
-    (active: ActiveColumnPreparation, result: GridClipboardResult): void => {
+    (active: ActiveColumnPreparation, result: GridClipboardResult, truncated: boolean): void => {
       if (activeRef.current !== active) return;
       activeRef.current = undefined;
       if (!result.ok) {
@@ -362,6 +367,7 @@ export function useWholeColumnClipboard({
         setAnnouncement(result.reason);
         return;
       }
+      const extent: ColumnCopyExtent = { truncated, totalRows: active.expectedRows };
       publishState({
         phase: "ready",
         column: active.column,
@@ -369,10 +375,13 @@ export function useWholeColumnClipboard({
         preparationIdentity: active.preparationIdentity,
         copyRequested: active.copyRequested,
         result,
-        rowCount: result.payload.rowCount
+        rowCount: result.payload.rowCount,
+        extent
       });
       if (active.copyRequested) {
-        void writePreparedResult(active, result, active.copyFocusOwner).finally(() => active.writeSettlement?.settle());
+        void writePreparedResult(active, result, extent, active.copyFocusOwner).finally(() =>
+          active.writeSettlement?.settle()
+        );
       }
     },
     [publishState, writePreparedResult]
@@ -382,15 +391,13 @@ export function useWholeColumnClipboard({
     (active: ActiveColumnPreparation): void => {
       if (activeRef.current !== active) return;
       const remainingKnownRows =
-        active.expectedRows === null
-          ? maximumClipboardColumnValues - active.nextOffset
-          : active.expectedRows - active.nextOffset;
+        Math.min(active.expectedRows ?? maximumClipboardColumnValues, maximumClipboardColumnValues) - active.nextOffset;
       if (remainingKnownRows <= 0) {
-        const result = active.accumulator.finish();
-        finish(active, result);
+        const truncated = active.expectedRows !== null && active.nextOffset < active.expectedRows;
+        finish(active, active.accumulator.finish(), truncated);
         return;
       }
-      const limit = Math.min(Math.max(1, pageSize), maximumColumnPageSize, remainingKnownRows);
+      const limit = Math.min(maximumColumnPageSize, remainingKnownRows);
       const requestId = nextColumnRequestId();
       active.requestId = requestId;
       vscode.postMessage({
@@ -408,7 +415,7 @@ export function useWholeColumnClipboard({
         }
       });
     },
-    [finish, pageSize]
+    [finish]
   );
 
   const handleResponse = useCallback(
@@ -450,16 +457,17 @@ export function useWholeColumnClipboard({
           fail(active, failure.reason);
           return;
         }
+        if (active.accumulator.full) break;
       }
       active.nextOffset += page.rows.length;
-      if (liveGridPageHasMore(page)) {
+      const hasMore = liveGridPageHasMore(page);
+      if (active.accumulator.full || (hasMore && active.accumulator.rowCount >= maximumClipboardColumnValues)) {
+        finish(active, active.accumulator.finish(), true);
+        return;
+      }
+      if (hasMore) {
         if (page.rows.length === 0) {
           fail(active, "The data view returned an incomplete column page. Select the column again.");
-          return;
-        }
-        if (active.accumulator.rowCount >= maximumClipboardColumnValues) {
-          const limit = clipboardCellLimitError();
-          fail(active, limit.ok ? "" : limit.reason);
           return;
         }
         requestNext(active);
@@ -469,8 +477,7 @@ export function useWholeColumnClipboard({
         fail(active, "The data view changed while this column was being prepared. Select the column again.");
         return;
       }
-      const result = active.accumulator.finish();
-      finish(active, result);
+      finish(active, active.accumulator.finish(), false);
     },
     [fail, finish, requestNext]
   );
@@ -581,22 +588,33 @@ export function useWholeColumnClipboard({
       if (
         current.column?.id === column.id &&
         current.preparationIdentity === preparationIdentity &&
-        (current.phase === "preparing" || current.phase === "ready")
+        (current.phase === "selected" || current.phase === "preparing" || current.phase === "ready")
       ) {
+        return;
+      }
+      if (
+        !availabilityReason &&
+        viewContextId &&
+        (expectedRows === null || expectedRows > maximumClipboardColumnValues)
+      ) {
+        cancelActive(false);
+        setAnnouncement("");
+        publishState({ phase: "selected", column, preparationIdentity });
         return;
       }
       startPreparation(column, false);
     },
-    [preparationIdentity, startPreparation]
+    [availabilityReason, cancelActive, expectedRows, preparationIdentity, publishState, startPreparation, viewContextId]
   );
 
   const copy = useCallback(
     async (columnOrOwnsResult?: ColumnSchema | (() => boolean)): Promise<boolean> => {
-      const column = typeof columnOrOwnsResult === "function" ? undefined : columnOrOwnsResult;
+      const current = stateRef.current;
+      const selectedColumn = current.phase === "selected" ? current.column : undefined;
+      const column = typeof columnOrOwnsResult === "function" ? selectedColumn : (columnOrOwnsResult ?? selectedColumn);
       const ownsResult = typeof columnOrOwnsResult === "function" ? columnOrOwnsResult : undefined;
       const ownsExternalResult = (): boolean => ownsResult?.() ?? true;
       if (!ownsExternalResult()) return false;
-      const current = stateRef.current;
       if (writeGenerationTerminalRef.current) {
         if (current.copyRequested) publishState({ ...current, copyRequested: false });
         if (ownsExternalResult()) setAnnouncement(clipboardAdapterUnavailableReason);
@@ -606,6 +624,7 @@ export function useWholeColumnClipboard({
         column &&
         (current.column?.id !== column.id ||
           current.phase === "idle" ||
+          current.phase === "selected" ||
           current.phase === "error" ||
           current.preparationIdentity !== preparationIdentity)
       ) {
@@ -628,7 +647,7 @@ export function useWholeColumnClipboard({
         if (active.writeSettlement) await active.writeSettlement.settled;
         return ownsExternalResult();
       }
-      if (current.phase === "ready" && current.result?.ok && current.column && current.ownerId) {
+      if (current.phase === "ready" && current.result?.ok && current.column && current.ownerId && current.extent) {
         if (current.copyRequested) return ownsExternalResult();
         publishState({ ...current, copyRequested: true });
         return writePreparedResult(
@@ -639,6 +658,7 @@ export function useWholeColumnClipboard({
             preparationIdentity
           },
           current.result,
+          current.extent,
           captureClipboardFocusOwner()
         );
       }
@@ -650,13 +670,6 @@ export function useWholeColumnClipboard({
     [preparationIdentity, publishState, startPreparation, writePreparedResult]
   );
 
-  const result = useMemo<GridClipboardResult>(() => {
-    if (availabilityReason) return { ok: false, reason: availabilityReason };
-    if (state.phase === "ready" && state.result) return state.result;
-    if (state.phase === "error") return { ok: false, reason: state.reason ?? "Column copy is unavailable." };
-    if (state.phase === "preparing") return { ok: false, reason: "Preparing the whole column for copying." };
-    return { ok: false, reason: "Select a column header to copy the whole filtered and sorted column." };
-  }, [availabilityReason, state]);
   const reset = useCallback((): void => cancelActive(true), [cancelActive]);
   const isColumnSelected = useCallback(
     (columnId: string): boolean => state.column?.id === columnId,
@@ -673,13 +686,15 @@ export function useWholeColumnClipboard({
         };
       }
       const selected = state.column?.id === column.id;
-      if (!selected || state.phase === "idle") {
-        return {
-          ariaLabel: `Copy column ${column.name}`,
-          disabled: false,
-          menuLabel: "Copy column",
-          title: "Copy column"
-        };
+      if (!selected || state.phase === "idle" || state.phase === "selected") {
+        return expectedRows !== null && expectedRows > maximumClipboardColumnValues
+          ? leadingValuesAction(column, maximumClipboardColumnValues, expectedRows)
+          : {
+              ariaLabel: `Copy column ${column.name}`,
+              disabled: false,
+              menuLabel: "Copy column",
+              title: "Copy column"
+            };
       }
       if (state.phase === "preparing") {
         return {
@@ -698,6 +713,9 @@ export function useWholeColumnClipboard({
             title: "Copying column"
           };
         }
+        if (state.extent?.truncated && state.rowCount !== undefined) {
+          return leadingValuesAction(column, state.rowCount, state.extent.totalRows);
+        }
         return {
           ariaLabel: `Copy column ${column.name}`,
           disabled: false,
@@ -712,7 +730,7 @@ export function useWholeColumnClipboard({
         title: state.reason ?? "Select the column again to retry."
       };
     },
-    [availabilityReason, state]
+    [availabilityReason, expectedRows, state]
   );
 
   return {
@@ -721,10 +739,9 @@ export function useWholeColumnClipboard({
     copy,
     isColumnSelected,
     reset,
-    result,
     selectColumn,
     selectedColumnId: state.column?.id,
-    selectionDescription: describeWholeColumnState(state)
+    selectionDescription: describeWholeColumnState(state, expectedRows)
   };
 }
 
@@ -733,20 +750,50 @@ function wholeColumnAvailabilityReason(
   expectedRows: number | null
 ): string | undefined {
   if (unavailableReason) return unavailableReason;
-  if (expectedRows !== null && expectedRows > maximumClipboardColumnValues) {
-    const result = clipboardCellLimitError();
-    return result.ok ? undefined : result.reason;
-  }
   return expectedRows === 0 ? "There are no rows in the current data view." : undefined;
 }
 
-function describeWholeColumnState(state: WholeColumnClipboardState): string {
+const clipboardLimitText = "The clipboard holds up to 100,000 cells or 4 MiB";
+
+function leadingValuesText(count: number, totalRows: number | null): string {
+  return totalRows === null
+    ? `the first ${count.toLocaleString()} values`
+    : `the first ${count.toLocaleString()} of ${totalRows.toLocaleString()} values`;
+}
+
+function leadingValuesAction(
+  column: ColumnSchema,
+  count: number,
+  totalRows: number | null
+): WholeColumnClipboardAction {
+  return {
+    ariaLabel: `Copy ${leadingValuesText(count, totalRows)} of column ${column.name}`,
+    disabled: false,
+    menuLabel: `Copy first ${count.toLocaleString()} values`,
+    title: `${clipboardLimitText}, so this copies ${leadingValuesText(count, totalRows)}. Export the data to keep every value.`
+  };
+}
+
+function copiedColumnAnnouncement(column: ColumnSchema, rowCount: number, extent: ColumnCopyExtent): string {
+  return extent.truncated
+    ? `Copied ${leadingValuesText(rowCount, extent.totalRows)} of column ${column.name} and its header. ${clipboardLimitText}.`
+    : `Copied column ${column.name} with ${rowCount.toLocaleString()} values and its header.`;
+}
+
+function describeWholeColumnState(state: WholeColumnClipboardState, expectedRows: number | null): string {
   if (!state.column) return "";
+  if (state.phase === "selected") {
+    return expectedRows === null
+      ? `Whole filtered and sorted column ${state.column.name} selected.`
+      : `Whole filtered and sorted column ${state.column.name} selected, ${expectedRows.toLocaleString()} rows.`;
+  }
   if (state.phase === "preparing") {
     return `Whole filtered and sorted column ${state.column.name} selected. Preparing copy.`;
   }
   if (state.phase === "ready") {
-    return `Whole filtered and sorted column ${state.column.name} selected, ${state.rowCount?.toLocaleString()} rows.`;
+    return state.extent?.truncated && state.rowCount !== undefined
+      ? `Whole filtered and sorted column ${state.column.name} selected; ${leadingValuesText(state.rowCount, state.extent.totalRows)} fit the clipboard.`
+      : `Whole filtered and sorted column ${state.column.name} selected, ${state.rowCount?.toLocaleString()} rows.`;
   }
   return `Whole filtered and sorted column ${state.column.name} selected. ${state.reason ?? "Copy is unavailable."}`;
 }

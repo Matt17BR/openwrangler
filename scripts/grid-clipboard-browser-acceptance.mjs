@@ -118,7 +118,7 @@ export async function verifyGridClipboardBrowserAcceptance(browser, harnessDirec
   }
 
   console.log(
-    "Grid clipboard pointer range shortcuts and context action, formula neutralization, whole filtered-column paging, exact caps, adapter fallback, focus restoration, payload redaction, and oversized rejection verified in Chromium."
+    "Grid clipboard pointer range shortcuts and context action, formula neutralization, whole filtered-column paging, exact caps, leading-value column copies, adapter fallback, focus restoration, payload redaction, and oversized range rejection verified in Chromium."
   );
 }
 
@@ -206,10 +206,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
   await headers.first().waitFor();
 
   await headers.nth(0).locator(".columnTitle").click();
-  await copyColumn.waitFor();
-  await page.waitForFunction(
-    () => document.querySelector('[aria-label="Copy column"]')?.hasAttribute("disabled") === false
-  );
+  await page.getByText("Whole filtered and sorted column hostile_text selected, 64 rows.", { exact: true }).waitFor();
   await configureClipboardBoundary(page, { navigatorMode: "unavailable", fallbackMode: "success" });
   await copyColumn.click();
   const hostileExpected = wholeColumnHostileExpected();
@@ -250,9 +247,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
   );
 
   await headers.nth(2).locator(".columnTitle").click();
-  await page.waitForFunction(
-    () => document.querySelector('[aria-label="Copy column"]')?.hasAttribute("disabled") === false
-  );
+  await page.getByText("Whole filtered and sorted column exact_cap selected, 64 rows.", { exact: true }).waitFor();
   await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
   await copyColumn.click();
   await page.waitForFunction(() => globalThis.openWranglerClipboardBoundary.navigatorWrites.length === 1);
@@ -280,23 +275,35 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
     throw new Error(`The exact-cap whole-column copy failed: ${JSON.stringify(exactCap)}.`);
   }
 
-  await configureClipboardBoundary(page, { navigatorMode: "throw", fallbackMode: "throw" });
+  await configureClipboardBoundary(page, { navigatorMode: "success", fallbackMode: "throw" });
   await headers.nth(3).locator(".columnTitle").click();
-  await page.waitForFunction(
-    (reason) =>
-      document.querySelector('[aria-label="Clipboard copy result"]')?.textContent === reason &&
-      document.querySelector('[aria-label="Copy column"]')?.getAttribute("title") === reason,
-    clipboardLimitReason
-  );
-  const rejection = await readClipboardRejection(page);
+  const copyLeading = page.getByRole("button", { name: "Copy first 63 values", exact: true });
+  await copyLeading.waitFor();
+  const leadingTitle = await copyLeading.getAttribute("title");
+  await copyLeading.click();
+  await page.waitForFunction(() => globalThis.openWranglerClipboardBoundary.navigatorWrites.length === 1);
+  const leading = await readClipboardBoundary(page);
+  const leadingExpected = [
+    "over_cap",
+    "x".repeat(65_526),
+    ...Array.from({ length: 61 }, () => "x".repeat(65_535)),
+    "x".repeat(65_536)
+  ].join("\n");
   if (
-    rejection.navigatorAttemptCount !== 0 ||
-    rejection.navigatorWriteCount !== 0 ||
-    rejection.fallbackAttemptCount !== 0 ||
-    rejection.fallbackWriteCount !== 0 ||
-    rejection.announcement !== clipboardLimitReason
+    leadingTitle !==
+      "The clipboard holds up to 100,000 cells or 4 MiB, so this copies the first 63 of 64 values. Export the data to keep every value." ||
+    !arraysEqual(leading.navigatorWrites, [leadingExpected]) ||
+    leading.fallbackAttempts.length !== 0 ||
+    leading.announcement !==
+      "Copied the first 63 of 64 values of column over_cap and its header. The clipboard holds up to 100,000 cells or 4 MiB."
   ) {
-    throw new Error(`The oversized whole-column rejection reached an adapter: ${JSON.stringify(rejection)}.`);
+    throw new Error(
+      `The over-cap column did not copy its leading values: ${JSON.stringify({
+        leadingTitle,
+        writeLengths: leading.navigatorWrites.map((text) => text.length),
+        announcement: leading.announcement
+      })}.`
+    );
   }
 
   const paging = await page.evaluate(() => ({
@@ -309,11 +316,7 @@ async function exerciseWholeColumnClipboard(page, harnessDirectory) {
       rowWidths: response.rowWidths
     }))
   }));
-  const expectedWindows = [
-    { offset: 0, limit: 25 },
-    { offset: 25, limit: 25 },
-    { offset: 50, limit: 14 }
-  ];
+  const expectedWindows = [{ offset: 0, limit: 64 }];
   for (const columnOffset of [0, 1, 2, 3]) {
     const responses = paging.responses.filter((response) => response.columnOffset === columnOffset);
     if (

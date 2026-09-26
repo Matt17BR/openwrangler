@@ -37,30 +37,37 @@ interface ClipboardFieldPlan {
 
 export interface GridClipboardColumnAccumulator {
   readonly rowCount: number;
+  /** The next value would exceed the clipboard's cell or byte limit, so the column keeps its leading values. */
+  readonly full: boolean;
   append(cell: CellValue): GridClipboardResult | undefined;
   finish(): GridClipboardResult;
 }
 
 /**
- * Accumulates a header and one logical column without ever constructing an
- * output above the shared clipboard byte or cell limit.
+ * Accumulates a header and the leading values of one logical column without ever constructing an output above the
+ * shared clipboard byte or cell limit.
  */
 export function createGridClipboardColumnAccumulator(header: string): GridClipboardColumnAccumulator {
   const headerPlan = planClipboardField(header, true, maximumClipboardBytes);
   const fields = headerPlan ? [renderClipboardField(header, headerPlan)] : [];
   let outputBytes = headerPlan?.byteLength ?? 0;
   let rowCount = 0;
-  let failure: GridClipboardResult | undefined = headerPlan ? undefined : clipboardByteLimitError();
+  let full = false;
+  const failure: GridClipboardResult | undefined = headerPlan ? undefined : clipboardByteLimitError();
 
   return {
     get rowCount() {
       return rowCount;
     },
+    get full() {
+      return full;
+    },
     append(cell) {
       if (failure) return failure;
+      if (full) return undefined;
       if (rowCount >= maximumClipboardColumnValues) {
-        failure = clipboardCellLimitError();
-        return failure;
+        full = true;
+        return undefined;
       }
       const separatorBytes = 1;
       const plan = planClipboardField(
@@ -69,8 +76,8 @@ export function createGridClipboardColumnAccumulator(header: string): GridClipbo
         maximumClipboardBytes - outputBytes - separatorBytes
       );
       if (!plan) {
-        failure = clipboardByteLimitError();
-        return failure;
+        full = true;
+        return undefined;
       }
       outputBytes += separatorBytes + plan.byteLength;
       fields.push(renderClipboardField(cell.display, plan));
@@ -79,7 +86,11 @@ export function createGridClipboardColumnAccumulator(header: string): GridClipbo
     },
     finish() {
       if (failure) return failure;
-      if (rowCount === 0) return { ok: false, reason: "There are no rows in the current data view." };
+      if (rowCount === 0) {
+        return full
+          ? { ok: false, reason: "The first value in this column is larger than the 4 MiB clipboard limit." }
+          : { ok: false, reason: "There are no rows in the current data view." };
+      }
       return {
         ok: true,
         payload: {
