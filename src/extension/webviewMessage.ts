@@ -45,6 +45,8 @@ export type WebviewRequest =
   | { kind: "changeBackend" }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
+  | { kind: "keepCopiedPlan" }
+  | { kind: "discardCopiedPlan" }
   | { kind: "switchSessionMode"; mode: SessionMode; state: GridViewState }
   | { kind: "reconnectLiveSource" }
   | {
@@ -179,6 +181,9 @@ export function decodeWebviewMessage(
   }
   if (message.kind === "exportData") {
     return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
+  }
+  if (message.kind === "keepCopiedPlan" || message.kind === "discardCopiedPlan") {
+    return hasExactKeys(message, ["kind"]) ? { kind: message.kind } : undefined;
   }
   if (message.kind === "switchSessionMode") {
     if (!hasExactKeys(message, ["kind", "mode", "state"]) || !isSessionMode(message.mode)) return undefined;

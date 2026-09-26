@@ -773,6 +773,17 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "keepCopiedPlan") {
+      await this.keepCopiedPlan();
+      return;
+    }
+
+    if (decoded.kind === "discardCopiedPlan") {
+      if (this.sessionId && this.bridge.getSessionPresentation?.(this.sessionId)?.copiedPlanPending)
+        this.panel.dispose();
+      return;
+    }
+
     if (decoded.kind === "exportData") {
       const sessionId = this.sessionId;
       const revision = this.sessionRevision;
@@ -919,6 +930,19 @@ export class OpenWranglerPanel {
     });
     this.sessionModeChangeTask = task;
     return task;
+  }
+
+  private async keepCopiedPlan(): Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId || !this.bridge.keepCopiedPlan) return;
+    const failure = await this.bridge.keepCopiedPlan(sessionId);
+    if (this.disposed || this.sessionId !== sessionId) return;
+    const presentation = this.bridge.getSessionPresentation?.(sessionId);
+    if (presentation) {
+      const { code: _code, ...rendererPresentation } = presentation;
+      await this.postRendererMessage({ kind: "sessionPresentation", presentation: rendererPresentation });
+    }
+    if (failure) void vscode.window.showErrorMessage(failure.message);
   }
 
   private async reconnectLiveSource(): Promise<void> {

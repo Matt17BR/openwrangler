@@ -114,12 +114,13 @@ function isSessionPresentation(value: unknown): value is SessionPresentationMess
   if (!isRecord(value) || typeof value.sessionId !== "string" || !isNonNegativeInteger(value.revision)) return false;
   const draft = value.draft;
   return (
-    draft === undefined ||
-    (isRecord(draft) &&
-      isDataDiff(draft.diff) &&
-      (draft.remainingMissingCells === undefined || isNonNegativeInteger(draft.remainingMissingCells)) &&
-      isStringArray(draft.warnings) &&
-      isColumnSchemaArray(draft.beforeSchema))
+    (value.copiedPlanPending === undefined || value.copiedPlanPending === true) &&
+    (draft === undefined ||
+      (isRecord(draft) &&
+        isDataDiff(draft.diff) &&
+        (draft.remainingMissingCells === undefined || isNonNegativeInteger(draft.remainingMissingCells)) &&
+        isStringArray(draft.warnings) &&
+        isColumnSchemaArray(draft.beforeSchema)))
   );
 }
 

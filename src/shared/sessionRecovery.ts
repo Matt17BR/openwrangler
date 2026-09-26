@@ -20,6 +20,8 @@ export interface SessionPresentation {
     warnings: string[];
     beforeSchema: ColumnSchema[];
   };
+  /** A copied file plan shown read-only until the user keeps or discards it. */
+  copiedPlanPending?: true;
 }
 
 export interface SessionRecoveryContext {

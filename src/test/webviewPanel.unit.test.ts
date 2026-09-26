@@ -5852,6 +5852,78 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenCalledWith("openWrangler.internal.exportSessionData", "session", 0);
   });
 
+  it("keeps a copied plan and publishes the saved presentation", async () => {
+    const showError = vi.spyOn(window, "showErrorMessage").mockResolvedValue(undefined);
+    let pending = true;
+    const keepCopiedPlan = vi.fn(async (): Promise<ErrorResponse | undefined> => {
+      if (keepCopiedPlan.mock.calls.length === 1)
+        return {
+          kind: "error",
+          code: "persistence_unavailable",
+          message: "Open Wrangler could not save the copied plan.",
+          recoverable: true
+        };
+      pending = false;
+      return undefined;
+    });
+    const harness = createPanelHarness({
+      request: vi.fn(async () => openedResponse),
+      keepCopiedPlan,
+      getSessionPresentation: () => ({
+        sessionId: metadata.sessionId,
+        revision: 0,
+        code: "clean_df = df",
+        ...(pending ? { copiedPlanPending: true as const } : {})
+      })
+    });
+    await harness.open();
+    harness.posted.length = 0;
+
+    await harness.receive({ kind: "keepCopiedPlan" });
+    expect(showError).toHaveBeenCalledWith("Open Wrangler could not save the copied plan.");
+    expect(harness.posted).toEqual([
+      { kind: "sessionPresentation", presentation: { sessionId: "session", revision: 0, copiedPlanPending: true } }
+    ]);
+
+    harness.posted.length = 0;
+    await harness.receive({ kind: "keepCopiedPlan" });
+    expect(keepCopiedPlan).toHaveBeenLastCalledWith("session");
+    expect(harness.posted).toEqual([
+      { kind: "sessionPresentation", presentation: { sessionId: "session", revision: 0 } }
+    ]);
+    expect(showError).toHaveBeenCalledOnce();
+  });
+
+  it("discards only a pending copied plan by closing its panel", async () => {
+    let pending = false;
+    const request = vi.fn(async (message: OpenWranglerRequest): Promise<OpenWranglerResponse> =>
+      message.kind === "closeSession" ? { kind: "sessionClosed", sessionId: message.sessionId } : openedResponse
+    );
+    const harness = createPanelHarness(
+      {
+        request,
+        getSessionPresentation: () => ({
+          sessionId: metadata.sessionId,
+          revision: 0,
+          code: "clean_df = df",
+          ...(pending ? { copiedPlanPending: true as const } : {})
+        })
+      },
+      { delegateOpen: true }
+    );
+    await harness.open();
+    const closes = () => request.mock.calls.filter(([message]) => message.kind === "closeSession");
+
+    await harness.receive({ kind: "discardCopiedPlan" });
+    expect(closes()).toEqual([]);
+
+    pending = true;
+    await harness.receive({ kind: "discardCopiedPlan" });
+    await vi.waitFor(() =>
+      expect(closes()).toEqual([[{ kind: "closeSession", sessionId: "session", revision: 0 }, expect.anything()]])
+    );
+  });
+
   it("keeps an initial dependency error retryable when installation is declined", async () => {
     const missing: OpenWranglerResponse = {
       kind: "error",

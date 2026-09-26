@@ -43,7 +43,7 @@ import {
   type TextDocumentSessionOrigin
 } from "./sessionOrigin";
 import { type SessionPersistenceFailure, SessionPersistenceStore } from "./sessionPersistenceStore";
-import { persistenceKey } from "./sessionPersistence";
+import { persistedSessionState, persistenceKey } from "./sessionPersistence";
 import {
   persistenceUnavailableError,
   persistenceReadUnavailableError,
@@ -224,6 +224,7 @@ export class SessionCoordinator implements vscode.Disposable {
       getPagePublication: (sessionId) => this.pagePublication(sessionId),
       getViewState: (sessionId) => this.gridViewState(sessionId),
       getSessionPresentation: (sessionId) => this.sessionPresentation(sessionId),
+      keepCopiedPlan: (sessionId) => this.keepCopiedPlan(delegate, sessionId),
       updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId),
@@ -252,6 +253,8 @@ export class SessionCoordinator implements vscode.Disposable {
         "Open a file with confirmed built-in cleaning steps and no draft before reusing its plan. Custom Code and notebook plans are not supported.",
         true
       );
+    if (session.copiedPlanPending)
+      return protocolError("file_plan_unavailable", "Keep the copied plan before using it on another file.", true);
     if (!vscode.workspace.isTrusted)
       return protocolError("workspace_untrusted", "Trust this workspace before reusing a cleaning plan.", true);
     const names = session.sourceSchema.map((column) => column.name);
@@ -355,6 +358,7 @@ export class SessionCoordinator implements vscode.Disposable {
         true,
         sessionId
       );
+    if (session.copiedPlanPending) return copiedPlanPendingError(session.publicId);
     const { delegate, runtimeId, runtimeRevision, publicRevision, openRequest, origin, sourceProtection } = session;
     const currentLibrary = session.metadata.rLibrary;
     const runtimeIsCurrent = delegate.captureSessionOwner?.(runtimeId);
@@ -587,8 +591,78 @@ export class SessionCoordinator implements vscode.Disposable {
       sessionId: session.publicId,
       revision: session.publicRevision,
       code: session.code,
-      ...(session.draftPresentation ? { draft: session.draftPresentation } : {})
+      ...(session.draftPresentation ? { draft: session.draftPresentation } : {}),
+      ...(session.copiedPlanPending ? { copiedPlanPending: true as const } : {})
     };
+  }
+
+  private async keepCopiedPlan(delegate: OpenWranglerBridge, sessionId: string): Promise<ErrorResponse | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session || this.sessionOwnerDelegates.get(session) !== delegate)
+      return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
+    if (!session.copiedPlanPending) return undefined;
+    if (!vscode.workspace.isTrusted)
+      return protocolError(
+        "workspace_untrusted",
+        "Trust this workspace before keeping a copied plan.",
+        true,
+        sessionId
+      );
+    const { runtimeId, publicRevision, openRequest } = session;
+    const isCurrent = (): boolean =>
+      this.isLiveSession(session) &&
+      !session.closing &&
+      !session.reconfiguring &&
+      !session.recoveryRequired &&
+      session.copiedPlanPending === true &&
+      session.runtimeId === runtimeId &&
+      session.publicRevision === publicRevision &&
+      session.openRequest === openRequest;
+    if (!isCurrent())
+      return protocolError(
+        "copied_plan_busy",
+        "Wait for the copied plan to finish updating, then keep it.",
+        true,
+        sessionId
+      );
+    const saved = await this.persistence.commitRuntimeReplacement(
+      openRequest.source,
+      persistedSessionState(session.metadata, gridState(session.viewState)),
+      isCurrent,
+      () => {
+        session.copiedPlanPending = false;
+        return () => {
+          if (!this.isLiveSession(session) || session.runtimeId !== runtimeId) return false;
+          session.copiedPlanPending = true;
+          return true;
+        };
+      },
+      { requireAbsent: true }
+    );
+    if (saved.kind === "committed") {
+      if (this.activeSessionId === session.publicId) this.activeSessionEmitter.fire(activeSessionSnapshot(session));
+      return undefined;
+    }
+    if (saved.kind === "unavailable")
+      return protocolError(
+        "persistence_unavailable",
+        "Open Wrangler could not save the copied plan. Retry after workspace storage is available.",
+        true,
+        sessionId
+      );
+    return isCurrent()
+      ? protocolError(
+          "file_plan_target_changed",
+          `${openRequest.source.label} now has other saved Open Wrangler work, so the copied plan was not saved. Discard this copy to keep that work.`,
+          true,
+          sessionId
+        )
+      : protocolError(
+          "copied_plan_busy",
+          "Wait for the copied plan to finish updating, then keep it.",
+          true,
+          sessionId
+        );
   }
 
   private async updateGridViewState(sessionId: string, state: GridViewState): Promise<void> {
@@ -599,8 +673,10 @@ export class SessionCoordinator implements vscode.Disposable {
     const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
     session.viewState = next;
     const isCurrent = () => this.isLiveSession(session) && !session.closing && !session.reconfiguring;
-    const persistenceResult = await this.responseCommitter.persistSession(session, isCurrent);
-    if (persistenceResult.kind === "stale" || !isCurrent()) return;
+    if (!session.copiedPlanPending) {
+      const persistenceResult = await this.responseCommitter.persistSession(session, isCurrent);
+      if (persistenceResult.kind === "stale" || !isCurrent()) return;
+    }
     if (selectedColumnChanged && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
       this.setActive(session.publicId);
     }
@@ -766,6 +842,8 @@ export class SessionCoordinator implements vscode.Disposable {
         requestViewId(request)
       );
     }
+    if (session.copiedPlanPending && isRuntimeStateMutation(request))
+      return copiedPlanPendingError(session.publicId, requestViewId(request));
     if (request.kind === "closeSession") {
       session.closing = true;
       session.scheduler.cancelBackground();
@@ -998,6 +1076,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     }
+    if (session.copiedPlanPending) return copiedPlanPendingError(session.publicId);
     if (session.closing) {
       return protocolError(
         "session_closing",
@@ -1136,6 +1215,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     }
+    if (session.copiedPlanPending) return copiedPlanPendingError(session.publicId);
     if (session.closing || session.reconfiguring || session.reconnecting) {
       return protocolError(
         session.closing ? "session_closing" : "session_reconfiguring",
@@ -1281,6 +1361,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     }
+    if (session.copiedPlanPending) return copiedPlanPendingError(session.publicId);
     if (session.closing) {
       return protocolError(
         "session_closing",
@@ -1780,4 +1861,14 @@ export class SessionCoordinator implements vscode.Disposable {
       }
     });
   }
+}
+
+function copiedPlanPendingError(sessionId: string, viewRequestId?: string): ErrorResponse {
+  return protocolError(
+    "copied_plan_pending",
+    "Keep the copied plan before changing it. Nothing is saved for this file until you keep it.",
+    true,
+    sessionId,
+    viewRequestId
+  );
 }

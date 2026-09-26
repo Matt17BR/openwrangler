@@ -731,6 +731,51 @@ describe("App draft state boundaries", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("shows a copied plan read-only until the user keeps it", async () => {
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata,
+      page,
+      summaries: [],
+      presentation: { sessionId: "session", revision: 2, copiedPlanPending: true }
+    });
+
+    const preview = await screen.findByRole("region", { name: "Copied plan preview" });
+    expect(preview).toHaveTextContent(
+      "Nothing is saved for sample.csv until you keep this plan. Keep it to change its steps."
+    );
+    for (const name of ["Add step", "Edit latest", "Undo"]) {
+      const control = screen.getByRole("button", { name });
+      expect(control).toBeDisabled();
+      expect(control).toHaveAttribute("title", "Keep the copied plan before changing it.");
+    }
+    postMessage.mockClear();
+    const undo = screen.getByRole("button", { name: "Undo" });
+    fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
+    fireEvent.keyDown(undo, { key: "e", ctrlKey: true, shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull();
+    expect(postMessage).not.toHaveBeenCalled();
+
+    fireEvent.click(within(preview).getByRole("button", { name: "Keep plan" }));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: "keepCopiedPlan" });
+    expect(within(preview).getByRole("button", { name: "Keep plan" })).toBeDisabled();
+    expect(within(preview).getByRole("button", { name: "Discard" })).toBeDisabled();
+
+    dispatch({
+      kind: "sessionPresentation",
+      presentation: { sessionId: "session", revision: 2, copiedPlanPending: true }
+    });
+    expect(within(preview).getByRole("button", { name: "Keep plan" })).toBeEnabled();
+    fireEvent.click(within(preview).getByRole("button", { name: "Discard" }));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: "discardCopiedPlan" });
+
+    dispatch({ kind: "sessionPresentation", presentation: { sessionId: "session", revision: 2 } });
+    expect(screen.queryByRole("region", { name: "Copied plan preview" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit latest" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+  });
+
   it("keeps an empty cleaning plan out of the way and exposes cleaned-data export", async () => {
     render(<App />);
     dispatch({

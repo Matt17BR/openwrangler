@@ -154,7 +154,7 @@ against its current input schema. Target column order is preserved unless a clea
 retains the target's input-order requirements. Both files use the same concrete backend and import options. Extra or
 missing columns and notebook inputs remain outside this command's scope.
 
-The captured session, runtime owner and revision must remain current through replay and persistence staging;
+The captured session, runtime owner and revision must remain current through replay;
 switching active editors cannot retarget the action. Python retains its exact process and environment selection.
 R retains its exact bridge session, transport mapping and kernel generation. The global file command captures the
 active session's actual delegate; ordinary request authorization remains bound to each bridge. A target R file receives
@@ -167,15 +167,19 @@ The target configuration's exact persistence key must be absent, including raw m
 configuration keys are preserved. The existing store repeats that absence check inside its commit queue.
 
 The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
-page before saving. Small responses do not bound native scans or temporary memory. The candidate becomes an ordinary
-Editing session only after durable success. Failure closes only that candidate, after detached execution settles.
+page. Small responses do not bound native scans or temporary memory. The target key must still be absent when replay
+finishes. The candidate is then published as a copied-plan preview that saves nothing: step mutations, import or
+backend changes, plan rewrites, R library copies and further plan captures are refused, and view changes stay in
+memory. Reads, profiles, recovery and exports work normally. **Keep plan** commits the confirmed plan and current view
+through the store's absent-key commit and then clears the preview. A concurrent save for that key, a storage failure
+or a runtime change leaves the preview pending with nothing saved. Discard or closing the tab closes the session
+without saved state. R library copies are not previews; they save when they open.
+Failure closes only that candidate, after detached execution settles.
 A failed native close cannot strand an unpublished R file process: coordinator idle retires that exact file delegate
 once its pending and detached work settles. Notebook mappings keep their retryable close behavior.
 The failure response is selected before terminal cleanup, preserving an already-observed cancellation or stale owner;
 closing the failed candidate does not replace a schema, replay or storage diagnostic with a runtime-change error.
-Cancellation, runtime retirement or file replacement during the final durable write can leave the copied plan saved
-without publishing its runtime. Reopening that target uses ordinary saved-plan restoration. Subsequent exports protect the target's own
-source through the normal destination checks; the originating file is not an additional execution input.
+Exports protect the target's own source through the normal destination checks; the originating file is not an additional execution input.
 
 Delimited import detection reads at most 65,539 bytes once: a 64 KiB nominal prefix and up to three bytes to complete
 its final UTF-8 scalar. A valid nominal prefix ignores later bytes; malformed interior bytes retain the existing
