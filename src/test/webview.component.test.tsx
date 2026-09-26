@@ -2283,6 +2283,71 @@ describe("DataGrid", () => {
     expect(cell).toHaveAttribute("tabindex", "0");
   });
 
+  it("goes to a typed row from the status bar", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      const largeMetadata: SessionMetadata = {
+        ...metadata,
+        shape: { rows: largeGridRowCount, columns: 2 },
+        filteredShape: { rows: largeGridRowCount, columns: 2 }
+      };
+      const onPage = vi.fn();
+      const props = {
+        metadata: largeMetadata,
+        summaries: [],
+        pageSize: largeGridPageSize,
+        defaultColumnWidth: 190,
+        insightsOnOpen: false,
+        onPage,
+        onSortColumn: () => undefined,
+        onOpenFilter: () => undefined,
+        onVisibleSummaryColumnsChange: () => undefined
+      };
+      const { rerender } = render(<DataGrid {...props} page={pageAt(0)} />);
+      Object.defineProperty(screen.getByTestId("data-grid-scroller"), "clientHeight", {
+        configurable: true,
+        value: 580
+      });
+      const focusedRow = () =>
+        document.querySelector('td[data-grid-column="0"][tabindex="0"]')?.getAttribute("data-grid-row");
+
+      fireEvent.click(screen.getByRole("button", { name: "Go to row" }));
+      const input = screen.getByRole("textbox", { name: "Row number" });
+      expect(input).toHaveFocus();
+      expect(input).toHaveAttribute("placeholder", "1 to 3,012,020");
+      for (const invalid of ["0", "3012021", "12a", "-4", "1.5e3"]) {
+        fireEvent.change(input, { target: { value: invalid } });
+        fireEvent.click(screen.getByRole("button", { name: "Go" }));
+        expect(screen.getByRole("alert")).toHaveTextContent("Enter a row from 1 to 3,012,020.");
+        expect(input).toHaveAttribute("aria-invalid", "true");
+      }
+      expect(onPage).not.toHaveBeenCalled();
+
+      fireEvent.change(input, { target: { value: "150" } });
+      fireEvent.click(screen.getByRole("button", { name: "Go" }));
+      expect(screen.queryByRole("textbox", { name: "Row number" })).toBeNull();
+      expect(onPage).not.toHaveBeenCalled();
+      expect(focusedRow()).toBe("149");
+
+      fireEvent.click(screen.getByRole("status", { name: "Loaded rows" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Row number" }), { target: { value: "1.234.567" } });
+      fireEvent.click(screen.getByRole("button", { name: "Go" }));
+      expect(onPage).toHaveBeenLastCalledWith(1_234_400);
+      rerender(<DataGrid {...props} page={pageAt(1_234_400)} />);
+      expect(focusedRow()).toBe("1234566");
+      expect(document.activeElement).toHaveAttribute("data-grid-row", "1234566");
+
+      rerender(<DataGrid {...props} page={pageAt(1_234_400)} goToRowRequestId={1} />);
+      const reopened = screen.getByRole("textbox", { name: "Row number" });
+      expect(reopened).toHaveValue("1.234.567");
+      fireEvent.keyDown(reopened, { key: "Escape" });
+      expect(screen.getByRole("button", { name: "Go to row" })).toHaveFocus();
+      expect(onPage).toHaveBeenCalledTimes(1);
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
   it("keeps a terminal partial block visible when native scrolling starts before its offset", async () => {
     const totalRows = 1_205;
     const finalOffset = 1_200;

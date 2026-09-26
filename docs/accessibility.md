@@ -27,6 +27,11 @@ Only one rendered body cell is in the Tab order at a time. Put focus on that cel
 | `Ctrl/Cmd+Home`             | Move to the first data cell.                                         |
 | `Ctrl/Cmd+End`              | Move to the final row and column in an exact-total non-PySpark view. |
 | Context Menu or `Shift+F10` | Open the filter-by-cell actions for the focused cell.                |
+| `Ctrl+G`                    | Open **Go to row** on every platform, then type a row number.        |
+
+You can also open **Go to row** with the search button beside the row count, or by clicking the row count. It
+accepts a number with any locale's grouping separators, focuses that row in the current column, and fetches its
+block when needed. `Escape` closes it and returns focus to the button without closing any other surface.
 
 Navigation can cross a fetched row or column block. Open Wrangler requests the required block, keeps the absolute
 cell position, and restores focus after it arrives if the webview still owns focus. For a PySpark view whose total is

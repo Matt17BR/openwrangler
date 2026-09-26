@@ -151,6 +151,30 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     }
   });
 
+  it("opens Go to row from Ctrl+G and the host command without letting Escape discard the draft", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      const grid = screen.getByRole("grid");
+      postMessage.mockClear();
+
+      expect(fireEvent.keyDown(grid, { key: "g", ctrlKey: true })).toBe(false);
+      const input = screen.getByRole("textbox", { name: "Row number" });
+      expect(input).toHaveFocus();
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(screen.queryByRole("textbox", { name: "Row number" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Go to row" })).toHaveFocus();
+      expect(screen.getByRole("button", { name: "Discard" })).toBeInTheDocument();
+      expect(runtimeRequestKinds()).toEqual([]);
+
+      dispatch({ kind: "editorAction", action: "goToRow" });
+      expect(screen.getByRole("textbox", { name: "Row number" })).toHaveFocus();
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
   it("keeps Redo available after the last Undo and restores owned focus after the last Redo", async () => {
     const renamed: SessionMetadata = {
       ...appliedMetadata,

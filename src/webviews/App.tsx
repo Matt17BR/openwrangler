@@ -226,6 +226,8 @@ export function App() {
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const confirmedFilterHistoryRef = useRef<ConfirmedFilterHistory>(emptyConfirmedFilterHistory());
   const clearFilterColumnActionRef = useRef<(target: ViewFilterRemovalTarget) => void>(() => undefined);
+  const [goToRowRequestId, setGoToRowRequestId] = useState(0);
+  const requestGoToRowRef = useRef<() => boolean>(() => false);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -1147,6 +1149,8 @@ export function App() {
           deleteStep(stepId);
         } else if (response.action === "clearFilterColumn") {
           clearFilterColumnActionRef.current(response);
+        } else if (response.action === "goToRow") {
+          requestGoToRowRef.current();
         } else if (response.action === "openFilters") {
           if (stepInspectionTargetRef.current) return;
           const currentMetadata = metadataRef.current;
@@ -1928,6 +1932,14 @@ export function App() {
   };
 
   useEffect(() => {
+    requestGoToRowRef.current = () => {
+      if (operationOpen || !metadataRef.current) return false;
+      setGoToRowRequestId((current) => current + 1);
+      return true;
+    };
+  }, [operationOpen]);
+
+  useEffect(() => {
     clearFilterColumnActionRef.current = (target) => {
       if (
         stepInspectionTargetRef.current ||
@@ -2089,6 +2101,8 @@ export function App() {
         sendPlanAction("undoStep", planReturnTarget);
         handled = true;
       }
+    } else if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === "g") {
+      handled = requestGoToRowRef.current();
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
         requestOperationIntent({ action: "editLatest" });
@@ -2669,6 +2683,7 @@ export function App() {
                 }
                 goToColumnId={goToColumnRequest?.columnId}
                 goToColumnRequestId={goToColumnRequest?.requestId}
+                goToRowRequestId={goToRowRequestId}
                 onGoToColumnHandled={handleColumnReveal}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={

@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- **Go to row** jumps to any row by number. Press `Ctrl+G`, choose the search button beside the row count, or click the row count, then type a row such as `1,234,567`.
 - Open DuckDB Table also lists views. A view runs once when opened, and the viewer shows a fixed copy of its rows.
 - Open Another File with This Plan opens the copied plan as a read-only preview. Nothing is saved for the new file until you choose Keep plan, and Discard closes the preview.
 - DuckDB notebook relations can be cleaned in Editing, with generated DuckDB code, code insertion and CSV or Parquet export on the relation's own connection. Custom Code remains available only for DuckDB files. Commit or roll back an open transaction on that connection before cleaning or exporting.
