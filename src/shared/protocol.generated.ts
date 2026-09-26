@@ -532,25 +532,21 @@ export type ColumnVisualization =
   | {
       kind: "numeric";
       bins: NumericBin[];
-      sampled?: boolean;
     }
   | {
       kind: "categorical";
       categories: ValueCount[];
       otherCount: number;
-      sampled?: boolean;
     }
   | {
       kind: "boolean";
       trueCount: number;
       falseCount: number;
-      sampled?: boolean;
     }
   | {
       kind: "datetime";
       min?: string | null;
       max?: string | null;
-      sampled?: boolean;
     };
 
 export interface RuntimeRequestEnvelope {
@@ -1415,7 +1411,6 @@ export interface DatasetStats {
   missingCells: number;
   missingRows: number;
   duplicateRows: number | null;
-  duplicateRowsSampleSize?: number;
   missingValuesByColumn: {
     column: string;
     count: number;
@@ -1533,7 +1528,6 @@ export interface ValuesResponse {
   column: string;
   values: ValueCount[];
   hasMore: boolean;
-  sampleSize?: number;
 }
 export interface StepPreviewResponse {
   kind: "stepPreview";
@@ -1803,7 +1797,7 @@ export const openWranglerResponseShapes = Object.freeze([
   Object.freeze({
     kind: "columnValues",
     required: Object.freeze(["kind", "revision", "viewRequestId", "column", "values", "hasMore"]),
-    optional: Object.freeze(["sampleSize"])
+    optional: Object.freeze([])
   }),
   Object.freeze({
     kind: "stepPreview",

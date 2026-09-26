@@ -320,7 +320,7 @@ export class RKernelSessionTransport {
     search: string | undefined,
     limit: number,
     options: RKernelRequestOptions = {}
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>> {
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>> {
     const request = this.request("getColumnValues", {
       sessionId,
       column,
@@ -337,8 +337,7 @@ export class RKernelSessionTransport {
     return Object.freeze({
       column: response.column,
       values: response.values,
-      hasMore: response.hasMore,
-      ...(response.sampleSize === undefined ? {} : { sampleSize: response.sampleSize })
+      hasMore: response.hasMore
     });
   }
 

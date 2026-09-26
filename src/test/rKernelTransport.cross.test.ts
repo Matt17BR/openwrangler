@@ -415,13 +415,13 @@ ${namedRows.code}
       column: "value",
       values: [
         {
-          value: "1200",
+          value: "1200.0",
           count: 1,
           selectionValue: {
             kind: "typedSelection",
             version: 1,
             columnType: "float",
-            cell: { kind: "number", raw: 1200, display: "1200", isNull: false, isNaN: false }
+            cell: { kind: "number", raw: 1200, display: "1200.0", isNull: false, isNaN: false }
           }
         }
       ],
@@ -625,8 +625,8 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
     expect(profiled.summaries[5]).toMatchObject({
       visualization: {
         kind: "datetime",
-        min: "2026-01-01T00:00:00.000000",
-        max: "2026-01-04T00:00:00.000000"
+        min: "2026-01-01T00:00:00+00:00",
+        max: "2026-01-04T00:00:00+00:00"
       }
     });
     expect(profiled.summaries[6]).toMatchObject({ numeric: { min: 1, max: 4 } });
@@ -655,20 +655,27 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
     expect(largeProfiled).toMatchObject({ kind: "summary", sessionId: largeSessionId });
     if (largeProfiled.kind !== "summary") throw new Error("Expected large typed R summaries.");
     expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 3, 2]);
+    expect(largeProfiled.summaries.map((entry) => entry.topValues.map((value) => value.count))).toEqual([
+      Array<number>(10).fill(134),
+      Array<number>(10).fill(134),
+      [40_000, 40_000, 40_000],
+      [60_000, 60_000]
+    ]);
+    // Adding zero folds a negative-zero duration median into the plain zero it equals.
+    expect(largeProfiled.summaries.slice(0, 3).map((entry) => (entry.numeric?.median ?? Number.NaN) + 0)).toEqual([
+      448, 44.8, 0
+    ]);
     for (const [index, entry] of largeProfiled.summaries.slice(0, 3).entries()) {
       expect(entry).toMatchObject({
         totalCount: 120_002,
         nullCount: index === 1 ? 1 : 2,
         nanCount: index === 1 ? 1 : 0
       });
-      expect(entry.topValues).toEqual([]);
-      expect(entry.numeric?.median).toBeUndefined();
       expect(entry.visualization?.kind).toBe("numeric");
       if (entry.visualization?.kind !== "numeric") throw new Error("Expected complete numeric histogram.");
-      expect(entry.visualization.sampled).toBeUndefined();
       expect(entry.visualization.bins.reduce((count, bin) => count + bin.count, 0)).toBe(120_000);
     }
-    expect(largeProfiled.summaries[3]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1, topValues: [] });
+    expect(largeProfiled.summaries[3]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1 });
     expect(largeProfiled.summaries[3]?.numeric).toEqual({});
     expect(largeProfiled.summaries[3]?.visualization).toBeUndefined();
   });

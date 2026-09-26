@@ -668,26 +668,13 @@ openwrangler_r_kernel_agent <- local({
     stats <- exact_record(
       result$stats,
       c("missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"),
-      "dataset statistics",
-      optional_fields = "duplicateRowsSampleSize"
+      "dataset statistics"
     )
     missing_rows <- result_whole_number(stats$missingRows, "dataset statistics missingRows", total_rows)
-    duplicate_rows_domain <- if ("duplicateRowsSampleSize" %in% names(stats)) {
-      result_whole_number(
-        stats$duplicateRowsSampleSize,
-        "dataset statistics duplicateRowsSampleSize",
-        total_rows
-      )
-    } else {
-      total_rows
-    }
-    if ("duplicateRowsSampleSize" %in% names(stats) && duplicate_rows_domain < 1) {
-      abort("runtime_error", "dataset statistics duplicateRowsSampleSize is outside its supported range")
-    }
     duplicate_rows <- result_whole_number(
       stats$duplicateRows,
       "dataset statistics duplicateRows",
-      max(0, duplicate_rows_domain - 1)
+      max(0, total_rows - 1)
     )
     entries <- stats$missingValuesByColumn
     if (!is.list(entries) || length(entries) > limits$columns) {
@@ -4802,7 +4789,12 @@ openwrangler_r_kernel_agent <- local({
       if (base::identical(kind, "character")) return(normalize_text(value))
       if (base::identical(kind, "integer")) return(base::as.character(value))
       if (base::identical(kind, "integer64")) return(integer64_character(value))
-      if (base::identical(kind, "date")) return(base::format.Date(value, format = "%Y-%m-%d"))
+      if (base::identical(kind, "date")) {
+        text <- base::format.Date(value, format = "%Y-%m-%d")
+        short <- base::which(base::grepl("^[0-9]{1,3}-", text))
+        text[short] <- base::paste0(base::strrep("0", 5L - base::regexpr("-", text[short], fixed = TRUE)), text[short])
+        return(text)
+      }
       base::stop("Open Wrangler by-example received a non-portable text input", call. = FALSE)
     }
     expand_literal <- function(value, kind) {
@@ -6515,6 +6507,8 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_present <- !is.na(.ow_result)",
       "    if (!any(.ow_present)) return(.ow_result)",
       "    .ow_rendered <- format(.ow_result[.ow_present], format = \"%Y-%m-%d\")",
+      "    .ow_short <- which(grepl(\"^[0-9]{1,3}-\", .ow_rendered))",
+      "    .ow_rendered[.ow_short] <- paste0(strrep(\"0\", 5L - regexpr(\"-\", .ow_rendered[.ow_short], fixed = TRUE)), .ow_rendered[.ow_short])",
       "    .ow_canonical <- grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_rendered) & !startsWith(.ow_rendered, \"0000-\")",
       "    if (any(.ow_canonical)) {",
       "      .ow_reparsed <- suppressWarnings(as.Date(.ow_rendered[.ow_canonical], format = \"%Y-%m-%d\"))",
@@ -6528,6 +6522,8 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_present <- !is.na(.ow_result)",
       "    if (!any(.ow_present)) return(.ow_result)",
       "    .ow_rendered <- format(.ow_result[.ow_present], tz = \"UTC\", format = \"%Y-%m-%dT%H:%M:%OS6\", usetz = FALSE)",
+      "    .ow_short <- which(grepl(\"^[0-9]{1,3}-\", .ow_rendered))",
+      "    .ow_rendered[.ow_short] <- paste0(strrep(\"0\", 5L - regexpr(\"-\", .ow_rendered[.ow_short], fixed = TRUE)), .ow_rendered[.ow_short])",
       "    .ow_canonical <- grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\\\.[0-9]{6}$\", .ow_rendered) & !startsWith(.ow_rendered, \"0000-\")",
       "    .ow_result[which(.ow_present)[!.ow_canonical]] <- as.POSIXct(NA_real_, origin = \"1970-01-01\", tz = \"UTC\")",
       "    .ow_result",
@@ -6570,7 +6566,12 @@ openwrangler_r_kernel_agent <- local({
       "      if (.ow_kind %in% c(\"character\", \"factor\")) return(.ow_text)",
       "      if (.ow_kind %in% c(\"logical\", \"integer\", \"integer64\")) return(as.character(.ow_value))",
       "      if (identical(.ow_kind, \"double\")) return(.ow_cast_double_text(.ow_value))",
-      "      if (identical(.ow_kind, \"Date\")) return(format(.ow_value, \"%Y-%m-%d\"))",
+      "      if (identical(.ow_kind, \"Date\")) {",
+      "        .ow_dates <- format(.ow_value, \"%Y-%m-%d\")",
+      "        .ow_short <- which(grepl(\"^[0-9]{1,3}-\", .ow_dates))",
+      "        .ow_dates[.ow_short] <- paste0(strrep(\"0\", 5L - regexpr(\"-\", .ow_dates[.ow_short], fixed = TRUE)), .ow_dates[.ow_short])",
+      "        return(.ow_dates)",
+      "      }",
       "      if (identical(.ow_kind, \"POSIXct\")) return(.ow_format_iso_datetime(.ow_value, \"UTC\", utc_suffix = TRUE))",
       "      .ow_duration <- as.double(.ow_value, units = attr(.ow_value, \"units\"))",
       "      .ow_number <- .ow_cast_double_text(.ow_duration)",
@@ -7177,6 +7178,10 @@ openwrangler_r_kernel_agent <- local({
           base::format.Date(structure(.ow_label_storage, class = "Date"), format = "%Y-%m-%d"),
           error = function(.ow_error) NULL
         )
+        if (is.character(.ow_displays)) {
+          .ow_short <- which(grepl("^[0-9]{1,3}-", .ow_displays))
+          .ow_displays[.ow_short] <- paste0(strrep("0", 5L - regexpr("-", .ow_displays[.ow_short], fixed = TRUE)), .ow_displays[.ow_short])
+        }
         .ow_invalid <- if (!is.character(.ow_displays) || length(.ow_displays) != length(.ow_label_storage)) {
           TRUE
         } else {
@@ -7207,6 +7212,8 @@ openwrangler_r_kernel_agent <- local({
           length(.ow_displays) != length(.ow_label_storage) ||
           any(!.ow_label_missing & is.na(.ow_displays))
         if (.ow_invalid) stop("Open Wrangler categorical encoding received a datetime outside the supported range", call. = FALSE)
+        .ow_short <- which(grepl("^[0-9]{1,3}-", .ow_displays))
+        .ow_displays[.ow_short] <- paste0(strrep("0", 5L - regexpr("-", .ow_displays[.ow_short], fixed = TRUE)), .ow_displays[.ow_short])
         .ow_utf8(.ow_displays)
       } else if (identical(.ow_spec$kind, "difftime")) {
         paste(vapply(.ow_label_storage, function(.ow_value) sprintf("%.17g", as.double(.ow_value)), character(1L)), .ow_spec$units, recycle0 = TRUE)
@@ -8210,7 +8217,8 @@ openwrangler_r_kernel_agent <- local({
           if (base::all(base::is.na(raw) | (base::abs(raw) < 2251799813685248 & base::round(candidate * scale) == raw))) seconds <- candidate
         }
         if (!base::is.null(seconds)) {
-          base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+          zone <- type$timezone()
+          base::structure(seconds, class = c("POSIXct", "POSIXt"), tzone = if (zone %in% base::OlsonNames()) zone else "UTC")
         } else {
           require_clock()
           parsed <- naive_time_from_ticks(ticks, unit, refuse)
@@ -10082,7 +10090,7 @@ openwrangler_r_kernel_agent <- local({
             c(
               "    if (any(.ow_datetime_chunk_present & .ow_datetime_chunk_numeric != floor(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a fractional Date\", call. = FALSE)",
               "    .ow_datetime_contract_display <- tryCatch(base::format.Date(.ow_datetime_chunk_source, format = \"%Y-%m-%d\"), error = function(.ow_error) NULL)",
-              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & (is.na(.ow_datetime_contract_display) | !grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_datetime_contract_display)))) stop(\"Open Wrangler Format Datetime received a Date outside the supported range\", call. = FALSE)"
+              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & (is.na(.ow_datetime_contract_display) | !grepl(\"^[0-9]{1,4}-[0-9]{2}-[0-9]{2}$\", .ow_datetime_contract_display)))) stop(\"Open Wrangler Format Datetime received a Date outside the supported range\", call. = FALSE)"
             )
           } else {
             c(
@@ -11179,7 +11187,6 @@ openwrangler_r_kernel_agent <- local({
           values = result$values,
           hasMore = result$hasMore
         )
-        if (!is.null(result$sampleSize)) response$sampleSize <- result$sampleSize
         return(response)
       }
 

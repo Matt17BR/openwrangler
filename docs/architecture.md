@@ -210,7 +210,7 @@ an extension update; restart that kernel and rerun its cells before reopening th
 replace imported modules or restart a user-owned kernel to change its protocol.
 
 Dataset statistics require exact missing-cell, missing-row and per-column missing counts. The duplicate-row count
-is either a nonnegative integer or explicit null when unavailable; null cannot carry a duplicate sample size. Both
+is either a nonnegative integer or explicit null when unavailable. Both
 the workbench and native Summary view display that state as unavailable. Native R retains numeric duplicate counts.
 The Dataset drawer owns requests for these statistics. Selecting an uncalculated statistic in native Summary opens
 that drawer for the displayed session and revision; stale actions cannot target another dataframe. The same request
@@ -1691,11 +1691,17 @@ reserved integer missing-value sentinels used as values, recursive containers, u
 are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the three supported frame paths;
 `GRP_df` and `indexed_frame` do not.
 
-Display text is independent of `OutDec` and the process time zone. POSIXct with a null or empty zone displays in UTC
-while preserving that original metadata. Default POSIXct display and Convert Type to text round fractional seconds
-to six decimal places before formatting the calendar portion; Convert Type uses UTC with `Z`. Raw values and source
-metadata remain unchanged. Explicit Format Datetime keeps native R directives, including `%OS6` truncation. One Hot
-keeps its existing truncated timestamp labels because they are persistent column names in saved plans.
+Display text is independent of `OutDec`, the process time zone and the platform's `strftime`. It matches the
+Python engines: doubles show Python's shortest round-trip repr, years before 1000 keep four digits, and datetimes use
+Python ISO text without a zero fraction, with nanoseconds only when nonzero. POSIXct and UTC clock values are instants
+and carry their offset in the display zone, including offset seconds for historical local mean time; a null or empty
+zone displays in UTC while preserving that original metadata. Parquet timestamps keep their Arrow time zone when R
+recognizes it. Durations show the shortest number and R's unit, such as `90 secs`. Missing, logical and infinite
+cells keep R's `NA`, `TRUE`/`FALSE` and `Inf` tokens. Default POSIXct display and Convert Type to text round
+fractional seconds to six decimal places before formatting the calendar portion; Convert Type uses UTC with `Z`.
+Raw values and source metadata remain unchanged. Explicit Format Datetime keeps native R directives, including `%OS6`
+truncation. One Hot keeps its existing double and truncated timestamp labels because they are persistent column names
+in saved plans.
 Explicit bounded row labels follow their source rows through sorting.
 Aligned plain column-element names are inert metadata, not row or column identity. Compact zero-row frames and
 zero-column sources retain their row count and labels; column lengths must still agree. Custom Code can create the
@@ -1834,10 +1840,7 @@ Numeric histograms count every finite value into at most
 Integer64 extrema use the package's native range reduction without sorting every value. Integer and integer64 chunks
 whose values stay below 2^53 in magnitude add exact double high and low parts, folded into decimal text once per 2^26
 values. Wider integer64 chunks reduce bounded native quotient/remainder batches, combining only their totals in decimal
-text. This preserves cancellation and sums beyond the integer64 range without per-row decimal arithmetic. Character and
-factor distributions retain exact counts and distinct values within 10,000 keys and 16 MiB of UTF-8 key text.
-A normalized chunk with more than 10,000 distinct keys discards exact aggregation before building counts that cannot
-fit that limit. The scan continues to validate later values, collect text statistics and use the same distribution policy.
+text. This preserves cancellation and sums beyond the integer64 range without per-row decimal arithmetic.
 Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
 ASCII-insensitive contains predicates and value search fold repeated normalized strings once per batch of at most
 65,536 values, then restore their original positions. The full folded vector remains allocated. Duplicate lookup adds
@@ -1847,22 +1850,17 @@ current step's temporary factor levels before expanding its codes. Both retain n
 source levels, ordering and encodings unchanged. Live and generated Filter Rows and Conditional Column use normalized
 text for comparisons, including Latin-1 and unmarked valid UTF-8 under the C locale, while preserving missing positions.
 Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
-oversized values retain ordered scalar refusal and the original row labels; this does not change sampling policy.
-Above either bound, distributions sample at most 100,000 non-missing values. Large frames with at most 100,000
-non-missing values keep their exact distribution regardless of those aggregation bounds. Above that population limit,
-numeric profiles retain exact distinct counts while at most 10,000 native identities are observed. Tracking stops when
-that bound is exceeded; integer64 keys are exact doubles until a value reaches 2^53, then decimal text. These large numeric summaries omit top
-values even when the distinct count is exact. The host accepts an exact distinct count with no top values only for
-integer, float and duration columns above the non-missing population limit, without a sampled distribution and with a
-distinct count within the bound. Numeric medians remain omitted above 100,000 non-missing values. Omitted statistics
-show `n/a`. Numeric summaries with no finite statistics retain an empty numeric object; unavailable values and the
-histogram remain omitted. Sampled charts
-label the distribution approximate and show the sample count used alongside the full non-missing population.
-Dataset missing counts remain exact; bounded duplicate-row estimates name the sampled population. Sampling uses a
-private fixed seed and restores the user's random state. Unsearched value discovery samples at most 100,000 rows;
-a nonempty search scans exactly in bounded chunks and refuses more than 10,000 distinct matches or 16 MiB of key text.
-These memory bounds do not imply that IRkernel can interrupt dispatched work. Dataset-statistics counts and their
-filtered row total come from the same request.
+oversized values retain ordered scalar refusal and the original row labels.
+After the chunked scan, one whole-view pass counts every present value by native identity, so distinct counts, top
+values, categorical charts and numeric medians are exact at every size. Identities group exactly as displayed values:
+signed zeros merge except in date-time and duration columns, missing values stay apart from NaN, and integer64 values
+compare as exact doubles below 2^53 and as decimal text above it. Only the reported values are formatted. Dataset
+duplicate counts are exact too: each column refines the candidate row groups in its own time-sliced advance and drops
+rows that are already unique. Value discovery counts the whole view the same way and formats only candidates that can
+reach the requested limit; a search formats each distinct value once. These passes allocate native hash tables
+proportional to the view's rows and cannot be interrupted by IRkernel once dispatched. Numeric summaries with no
+finite statistics retain an empty numeric object and omit the histogram. Dataset-statistics counts and their filtered
+row total come from the same request.
 
 Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Ordinary integer, Date,
 floating, datetime and duration predicates compare native values directly, without formatting source rows as text.

@@ -47,7 +47,7 @@ export function NumericHistogram({
     rangeStart === undefined || rangeEnd === undefined
       ? "No finite values"
       : `${formatHistogramValue(rangeStart)} to ${formatHistogramValue(rangeEnd)}`;
-  const chartLabel = `${visualization.sampled ? "Sampled " : ""}numeric distribution with ${visualization.bins.length} bins; range ${rangeLabel}.`;
+  const chartLabel = `numeric distribution with ${visualization.bins.length} bins; range ${rangeLabel}.`;
   const denominator = Math.max(
     0,
     percentDenominator ?? visualization.bins.reduce((total, bin) => total + bin.count, 0)

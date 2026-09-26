@@ -91,32 +91,20 @@ export function resolveRViewQuery(filterModel: FilterModel, schema: readonly Col
 export function assertRColumnValuesContract(
   session: RViewContractSession,
   requested: RKernelColumnReference,
-  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>,
-  limit: number,
-  search: string | undefined
+  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>,
+  limit: number
 ): void {
   const schema = session.schema.find((column) => column.id === requested.id);
   if (!schema || schema.name !== requested.name || result.column !== requested.name || result.values.length > limit) {
     throw new Error("The R kernel returned values for the wrong column or request limit.");
   }
   const expectedType = requireRColumnType(schema.type);
-  if (
-    result.sampleSize !== undefined &&
-    (result.sampleSize !== R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
-      result.sampleSize >= session.rows ||
-      (search !== undefined && search !== "") ||
-      !result.hasMore)
-  ) {
-    throw new Error("The R kernel returned an invalid column-value sample size.");
-  }
-  const countDomain = result.sampleSize ?? session.rows;
   let returnedCount = 0;
   for (const entry of result.values) {
     if (
       !Number.isSafeInteger(entry.count) ||
       entry.count < 1 ||
-      entry.count > countDomain ||
-      entry.count > countDomain - returnedCount ||
+      entry.count > session.rows - returnedCount ||
       entry.selectionValue === undefined ||
       entry.selectionValue === null ||
       entry.selectionValue.columnType !== expectedType
@@ -316,15 +304,13 @@ export function assertRDatasetStatsContract(
 ): void {
   const rows = result.totalRows;
   const columns = session.schema.length;
-  const duplicateRowsDomain = result.stats.duplicateRowsSampleSize ?? rows;
   if (
     (result.stats.duplicateRows === null) !==
       session.schema.some((column) => column.type === "list" || column.type === "struct") ||
     rows > session.rows ||
     (view.filters.length === 0 && rows !== session.rows) ||
     result.stats.missingRows > rows ||
-    duplicateRowsDomain > rows ||
-    (result.stats.duplicateRows !== null && result.stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1)) ||
+    (result.stats.duplicateRows !== null && result.stats.duplicateRows > Math.max(0, rows - 1)) ||
     result.stats.missingCells > rows * columns ||
     result.stats.missingValuesByColumn.length !== columns
   ) {

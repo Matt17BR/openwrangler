@@ -101,12 +101,6 @@
   white-space: nowrap;
 }
 
-.summarySampleNotice {
-  color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-  margin: 0 0 8px;
-}
-
 .profileFilterStatus {
   align-items: center;
   background: var(--vscode-editorWidget-background, transparent);

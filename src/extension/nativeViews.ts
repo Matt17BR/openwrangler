@@ -1582,9 +1582,7 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       statsGuidance
     ),
     new ViewNode(
-      stats?.duplicateRowsSampleSize === undefined
-        ? "Duplicate rows"
-        : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`,
+      "Duplicate rows",
       stats
         ? stats.duplicateRows === null
           ? "Unavailable for these column values"

@@ -433,7 +433,7 @@ scale_opened <- dispatch(
   "openSession",
   list(sessionId = profile_scale_session_id, variableName = "profile_scale", page = page_window(row_limit = 1L))
 )
-assert_identical(scale_opened$kind, "page", "the R agent refused a frame above the profile sample size")
+assert_identical(scale_opened$kind, "page", "the R agent refused a frame above one million rows")
 scale_summary <- dispatch(
   "getSummary",
   list(
@@ -445,15 +445,10 @@ scale_summary <- dispatch(
 assert_identical(
   scale_summary$summaries[[1L]]$visualization$falseCount,
   1000001L,
-  "the R agent sampled a cheap logical count"
+  "the R agent changed a large logical count"
 )
 scale_stats <- dispatch("getDatasetStats", list(sessionId = profile_scale_session_id, view = empty_view()))
-assert_identical(
-  scale_stats$stats$duplicateRowsSampleSize,
-  100000L,
-  "the R agent omitted the duplicate-row sample size"
-)
-assert_identical(scale_stats$stats$duplicateRows, 99999L, "the R agent changed sampled duplicate counts")
+assert_identical(scale_stats$stats$duplicateRows, 1000000L, "the R agent did not count every duplicate row")
 scale_values <- dispatch(
   "getColumnValues",
   list(
@@ -465,9 +460,8 @@ scale_values <- dispatch(
   )
 )
 assert_identical(scale_values$kind, "columnValues", "the R agent refused large initial value discovery")
-assert_identical(scale_values$sampleSize, 100000L, "the R agent omitted the value-discovery sample size")
-assert_identical(scale_values$hasMore, TRUE, "the R agent claimed sampled values were exhaustive")
-assert_identical(scale_values$values[[1L]]$count, 100000L, "the R agent counted values outside its sample")
+assert_identical(scale_values$hasMore, FALSE, "the R agent claimed a complete value list was truncated")
+assert_identical(scale_values$values[[1L]]$count, 1000001L, "the R agent did not count every value")
 scale_search <- dispatch(
   "getColumnValues",
   list(
@@ -479,7 +473,6 @@ scale_search <- dispatch(
   )
 )
 assert_identical(scale_search$kind, "columnValues", "the R agent refused a large exact value search")
-assert_identical(scale_search$sampleSize, NULL, "the R agent labeled an exact value search as sampled")
 assert_identical(scale_search$hasMore, FALSE, "the R agent claimed a complete value search was truncated")
 assert_identical(scale_search$values[[1L]]$value, "FALSE", "the R agent changed a large value-search match")
 assert_identical(

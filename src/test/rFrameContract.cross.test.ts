@@ -93,7 +93,7 @@ describe.skipIf(!enabled)("R to TypeScript frame contract", () => {
     expect(frame.page.rows[1]?.values[civilIndex]?.display).toBe("2023-11-14T22:13:20.000000001");
     expect(frame.page.rows.map((row) => row.values[preciseIndex]?.raw)).toEqual(["-9223372036854775808", "-1", null]);
     expect(frame.page.rows[0]?.values[preciseIndex]).toMatchObject({
-      display: "1677-09-21T00:12:43.145224192Z",
+      display: "1677-09-21T00:12:43.145224192+00:00",
       isNull: false
     });
     const wideIndex = frame.schema.findIndex((column) => column.name === "wide");

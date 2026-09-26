@@ -13,7 +13,6 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.
 - Local R files reuse unchanged filtered sort order across grid pages.
 - R text filters and value search reuse case conversion for repeated values within bounded batches.
-- R text profiles skip building exact counts when a chunk already exceeds the distinct-value limit.
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
 - R compound filters combine row masks incrementally instead of retaining every condition's mask.
 - Large Pandas files page, filter and sort without copying the whole filtered result. Text filters, text sorts and value search evaluate each distinct value once.
@@ -23,10 +22,12 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Value search on large Pandas columns, and on DuckDB single-precision and datetime columns, labels each distinct value once instead of every row.
 - R profiles of large numeric columns take about half as long, with the same exact means, sums and distinct counts.
 - R opens Parquet files with nanosecond or timezone-free timestamps and 64-bit integers faster; an 11.7-million-row file now opens in about 5.5 seconds instead of 6.5.
+- R profiles, duplicate-row counts and value choices are exact on dataframes of any size. Large columns now show exact distinct counts, top values and medians instead of sampled charts or `n/a`, and Filters lists exact counts without a sample note.
 
 ### Fixed
 
 - Pandas opens large files faster and with less memory. With pandas 3, adding Open Wrangler's row identity no longer copies every column when a file opens or a cleaning step applies; an 11.7-million-row Parquet file now opens in about 3 seconds instead of 7.
+- Native R shows values like the Python engines: doubles use their shortest round-trip digits (`0.1`, `100.0`, `1e-07`), datetimes omit zero fractions and show their UTC offset, durations no longer show 17-digit noise such as `9.9999999999999995e-07 secs`, and Parquet timestamps keep their time zone. On Linux, R dates before year 1000 no longer fail to open, and Cast accepts them as on other platforms.
 - Value choices and top values show the grid's text in Pandas, Polars and DuckDB, including datetimes and single-precision floats such as `0.1`. Polars datetime cells now match the other engines, without trailing zero fractions.
 - Datetime value searches find a `T` or space between the date and time, including at the start of the search.
 - Pandas counts missing text, missing categories and NaN in non-float columns as missing values rather than NaN, as Polars and DuckDB do.

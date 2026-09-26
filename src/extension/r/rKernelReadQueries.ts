@@ -254,15 +254,14 @@ export class RKernelReadQueries {
       if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
         return staleResponseError(request.sessionId, request.viewRequestId);
       }
-      assertColumnValuesContract(session, column, result, request.limit, request.search);
+      assertColumnValuesContract(session, column, result, request.limit);
       return {
         kind: "columnValues",
         revision: session.revision,
         viewRequestId: request.viewRequestId,
         column: result.column,
         values: result.values.map((entry) => ({ ...entry })),
-        hasMore: result.hasMore,
-        ...(result.sampleSize === undefined ? {} : { sampleSize: result.sampleSize })
+        hasMore: result.hasMore
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);

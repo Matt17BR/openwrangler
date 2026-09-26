@@ -160,9 +160,7 @@ describe("R kernel view contract", () => {
       hasMore: false
     };
 
-    expect(() =>
-      assertRColumnValuesContract(session, { id: "r:c:0", name: "value" }, values, 2, undefined)
-    ).not.toThrow();
+    expect(() => assertRColumnValuesContract(session, { id: "r:c:0", name: "value" }, values, 2)).not.toThrow();
     const requestId = "77777777-7777-4777-8777-777777777777";
     const decodeValues = (selectionValue: (typeof values.values)[0]["selectionValue"] | null | undefined) =>
       decodeRKernelResponseJson(
@@ -187,8 +185,7 @@ describe("R kernel view contract", () => {
             ...values,
             values: [{ ...values.values[0], selectionValue }]
           },
-          2,
-          undefined
+          2
         )
       ).toThrow("typed selections");
     }
@@ -197,11 +194,10 @@ describe("R kernel view contract", () => {
         session,
         { id: "r:c:0", name: "value" },
         { ...values, values: [{ ...values.values[0]!, count: 4 }] },
-        2,
-        undefined
+        2
       )
     ).toThrow("row counts");
-    expect(() => assertRColumnValuesContract(session, { id: "r:c:1", name: "group" }, values, 2, undefined)).toThrow(
+    expect(() => assertRColumnValuesContract(session, { id: "r:c:1", name: "group" }, values, 2)).toThrow(
       "wrong column"
     );
   });

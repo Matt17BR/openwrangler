@@ -13,7 +13,7 @@ describe("SummaryPanel", () => {
     column: "sales",
     type: "float",
     rawType: "Float64",
-    totalCount: 4,
+    totalCount: 6,
     nullCount: 1,
     nanCount: 2,
     distinctCount: 2,
@@ -27,8 +27,7 @@ describe("SummaryPanel", () => {
       bins: [
         { min: 10, max: 11, count: 1 },
         { min: 11, max: 12, count: 2 }
-      ],
-      sampled: true
+      ]
     }
   };
 
@@ -138,7 +137,7 @@ describe("SummaryPanel", () => {
     expect(screen.queryByRole("tab", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
-  it("keeps exact profiles quiet while labeling a sampled distribution", () => {
+  it("keeps exact profiles quiet", () => {
     renderSummary({ selectedColumnId: "c:1", summaries: [{ ...numericSummary, totalCount: 14 }] });
 
     expect(screen.getByRole("tabpanel", { name: "Column" })).toBeInTheDocument();
@@ -147,7 +146,6 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Float64")).toBeInTheDocument();
     expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
     expect(screen.queryByText("Exact distribution")).not.toBeInTheDocument();
-    expect(screen.getByText("Approximate distribution uses 3 sample values from 11 non-missing values.")).toBeVisible();
     expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("NaN").nextElementSibling).toHaveTextContent("2");
     expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
@@ -155,102 +153,12 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Mean").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.getByRole("heading", { name: "Distribution" })).toBeInTheDocument();
     const distribution = screen.getByRole("img", {
-      name: "Sampled numeric distribution with 2 bins; range 10 to 12."
+      name: "numeric distribution with 2 bins; range 10 to 12."
     });
     expect(distribution).toBeVisible();
     expect(distribution.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
     expect(distribution.closest(".numericHistogram")?.querySelector(".numericHistogramHitTarget")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
-  });
-
-  it("uses sampled numeric and string denominators without displaying a fake distinct zero", () => {
-    const totalRows = 4_000_017;
-    const largeMetadata: SessionMetadata = {
-      ...metadata,
-      shape: { rows: totalRows, columns: 2 },
-      filteredShape: { rows: totalRows, columns: 2 }
-    };
-    const sampledNumeric: ColumnSummary = {
-      columnId: "c:1",
-      column: "sales",
-      type: "float",
-      rawType: "Float64",
-      totalCount: totalRows,
-      nullCount: 10,
-      nanCount: 7,
-      topValues: [],
-      numeric: { min: 1, max: 3, mean: 2 },
-      visualization: {
-        kind: "numeric",
-        bins: [
-          { min: 1, max: 2, count: 60_000 },
-          { min: 2, max: 3, count: 39_999 }
-        ],
-        sampled: true
-      }
-    };
-    const numeric = renderSummary({
-      metadataValue: largeMetadata,
-      summaries: [sampledNumeric],
-      selectedColumnId: "c:1",
-      profileValueMode: "percent",
-      onProfileValueModeChange: vi.fn(),
-      onApplyFilterModel: vi.fn()
-    });
-
-    expect(
-      screen.getByText("Approximate distribution uses 99,999 sample values from 4,000,000 non-missing values.")
-    ).toBeVisible();
-    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
-    expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
-    const numericPercent = screen.getByRole("button", { name: "%" });
-    expect(numericPercent).not.toHaveAttribute("title");
-    expect(numericPercent).not.toHaveAttribute("aria-description");
-    expect(numericPercent).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /1-2: 60% \(60,000 rows\)/u })).toBeVisible();
-    numeric.unmount();
-
-    const sampledCategorical: ColumnSummary = {
-      columnId: "c:0",
-      column: "city",
-      type: "string",
-      rawType: "String",
-      totalCount: totalRows,
-      nullCount: 17,
-      nanCount: 0,
-      text: { emptyCount: 0, minLength: 5, maxLength: 6, meanLength: 5.5 },
-      topValues: [
-        { value: "Berlin", count: 60_000 },
-        { value: "Milan", count: 30_000 }
-      ],
-      visualization: {
-        kind: "categorical",
-        categories: [
-          { value: "Berlin", count: 60_000 },
-          { value: "Milan", count: 30_000 }
-        ],
-        otherCount: 10_000,
-        sampled: true
-      }
-    };
-    renderSummary({
-      metadataValue: largeMetadata,
-      summaries: [sampledCategorical],
-      selectedColumnId: "c:0",
-      profileValueMode: "percent",
-      onProfileValueModeChange: vi.fn()
-    });
-
-    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
-    expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("Approximate distribution uses 100,000 sample values from 4,000,000 non-missing values.")
-    ).toBeVisible();
-    const categoricalPercent = screen.getByRole("button", { name: "%" });
-    expect(categoricalPercent).not.toHaveAttribute("title");
-    expect(categoricalPercent).not.toHaveAttribute("aria-description");
-    expect(categoricalPercent).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("Berlin").closest(".barRow")).toHaveTextContent("60%");
   });
 
   it("shows full typed extrema in Column profiles with exact titles and accessible names", () => {
@@ -1022,19 +930,6 @@ describe("SummaryPanel", () => {
     expect(screen.getByRole("meter", { name: "city: 1 missing" })).toHaveAttribute("value", "1");
     expect(screen.getByRole("meter", { name: "sales: 2 missing" })).toHaveAttribute("value", "2");
     for (const meter of screen.getAllByRole("meter")) expect(meter).toHaveAttribute("max", "20");
-  });
-
-  it("labels a sampled duplicate count with its sample size", () => {
-    renderSummary({
-      activeView: "dataset",
-      metadataValue: {
-        ...metadata,
-        stats: { ...metadata.stats!, duplicateRows: 3, duplicateRowsSampleSize: 25_000 }
-      }
-    });
-
-    expect(screen.getByText("Duplicate rows (sample of 25,000)").nextElementSibling).toHaveTextContent("3");
-    expect(screen.getByText("Missing cells").nextElementSibling).toHaveTextContent("1");
   });
 
   it("keeps exact missing statistics visible when the duplicate count is unavailable", () => {

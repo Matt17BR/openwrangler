@@ -594,7 +594,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     search: string | undefined,
     limit: number,
     options: RKernelRequestOptions = {}
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>> {
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>> {
     const response = await this.executeMapped(
       this.request("getColumnValues", { sessionId, column, view, search: search ?? null, limit }),
       options
@@ -606,8 +606,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     return Object.freeze({
       column: response.column,
       values: response.values,
-      hasMore: response.hasMore,
-      ...(response.sampleSize === undefined ? {} : { sampleSize: response.sampleSize })
+      hasMore: response.hasMore
     });
   }
 

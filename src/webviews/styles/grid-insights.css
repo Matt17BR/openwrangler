@@ -45,7 +45,7 @@
   display: grid;
   gap: 2px;
   grid-template-columns: minmax(0, 1fr);
-  min-block-size: calc(var(--header-distribution-size, 36px) + var(--header-sampled-space, 0px));
+  min-block-size: var(--header-distribution-size, 36px);
   min-width: 0;
   overflow: clip;
   padding-top: 4px;
@@ -67,10 +67,6 @@ thead:has(.categoryMiniChart > :nth-child(4)) {
   --header-distribution-size: 125px;
 }
 
-thead:has(.sampledLabel) {
-  --header-sampled-space: 36px;
-}
-
 .columnInsight.compact > .summaryDistribution {
   display: none;
 }
@@ -78,16 +74,6 @@ thead:has(.sampledLabel) {
 .summaryDistribution > .categoryMiniChart,
 .summaryDistribution > .datetimeMiniChart {
   margin-top: 0;
-}
-
-.sampledLabel {
-  color: var(--vscode-descriptionForeground);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
 }
 
 .miniChart {

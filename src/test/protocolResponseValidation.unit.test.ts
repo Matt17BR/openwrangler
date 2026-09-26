@@ -904,32 +904,7 @@ describe("protocol-v4 response validation", () => {
     expect(isOpenWranglerResponse({ ...preview, remainingMissingCells: 0 })).toBe(false);
   });
 
-  it("accepts an explicit sample size only for a bounded sampled duplicate count", () => {
-    const response = responses.find((candidate) => candidate.kind === "datasetStats");
-    expect(response?.kind).toBe("datasetStats");
-    if (response?.kind !== "datasetStats") return;
-
-    expect(
-      isOpenWranglerResponse({
-        ...response,
-        stats: { ...response.stats, duplicateRows: 2, duplicateRowsSampleSize: 100 }
-      })
-    ).toBe(true);
-    expect(
-      isOpenWranglerResponse({
-        ...response,
-        stats: { ...response.stats, duplicateRowsSampleSize: 0 }
-      })
-    ).toBe(false);
-    expect(
-      isOpenWranglerResponse({
-        ...response,
-        stats: { ...response.stats, duplicateRows: 10, duplicateRowsSampleSize: 10 }
-      })
-    ).toBe(false);
-  });
-
-  it("accepts unavailable duplicate counts only with complete exact missing statistics and no sample marker", () => {
+  it("accepts unavailable duplicate counts only with complete exact missing statistics", () => {
     const response = responses.find((candidate) => candidate.kind === "datasetStats");
     if (response?.kind !== "datasetStats") throw new Error("Expected the canonical dataset statistics response.");
     const partial = { ...response, stats: { ...response.stats, duplicateRows: null } };
@@ -938,7 +913,6 @@ describe("protocol-v4 response validation", () => {
       expect(validateTransportSchema({ protocolVersion: 4, requestId: "partial", response: candidate })).toBe(valid);
     };
     check(partial, true);
-    check({ ...partial, stats: { ...partial.stats, duplicateRowsSampleSize: 100 } }, false);
     const { duplicateRows: _duplicates, ...withoutDuplicateCount } = partial.stats;
     check({ ...partial, stats: withoutDuplicateCount }, false);
     check({ ...partial, stats: { ...partial.stats, missingRows: null } }, false);
@@ -1053,11 +1027,7 @@ describe("protocol-v4 response validation", () => {
     };
     const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
     expect(isOpenWranglerResponse(response)).toBe(true);
-    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 4 })).toBe(true);
-    expect(isOpenWranglerResponse({ ...response, sampleSize: 4 })).toBe(false);
-    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 0 })).toBe(false);
-    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 3 })).toBe(false);
-    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: Number.MAX_SAFE_INTEGER + 1 })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 4 })).toBe(false);
     expect(
       isOpenWranglerResponse({
         ...response,

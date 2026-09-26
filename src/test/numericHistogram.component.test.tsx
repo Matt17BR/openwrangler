@@ -8,8 +8,7 @@ const visualization: NumericVisualization = {
   bins: [
     { min: 1, max: 2.5, count: 100 },
     { min: 2.5, max: 4, count: 1 }
-  ],
-  sampled: false
+  ]
 };
 
 describe("NumericHistogram", () => {
@@ -71,8 +70,7 @@ describe("NumericHistogram", () => {
           { min: 10, max: 20, count: 1 },
           { min: 20, max: 30, count: 1 },
           { min: 30, max: 40, count: 1 }
-        ],
-        sampled: false
+        ]
       };
       const onSelectBin = vi.fn();
       const { container } = render(<NumericHistogram visualization={distribution} compact onSelectBin={onSelectBin} />);

@@ -1113,8 +1113,7 @@ describe("DataGrid", () => {
           bins: [
             { min: 1, max: 2.5, count: 100 },
             { min: 2.5, max: 4, count: 1 }
-          ],
-          sampled: true
+          ]
         }
       },
       {
@@ -1176,23 +1175,10 @@ describe("DataGrid", () => {
     if (!numericHeader) throw new Error("Expected the numeric header.");
     expect(within(numericHeader).getByText("Min 1")).toBeVisible();
     expect(within(numericHeader).getByText("Max 4")).toBeVisible();
-    const sampleNotice = within(numericHeader).getByRole("note", {
-      name: "Approximate distribution uses 101 sample values from 1,000 non-missing values."
-    });
-    expect(sampleNotice).toHaveAttribute(
-      "title",
-      "Approximate distribution uses 101 sample values from 1,000 non-missing values."
-    );
-    expect(sampleNotice).toHaveTextContent("Sampled distribution101 / 1,000non-missing values");
-    expect(sampleNotice.closest(".summaryDistribution")).not.toBeNull();
-    expect(
-      within(numericHeader).getByRole("img", {
-        name: "Sampled numeric distribution with 2 bins; range 1 to 4."
-      })
-    ).toBeVisible();
     const distribution = within(numericHeader).getByRole("img", {
-      name: "Sampled numeric distribution with 2 bins; range 1 to 4."
+      name: "numeric distribution with 2 bins; range 1 to 4."
     });
+    expect(distribution).toBeVisible();
     expect(distribution.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
     expect(numericHeader.querySelector(".numericHistogramHitTarget")).toBeNull();
     expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");

@@ -23,7 +23,6 @@ import {
   formatProfilePercent,
   formatProfileValue,
   profileDistributionDenominator,
-  sampledDistributionDescription,
   type ProfileValueMode
 } from "../profileValueMode";
 
@@ -261,10 +260,6 @@ function SelectedColumnSummary({
         </p>
       ) : (
         <>
-          {summary.visualization?.sampled && (
-            <div className="summarySampleNotice">{sampledDistributionDescription(summary)}</div>
-          )}
-
           <dl className="summaryStatGrid">
             <dt>Rows</dt>
             <dd>{summary.totalCount.toLocaleString()}</dd>
@@ -704,11 +699,7 @@ function DatasetSummary({
             <dd>{stats.missingCells.toLocaleString()}</dd>
             <dt>Rows with missing values</dt>
             <dd>{stats.missingRows.toLocaleString()}</dd>
-            <dt>
-              {stats.duplicateRowsSampleSize === undefined
-                ? "Duplicate rows"
-                : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`}
-            </dt>
+            <dt>Duplicate rows</dt>
             <dd>
               {stats.duplicateRows === null
                 ? "Unavailable for these column values"
