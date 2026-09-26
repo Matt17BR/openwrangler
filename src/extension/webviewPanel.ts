@@ -1351,10 +1351,6 @@ export class OpenWranglerPanel {
       await this.opening.catch(() => undefined);
       if (this.disposed || generation !== this.openAttemptGeneration || !this.sessionId || !this.snapshot) return;
     }
-    if (this.source.kind !== "file") {
-      await this.changeLiveRLibrary(generation);
-      return;
-    }
 
     const cancellation = new vscode.CancellationTokenSource();
     this.importChangeCancellation?.dispose();
@@ -1376,7 +1372,8 @@ export class OpenWranglerPanel {
       const metadata = this.snapshot.metadata;
       const from = fileEngine(metadata);
       if (!from) return;
-      const engines: FileEngine[] = automaticBackends(source).map((backend) => ({ backend }));
+      const engines: FileEngine[] =
+        source.kind === "file" ? automaticBackends(source).map((backend) => ({ backend })) : [];
       if (
         from.backend === "r" ||
         (fileSourceUri(source)?.scheme === "file" &&
@@ -1405,6 +1402,8 @@ export class OpenWranglerPanel {
       if (!selected || selected.current || !current()) return;
       const plan = retry?.plan ?? (await chooseEngineSwitchPlan(metadata, from, selected));
       if (!plan || !current()) return;
+      if (source.kind !== "file" && !(await confirmCustomCodeRerun(metadata, plan, selected.engine))) return;
+      if (!current()) return;
 
       await this.drainForwardedRequests();
       if (!current() || (retry !== undefined && !this.isCurrentBackendChange(retry))) return;
@@ -1433,18 +1432,15 @@ export class OpenWranglerPanel {
           return;
         }
       }
-      const response = await this.reconfigureOnBridge(
-        targetBridge,
-        attempt.sessionId,
-        attempt.revision,
-        attempt.source,
-        {
-          cancellation: cancellation.token,
-          backendPreference: attempt.engine.backend,
-          ...(attempt.engine.rLibrary ? { rLibrary: attempt.engine.rLibrary } : {}),
-          plan: attempt.plan
-        }
-      );
+      const response =
+        attempt.source.kind === "file"
+          ? await this.reconfigureOnBridge(targetBridge, attempt.sessionId, attempt.revision, attempt.source, {
+              cancellation: cancellation.token,
+              backendPreference: attempt.engine.backend,
+              ...(attempt.engine.rLibrary ? { rLibrary: attempt.engine.rLibrary } : {}),
+              plan: attempt.plan
+            })
+          : await this.switchLiveRLibrary(attempt, cancellation.token);
       if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
       this.failedBackendChange =
         response.kind === "error" && response.code === "missing_dependencies" ? attempt : undefined;
@@ -1559,83 +1555,23 @@ export class OpenWranglerPanel {
     if (blockSizeChanged) this.rendererSync.replaceRenderer();
   }
 
-  /** Live R sources keep their captured frame, so another library opens as an editing copy of it. */
-  private async changeLiveRLibrary(generation: number): Promise<void> {
-    if (!this.sessionId || !this.snapshot) return;
-    const cancellation = new vscode.CancellationTokenSource();
-    this.importChangeCancellation?.dispose();
-    this.importChangeCancellation = cancellation;
-    this.changingImportOptions = true;
-    try {
-      await this.postRendererMessage({ kind: "importOptionsState", busy: true });
-      const source = this.source;
-      const sessionId = this.sessionId;
-      const revision = this.sessionRevision;
-      const current = (): boolean =>
-        !this.disposed &&
-        generation === this.openAttemptGeneration &&
-        source === this.source &&
-        sessionId === this.sessionId &&
-        revision === this.sessionRevision &&
-        !cancellation.token.isCancellationRequested;
-      const copy = this.bridge.captureRLibraryCopy?.(sessionId, revision);
-      const currentLibrary = this.snapshot.metadata.rLibrary;
-      const selected = await vscode.window.showQuickPick(
-        rLibraries.map((library) => ({
-          label: engineLabel("r", library),
-          description: library === currentLibrary ? "Current" : "Open editing copy",
-          rLibrary: library
-        })),
-        {
-          title: "Dataframe engine",
-          placeHolder: `Current: ${engineLabel("r", currentLibrary)}`,
-          matchOnDescription: true
-        },
-        cancellation.token
-      );
-      if (!selected || selected.rLibrary === currentLibrary || !current()) return;
-      if (!copy || "kind" in copy) {
-        await this.post(
-          copy ?? {
-            kind: "error",
-            code: "r_library_copy_unavailable",
-            message:
-              "This R session cannot open an editing copy right now. Wait for pending work to finish and try again.",
-            recoverable: true,
-            sessionId
-          }
-        );
-        return;
-      }
-      const targetLibrary = selected.rLibrary;
-      if (copy.appliedStepCount > 0) {
-        const confirmation = await vscode.window.showWarningMessage(
-          `Open an editing copy with ${engineLabel("r", targetLibrary)}?`,
-          {
-            modal: true,
-            detail: `The new tab replays ${countText(copy.appliedStepCount, "applied step")} from this session's captured source. This tab keeps its draft, redo history and view.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}`
-          },
-          "Open editing copy"
-        );
-        if (confirmation !== "Open editing copy") return;
-      }
-      if (!current() || !copy.isCurrent()) return;
-      OpenWranglerPanel.create(
-        this.context,
-        copy.createBridge(targetLibrary),
-        copy.source,
-        "r",
-        "r",
-        "editing",
-        targetLibrary
-      );
-    } finally {
-      if (this.importChangeCancellation === cancellation) {
-        this.importChangeCancellation = undefined;
-        cancellation.dispose();
-      }
-      await this.finishImportChange(generation);
+  private async switchLiveRLibrary(
+    attempt: FailedBackendChange,
+    cancellation: vscode.CancellationToken
+  ): Promise<OpenWranglerResponse> {
+    const { rLibrary } = attempt.engine;
+    if (!this.bridge.switchLiveRLibrary || !rLibrary || attempt.plan === "saved") {
+      return {
+        kind: "error",
+        code: "import_reconfiguration_unavailable",
+        message: "This R session cannot change its library.",
+        recoverable: true
+      };
     }
+    return this.bridge.switchLiveRLibrary(attempt.sessionId, attempt.revision, rLibrary, {
+      cancellation,
+      plan: attempt.plan
+    });
   }
 
   private async finishImportChange(generation: number): Promise<void> {
@@ -2605,6 +2541,31 @@ async function chooseEngineSwitchPlan(
   );
   if (choice === restore) return "saved";
   return carry && choice === carry.label ? carry.plan : undefined;
+}
+
+/** A live R dataframe replays its steps in the user's R session, where Custom Code may have side effects. */
+async function confirmCustomCodeRerun(
+  metadata: SessionMetadata,
+  plan: NonNullable<FileReconfigurationOptions["plan"]>,
+  target: FileEngine
+): Promise<boolean> {
+  const replayed =
+    typeof plan === "object"
+      ? metadata.steps.slice(0, plan.steps)
+      : [...metadata.steps, ...(metadata.draftStep ? [metadata.draftStep] : [])];
+  if (!replayed.some((step) => step.kind === "customCode")) return true;
+  const toLabel = engineLabel(target.backend, target.rLibrary);
+  const confirm = `Switch to ${toLabel}`;
+  const choice = await vscode.window.showWarningMessage(
+    `Run Custom Code again to switch to ${toLabel}?`,
+    {
+      modal: true,
+      detail:
+        "The switch replays this tab's steps from the dataframe it opened. Custom Code runs again in the R session and may have side effects."
+    },
+    confirm
+  );
+  return choice === confirm;
 }
 
 function fetchGridBlockSize(

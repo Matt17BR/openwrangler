@@ -18,7 +18,7 @@ import {
 describe("R kernel bridge lifecycle", () => {
   it.each([
     ["viewing", "viewing", "base", true],
-    ["viewing", "viewing", "dplyr", false],
+    ["viewing", "viewing", "dplyr", true],
     ["viewing", "editing", "base", true],
     ["viewing", "editing", "dplyr", true],
     ["editing", "editing", "base", true],
@@ -26,7 +26,7 @@ describe("R kernel bridge lifecycle", () => {
     ["editing", "viewing", "base", false],
     ["editing", "viewing", "dplyr", false]
   ] as const)(
-    "binds a %s source to a %s %s copy without replacing the original",
+    "binds a %s source to a %s %s clone without replacing the original",
     async (sourceMode, copyMode, library, allowed) => {
       const copyId = "22222222-2222-4222-8222-222222222222";
       const contract = frameContract();

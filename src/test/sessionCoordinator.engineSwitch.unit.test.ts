@@ -186,7 +186,7 @@ describe("SessionCoordinator file engine switching across runtimes", () => {
     }
   });
 
-  it("switches R libraries for files in place instead of offering an editing copy", async () => {
+  it("switches R libraries for files through the file reconfiguration path", async () => {
     const coordinator = new SessionCoordinator();
     const r = fakeRuntime("r", rSchema, [rStep]);
     const rBridge = coordinator.createBridge(r.delegate);
@@ -194,10 +194,9 @@ describe("SessionCoordinator file engine switching across runtimes", () => {
       const opened = await rBridge.request({ ...openRequest(initialSource), backend: "r", rLibrary: "base" });
       if (opened.kind !== "sessionOpened") throw new Error("Expected an R file session.");
 
-      expect(rBridge.captureRLibraryCopy?.(opened.metadata.sessionId, opened.metadata.revision)).toMatchObject({
-        kind: "error",
-        code: "r_library_copy_unavailable"
-      });
+      await expect(
+        rBridge.switchLiveRLibrary!(opened.metadata.sessionId, opened.metadata.revision, "data.table")
+      ).resolves.toMatchObject({ kind: "error", code: "unsupported_backend" });
       const switched = await rBridge.reconfigureFileSession!(
         opened.metadata.sessionId,
         opened.metadata.revision,

@@ -20,6 +20,7 @@ const PROFILES = Object.freeze({
   "editor-jupyter": Object.freeze(["pandas", "polars", "duckdb", "fsspec", "openpyxl", "pyarrow", "ipykernel"]),
   "jupyter-bootstrap": Object.freeze(["venv", "ensurepip"]),
   "jupyter-host": Object.freeze(["jupyter_client"]),
+  "jupyter-host-files": Object.freeze(["jupyter_client", "pandas", "polars", "duckdb", "fsspec", "pyarrow"]),
   "jupyter-host-literate": Object.freeze(["jupyter_client", "ipykernel", "pandas", "polars", "duckdb", "fsspec"]),
   visual: Object.freeze([
     "pandas",
@@ -40,6 +41,7 @@ const PROFILE_LABELS = Object.freeze({
   "editor-jupyter": "Editor and released-Jupyter acceptance",
   "jupyter-bootstrap": "Released-Jupyter bootstrap acceptance",
   "jupyter-host": "Local R Jupyter acceptance",
+  "jupyter-host-files": "Local R Jupyter and file engine-switch acceptance",
   "jupyter-host-literate": "Local R and Quarto Jupyter acceptance",
   visual: "Webview visual acceptance"
 });
@@ -61,11 +63,13 @@ export function packagedEditorPythonPreflightProfile({
   jupyterExtensionEnabled,
   pythonJupyterProfile,
   remoteOnly,
-  literateDocuments
+  literateDocuments,
+  fileEngineSwitch = false
 }) {
   if (acceptanceMode === "r-jupyter") {
     if (remoteOnly) return "interpreter-only";
-    return literateDocuments ? "jupyter-host-literate" : "jupyter-host";
+    if (literateDocuments) return "jupyter-host-literate";
+    return fileEngineSwitch ? "jupyter-host-files" : "jupyter-host";
   }
   if (
     acceptanceMode === "data-wrangler-coexistence" ||

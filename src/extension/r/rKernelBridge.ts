@@ -335,7 +335,6 @@ export class RKernelBridge implements OpenWranglerBridge {
         cloneSource.revision !== request.cloneFrom.revision ||
         cloneSource.invalidated ||
         (cloneSource.mode !== mode && !(cloneSource.mode === "viewing" && mode === "editing")) ||
-        (cloneSource.rLibrary !== library && mode !== "editing") ||
         !isDeepStrictEqual(cloneSource.source, request.source))
     ) {
       return errorResponse(

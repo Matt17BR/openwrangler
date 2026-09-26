@@ -138,16 +138,6 @@ export interface FilePlanOpenContext {
   createBridge(targetDelegate?: OpenWranglerBridge): OpenWranglerBridge;
 }
 
-/** A pinned R source and applied plan; the original editor retains unfinished work. */
-export interface RLibraryCopyContext {
-  readonly source: SessionSource;
-  readonly rLibrary: RLibrary;
-  readonly appliedStepCount: number;
-  readonly rerunsCustomCode: boolean;
-  isCurrent(): boolean;
-  createBridge(library: RLibrary): OpenWranglerBridge;
-}
-
 export interface DuckDBTableDiscovery {
   readonly tables: readonly DuckDBTableName[];
   /** The interpreter selection and discovery attempt remain available for the initial open. */
@@ -166,13 +156,10 @@ export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   /** Retains a liveness check for the exact runtime owner of a file session. */
   captureFileSessionOwner?(sessionId: string): (() => boolean) | undefined;
-  /** Retains the exact mapped runtime while a native R editing copy is prepared. */
-  captureSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and its target bridge factory, or returns an eligibility diagnostic. */
   captureActiveFilePlan?(chooseColumnMapping: FilePlanColumnMappingChooser): FilePlanOpenContext | ErrorResponse;
   /** Saves a pending copied plan for its target file; resolves to an error when it could not be kept. */
   keepCopiedPlan?(sessionId: string): Promise<ErrorResponse | undefined>;
-  captureRLibraryCopy?(sessionId: string, revision: number): RLibraryCopyContext | ErrorResponse;
   prepareFileAutoFallback?(
     source: SessionSource,
     options?: BridgeRequestOptions
@@ -209,6 +196,16 @@ export interface OpenWranglerBridge {
     revision: number,
     source: SessionSource,
     options?: FileReconfigurationOptions
+  ): Promise<OpenWranglerResponse>;
+  /**
+   * Atomically replaces the private runtime behind a live R dataframe with one that clones its captured frame in
+   * another R library and replays the current plan, or only its first applied steps.
+   */
+  switchLiveRLibrary?(
+    sessionId: string,
+    revision: number,
+    rLibrary: RLibrary,
+    options?: BridgeRequestOptions & { readonly plan?: "current" | { readonly steps: number } }
   ): Promise<OpenWranglerResponse>;
   /** Summarizes the cleaning work saved for a file with an engine, if any. */
   savedFileWork?(source: SessionSource, engine: FileEngine): SavedFileWork | undefined;

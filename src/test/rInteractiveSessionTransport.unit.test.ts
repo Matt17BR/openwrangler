@@ -27,9 +27,9 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 
 describe("interactive R session transport", () => {
   it.each(["confirmed", "mismatched"] as const)(
-    "preserves the terminal source through a %s library-copy confirmation",
+    "preserves the terminal source through a %s library-switch clone",
     async (confirmation) => {
-      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-library-copy-unit-"));
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-library-switch-unit-"));
       const sourceId = testId(200);
       const copyId = testId(201);
       const requests: KernelRequestRecord[] = [];

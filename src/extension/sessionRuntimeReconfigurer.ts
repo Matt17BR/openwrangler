@@ -53,8 +53,8 @@ export interface RuntimeReconfigurationSession extends SessionResponseState {
   recoveryRequired: boolean;
 }
 
-/** The runtime that replaces a file session and the work it replays. */
-export interface FileReplacementTarget {
+/** The runtime that replaces a session's engine or import options and the work it replays. */
+export interface RuntimeReplacementTarget {
   readonly delegate: OpenWranglerBridge;
   /** Set exactly when the target engine is R. */
   readonly rLibrary: RLibrary | undefined;
@@ -522,17 +522,21 @@ export class SessionRuntimeReconfigurer {
     };
   }
 
-  async replaceFileSession(
+  async replaceRuntime(
     session: RuntimeReconfigurationSession,
     source: SessionSource,
     options: BridgeRequestOptions | undefined,
     hooks: RuntimeReconfigurationHooks,
-    target: FileReplacementTarget = { delegate: session.delegate, rLibrary: session.metadata.rLibrary, plan: "current" }
+    target: RuntimeReplacementTarget = {
+      delegate: session.delegate,
+      rLibrary: session.metadata.rLibrary,
+      plan: "current"
+    }
   ): Promise<OpenWranglerResponse> {
     if (!hooks.isCurrent()) {
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The file session closed before its new import options could be opened.",
+        "The session closed before its replacement runtime could open.",
         false,
         session.publicId
       );
@@ -562,13 +566,14 @@ export class SessionRuntimeReconfigurer {
     const sameDelegate = target.delegate === session.delegate;
     const previous = replacementSnapshot(session);
     const candidateSessionId = randomUUID();
-    const candidateRequest = replacementOpenRequest(
-      session,
-      source,
-      candidateSessionId,
-      options?.backendPreference,
-      target.rLibrary
-    );
+    const live = source.kind !== "file";
+    const candidateRequest: OpenSessionRequest = {
+      ...replacementOpenRequest(session, source, candidateSessionId, options?.backendPreference, target.rLibrary),
+      // A live dataframe may have changed since it was captured, so its replacement starts from the captured input.
+      ...(live
+        ? { cloneFrom: { sessionId: previous.runtime.runtimeId, revision: previous.runtime.runtimeRevision } }
+        : {})
+    };
     if (!isOpenWranglerRequest(candidateRequest)) {
       return protocolError(
         "invalid_import_options",
@@ -602,7 +607,10 @@ export class SessionRuntimeReconfigurer {
       if (candidateRequest.source.kind === "file")
         candidateSourceProtection = await captureSessionSourceFiles(candidateRequest.source);
       if (!hooks.isCurrent()) throw new ReconfigurationSupersededError();
-      response = await target.delegate.request(candidateRequest, options);
+      response = await target.delegate.request(
+        candidateRequest,
+        live ? { ...options, requiredKernelSessionId: previous.runtime.runtimeId } : options
+      );
     } catch (error) {
       await cleanupCandidate();
       await recoverConfirmedRuntime();
@@ -679,7 +687,7 @@ export class SessionRuntimeReconfigurer {
       await cleanupCandidate();
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The file session closed before its replacement runtime could replay any state.",
+        "The session closed before its replacement runtime could replay any state.",
         false,
         session.publicId
       );
@@ -723,7 +731,7 @@ export class SessionRuntimeReconfigurer {
       if (error instanceof ReconfigurationSupersededError) {
         return protocolError(
           hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-          "The file session closed while its replacement runtime was restoring state.",
+          "The session closed while its replacement runtime was restoring state.",
           false,
           session.publicId
         );
@@ -747,7 +755,7 @@ export class SessionRuntimeReconfigurer {
       await cleanupCandidate();
       return protocolError(
         hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-        "The file session closed before its new import options could be committed.",
+        "The session closed before its replacement runtime could be committed.",
         false,
         session.publicId
       );
@@ -789,7 +797,7 @@ export class SessionRuntimeReconfigurer {
         ? reconfigurationCancelled(session.publicId)
         : protocolError(
             hooks.isCoordinatorAvailable() ? "session_closing" : "coordinator_disposed",
-            "The file session changed before its import options could be persisted and published.",
+            "The session changed before its replacement runtime could be persisted and published.",
             false,
             session.publicId
           );

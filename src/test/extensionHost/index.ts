@@ -1821,8 +1821,7 @@ const exerciseReleasedRCloneEditingLifecycle = createReleasedRCloneEditingJourne
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
   waitFor,
-  waitForReleasedRCloneState,
-  waitForVisibleEditorDialog
+  waitForReleasedRCloneState
 });
 
 const { releasedRVisibleRows, releasedRFirstVisibleRow } = createReleasedRPageBoundary({ GRID_COLUMN_WINDOW });
@@ -5132,7 +5131,11 @@ async function assertReleasedSessionPage(
     `released-Jupyter page ${viewRequestId}`
   );
   recordAcceptanceProgress(`${viewRequestId}:response`);
-  assert.equal(response.kind, "page");
+  assert.equal(
+    response.kind,
+    "page",
+    response.kind === "error" ? `${viewRequestId}: ${response.code}: ${response.message}` : undefined
+  );
   if (response.kind !== "page") throw new Error(`Released-Jupyter page ${viewRequestId} did not resolve.`);
   assert.equal(response.page.rows[0]?.values[0]?.display, firstValue);
   return response;
