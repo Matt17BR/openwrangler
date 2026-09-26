@@ -272,6 +272,8 @@ describe("active R session commands", () => {
       return discovery(variable);
     });
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
     const { factory, coordinator } = registerWith([transport]);
 
     await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(true);
@@ -285,7 +287,7 @@ describe("active R session commands", () => {
       ["openWrangler", undefined],
       ["openWrangler", undefined]
     ]);
-    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
     expect(mocks.bridgeArguments[0]?.[4]).toBe(variable);
@@ -476,7 +478,7 @@ describe("active R session commands", () => {
     const origin = literateOrigin(editor);
     const { provider, factory, watcherFactory } = registerWith([transport], [initialWatcher, resumedWatcher]);
     provider.startAutomaticDiscovery();
-    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    await vi.waitFor(() => expect(provider.snapshot()?.state).toBe("ready"), { timeout: 1_000 });
 
     emitActiveTerminal({ name: "Quarto Preview", sendText: vi.fn() });
     const session = literateRProvider(provider).captureActiveSession();
@@ -531,7 +533,7 @@ describe("active R session commands", () => {
     expect(initialWatcher.dispose).toHaveBeenCalledOnce();
     initialRead.resolve(discovery(tibble));
     await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledTimes(2), { timeout: 1_000 });
-    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    await vi.waitFor(() => expect(provider.snapshot()?.state).toBe("ready"), { timeout: 1_000 });
     expect(literateRProvider(provider).captureActiveSession()?.terminal).toBe(sourceTerminal);
     await provider.shutdown();
   });
@@ -601,7 +603,7 @@ describe("active R session commands", () => {
     const origin = literateOrigin(editor);
     const { provider, watcherFactory } = registerWith([transport], [initialWatcher, secondWatcher]);
     provider.startAutomaticDiscovery();
-    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    await vi.waitFor(() => expect(provider.snapshot()?.state).toBe("ready"), { timeout: 1_000 });
     const session = literateRProvider(provider).captureActiveSession();
     expect(session?.terminal).toBe(firstTerminal);
 
@@ -839,7 +841,7 @@ describe("active R session commands", () => {
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
     expect(mocks.bridgeArguments[0]?.[4]).toBe(variable);
-    expect(provider.snapshot().state).toBe("idle");
+    expect(provider.snapshot()?.state).toBe("idle");
     expect(transport.dispose).not.toHaveBeenCalled();
   });
 
@@ -904,6 +906,7 @@ describe("active R session commands", () => {
   });
 
   it("rechecks the active R picker after returning focus", async () => {
+    setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
@@ -938,7 +941,7 @@ describe("active R session commands", () => {
     expect(transport.discoverVariables).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
     expect(mocks.configurationReads).toEqual([["openWrangler", undefined]]);
     const snapshot = provider.snapshot();
-    if (snapshot.state !== "ready") throw new Error("Expected a refreshed R dataframe list.");
+    if (snapshot?.state !== "ready") throw new Error("Expected a refreshed R dataframe list.");
 
     await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
       true
@@ -947,7 +950,7 @@ describe("active R session commands", () => {
     expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
     expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
     expect(transport.dispose).not.toHaveBeenCalled();
-    expect(provider.snapshot().state).toBe("idle");
+    expect(provider.snapshot()?.state).toBe("idle");
   });
 
   it("binds the active R terminal before progress can yield to a focus change", async () => {
@@ -982,6 +985,7 @@ describe("active R session commands", () => {
   });
 
   it("awaits and invalidates a picker transport during shutdown", async () => {
+    setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
     const quickPick = deferred<"first">();
@@ -1024,18 +1028,102 @@ describe("active R session commands", () => {
     expect(transport.dispose).toHaveBeenCalledOnce();
   });
 
-  it("does not guess an R session when a shell terminal is active", async () => {
+  it("asks for an R terminal when none is open instead of starting an empty R session", async () => {
     setActiveTerminal({ name: "bash", sendText: vi.fn() });
     const { provider, factory } = registerWith([]);
 
     await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(false);
+    await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(false);
 
     expect(factory.create).not.toHaveBeenCalled();
-    expect(provider.snapshot()).toMatchObject({
-      state: "idle",
-      message: "Select the R terminal that owns the dataframe first."
-    });
-    expect(mocks.showInformationMessage).toHaveBeenCalledOnce();
+    expect(provider.snapshot()).toBeUndefined();
+    expect(mocks.showInformationMessage.mock.calls).toEqual([
+      ["Start R with R: Create R Terminal, then try again."],
+      ["Start R with R: Create R Terminal, then try again."]
+    ]);
+  });
+
+  it("does not guess between R terminals that were never focused while a shell is active", async () => {
+    const shell = { name: "bash", sendText: vi.fn() };
+    setActiveTerminal(shell);
+    mocks.terminals.push(rTerminal("R"), rTerminal("R Interactive"));
+    const { provider, factory, watcherFactory } = registerWith([]);
+    provider.startAutomaticDiscovery();
+
+    await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(false);
+
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(watcherFactory.create).not.toHaveBeenCalled();
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(
+      "Select the R terminal that owns the dataframe, then try again."
+    );
+    await provider.shutdown();
+  });
+
+  it("discovers dataframes in the only R terminal while a shell has focus", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal({ name: "bash", sendText: vi.fn() });
+    mocks.terminals.push(terminal);
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const transport = transportMock();
+    const { provider, factory, watcherFactory } = registerWith([transport], [watcher]);
+
+    expect(provider.snapshot()).toMatchObject({ state: "idle", terminalLabel: "R Interactive" });
+    provider.startAutomaticDiscovery();
+
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        terminalLabel: "R Interactive",
+        variables: [{ label: "orders" }]
+      })
+    );
+    expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), terminal);
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("opens a dataframe from the only R terminal while a shell has focus", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal({ name: "bash", sendText: vi.fn() });
+    mocks.terminals.push(terminal);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const { factory } = registerWith([transport]);
+
+    await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
+    expect(mocks.panelCreate).toHaveBeenCalledOnce();
+  });
+
+  it("moves discovery to the previously focused R terminal when the attached one closes", async () => {
+    const first = rTerminal("R");
+    const second = rTerminal("R Interactive");
+    const unfocused = rTerminal("R");
+    setActiveTerminal(first);
+    mocks.terminals.push(unfocused);
+    const watchers = [watcherMock(first), watcherMock(second), watcherMock(first)];
+    for (const watcher of watchers) watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const { provider, watcherFactory } = registerWith([], watchers);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledTimes(1));
+    emitActiveTerminal(second);
+    emitActiveTerminal({ name: "bash", sendText: vi.fn() });
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({ state: "ready", terminalLabel: "R Interactive" })
+    );
+    expect(watcherFactory.create).toHaveBeenLastCalledWith(expect.anything(), second);
+
+    emitClosedTerminal(second);
+
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledTimes(3));
+    expect(watcherFactory.create).toHaveBeenLastCalledWith(expect.anything(), first);
+    await vi.waitFor(() => expect(provider.snapshot()).toMatchObject({ state: "ready", terminalLabel: "R" }));
+    await provider.shutdown();
   });
 
   it("does not inspect an R session before automatic discovery starts", () => {
@@ -1105,9 +1193,9 @@ describe("active R session commands", () => {
       expect(terminal.sendText).not.toHaveBeenCalled();
 
       pendingMetadata.resolve(discovery(tibble));
-      await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+      await vi.waitFor(() => expect(provider.snapshot()?.state).toBe("ready"), { timeout: 1_000 });
       const snapshot = provider.snapshot();
-      if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+      if (snapshot?.state !== "ready") throw new Error("Expected watcher dataframes.");
 
       await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
         true
@@ -1219,7 +1307,7 @@ describe("active R session commands", () => {
     expect(terminal.sendText).not.toHaveBeenCalled();
 
     const snapshot = provider.snapshot();
-    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+    if (snapshot?.state !== "ready") throw new Error("Expected watcher dataframes.");
     await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
       true
     );
@@ -1308,7 +1396,7 @@ describe("active R session commands", () => {
     pendingMetadata.resolve(discovery(tibble));
     await shutdown;
     expect(shutdownSettled).toBe(true);
-    expect(provider.snapshot().state).toBe("loading");
+    expect(provider.snapshot()?.state).toBe("loading");
   });
 
   it("cancels pending metadata discovery when the exact R terminal closes", async () => {
@@ -1324,16 +1412,13 @@ describe("active R session commands", () => {
     emitClosedTerminal(terminal);
 
     expect(watcher.dispose).toHaveBeenCalledOnce();
-    expect(provider.snapshot()).toMatchObject({
-      state: "idle",
-      message: "The R terminal closed. Start or select another R session."
-    });
+    expect(provider.snapshot()).toBeUndefined();
     expect(factory.create).not.toHaveBeenCalled();
     expect(terminal.sendText).not.toHaveBeenCalled();
 
     pendingMetadata.resolve(discovery(tibble));
     await delay(0);
-    expect(provider.snapshot().state).toBe("idle");
+    expect(provider.snapshot()).toBeUndefined();
     await provider.shutdown();
   });
 
@@ -1345,9 +1430,9 @@ describe("active R session commands", () => {
     const transport = transportMock();
     const { provider, factory } = registerWith([transport], [watcher]);
     provider.startAutomaticDiscovery();
-    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    await vi.waitFor(() => expect(provider.snapshot()?.state).toBe("ready"), { timeout: 1_000 });
     const snapshot = provider.snapshot();
-    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+    if (snapshot?.state !== "ready") throw new Error("Expected watcher dataframes.");
 
     await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
       true
@@ -1373,7 +1458,7 @@ describe("active R session commands", () => {
     await command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)();
 
     emitActiveTerminal({ name: "bash", sendText: vi.fn() });
-    expect(provider.snapshot().state).toBe("ready");
+    expect(provider.snapshot()?.state).toBe("ready");
 
     emitActiveTerminal(second);
     expect(provider.snapshot()).toMatchObject({
@@ -1393,16 +1478,12 @@ describe("active R session commands", () => {
 
     emitClosedTerminal(terminal);
 
-    expect(provider.snapshot()).toMatchObject({
-      state: "idle",
-      terminalLabel: "R session",
-      message: "The R terminal closed. Start or select another R session.",
-      variables: []
-    });
+    expect(provider.snapshot()).toBeUndefined();
     await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
   });
 
   it("releases the transport when the dataframe picker is dismissed", async () => {
+    setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
     mocks.showQuickPick.mockResolvedValueOnce(undefined);
@@ -1416,6 +1497,7 @@ describe("active R session commands", () => {
   });
 
   it("explains an empty active R session and releases the picker transport", async () => {
+    setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce({ variables: [], truncated: false });
     registerWith([transport]);
@@ -1423,9 +1505,7 @@ describe("active R session commands", () => {
     await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(false);
 
     expect(mocks.showQuickPick).not.toHaveBeenCalled();
-    expect(mocks.showInformationMessage).toHaveBeenCalledWith(
-      "The active R session does not contain a data.frame, tibble, or data.table."
-    );
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith("The R session has no dataframes.");
     expect(transport.dispose).toHaveBeenCalledOnce();
     expect(mocks.panelCreate).not.toHaveBeenCalled();
   });

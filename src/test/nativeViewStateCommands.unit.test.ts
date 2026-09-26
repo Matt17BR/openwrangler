@@ -451,13 +451,7 @@ describe("native state and presentation commands", () => {
     const terminalProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       startAutomaticDiscovery: () => undefined,
-      snapshot: () => ({
-        state: "idle",
-        action: "start",
-        terminalLabel: "R session",
-        message: "Start or select an R session.",
-        variables: []
-      }),
+      snapshot: () => undefined,
       refreshFromCommand: refreshTerminal,
       shutdown: async () => undefined,
       dispose: () => undefined
@@ -616,13 +610,12 @@ describe("native state and presentation commands", () => {
     });
   });
 
-  it.each(["R", "R session"])("keeps unread terminal %s discoverable alongside a notebook", (terminalLabel) => {
+  it.each(["R", "R Interactive"])("keeps unread terminal %s discoverable alongside a notebook", (terminalLabel) => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
-        action: "refresh",
         terminalLabel,
         message: "Dataframes appear here after the R prompt returns.",
         variables: []
@@ -671,17 +664,11 @@ describe("native state and presentation commands", () => {
     ]);
   });
 
-  it("offers one action that starts R after the previous terminal closed", () => {
+  it("shows no R entries while no R terminal is open", () => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       startAutomaticDiscovery: () => undefined,
-      snapshot: () => ({
-        state: "idle",
-        action: "start",
-        terminalLabel: "R session",
-        message: "The R terminal closed. Start or select another R session.",
-        variables: []
-      }),
+      snapshot: () => undefined,
       refreshFromCommand: async () => true,
       shutdown: async () => undefined,
       dispose: () => undefined
@@ -692,11 +679,6 @@ describe("native state and presentation commands", () => {
     expect(
       treeChildren("openWrangler.dataSources").map((node) => [node.label, node.description, node.command])
     ).toEqual([
-      [
-        "Start R and show dataframes…",
-        "R session",
-        expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
-      ],
       [
         "Open a data file",
         "Choose CSV, Parquet, Excel, or JSONL",

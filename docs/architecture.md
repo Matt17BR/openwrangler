@@ -30,11 +30,10 @@ describes the durable ownership and safety boundaries. It intentionally leaves o
 Native tree views, Code Preview and file custom editors keep their original lazy provider registrations until shutdown.
 Loading an owner supplies its delegate without unregistering a view or disposing its document while VS Code resolves it.
 Walkthrough, Settings and Report Issue commands retain their lightweight owner when native views load.
-Lazy variable providers show a pending snapshot only until their owner loads. A loaded owner's absent notebook
-snapshot remains absent, allowing Data sources to offer the idle R action. Data sources owns file-opening and cached
-Python/R discovery rows and their refresh subscriptions; Operations shows only the active dataframe's cleaning catalog.
-An unread R terminal remains discoverable beside a notebook. The R snapshot states whether its idle action starts or
-refreshes a terminal; its display name does not choose the action.
+Lazy variable providers show a pending snapshot only until their owner loads. A loaded owner's absent notebook or R
+snapshot remains absent. Data sources owns file-opening and cached Python/R discovery rows and their refresh
+subscriptions; Operations shows only the active dataframe's cleaning catalog. The R rows, beside any notebook rows,
+belong to one R terminal. With no R terminal the R snapshot is absent and Data sources shows no R rows.
 Editor and Code Preview resolution retain VS Code's exact cancellation token through loading and file preflight.
 Canceled resolution leaves existing view ownership intact and does not start panel setup or publish late file errors.
 Activation installs its lightweight gates before the first yield. Elapsed setup time does not invalidate successful
@@ -2128,8 +2127,11 @@ run in fresh environments parented by `baseenv()`. Their implementation function
 globals; `.GlobalEnv` remains the explicit owner of source variables and the shared runtime binding. User functions
 and source values remain unchanged.
 
-An existing official R-terminal variable stays pinned to the exact terminal and process that exposed it. Passive discovery reads bounded vscode-R metadata as an untrusted hint and
-sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
+An existing official R-terminal variable stays pinned to the exact terminal and process that exposed it. Discovery
+uses the focused R terminal. While another terminal has focus it uses the most recently focused R terminal, or the
+only one, and it moves to the previously focused R terminal when that terminal closes. Opening a dataframe without an
+R terminal asks the user to start one instead of starting an empty session; running a literate chunk still starts one.
+Passive discovery reads bounded vscode-R metadata as an untrusted hint and sends no R command. During startup, it waits within the existing readiness deadline for the selected terminal's
 metadata, even if a previous terminal left a record behind. It never reads foreign workspace data. An explicit Open
 or Refresh action cancels pending discovery, revalidates the terminal and process, then uses terminal
 `sendText` to install or drive Open Wrangler's private dispatcher. When `r.bracketedPaste` is enabled, every dispatch,

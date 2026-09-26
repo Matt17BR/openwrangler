@@ -257,7 +257,8 @@ export class LazyActivationOwners implements vscode.Disposable {
   private rVariables: (RLiveVariableProvider & LiterateRVariableProvider) | undefined;
   private nativeNotebookVariables:
     LazyLiveVariables<NotebookLiveVariableProvider, NotebookLiveVariableSnapshot | undefined, void> | undefined;
-  private nativeRVariables: LazyLiveVariables<RLiveVariableProvider, RLiveVariableSnapshot, boolean> | undefined;
+  private nativeRVariables:
+    LazyLiveVariables<RLiveVariableProvider, RLiveVariableSnapshot | undefined, boolean> | undefined;
   private sessionDiagnosticOutput: vscode.OutputChannel | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private bootstrapDisposed = false;
@@ -747,7 +748,7 @@ export class LazyActivationOwners implements vscode.Disposable {
     this.replaceCommandGroup("native");
     const rVariables = (this.nativeRVariables ??= new LazyLiveVariables<
       RLiveVariableProvider,
-      RLiveVariableSnapshot,
+      RLiveVariableSnapshot | undefined,
       boolean
     >(
       () => this.ensureROwner().then(({ variables }) => variables),

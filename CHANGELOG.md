@@ -40,6 +40,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R profiles take about a third less time. Profiling every column of an 11.7-million-row file now takes about 12 seconds instead of 17, with the same exact counts, medians and histograms.
 - R opens Parquet files with repeated text values about twice as fast. An 11.7-million-row file now opens in about 3 seconds instead of 6, and its first full profile finishes about 1.5 seconds sooner.
 - Data Sources and the R variable picker list every R dataframe, including grouped and rowwise tibbles, collapse grouped and indexed frames and other `data.frame` subclasses. Each opens as an R data.table, tibble or data.frame without its grouping or index, and the R variable keeps them. Custom Code can return any of them.
+- Data Sources lists the dataframes of an open R terminal even while another terminal has focus, and the **Start R and show dataframes…** entry is gone. With no R terminal open, **Open Dataframe from Active R Session** asks you to start R instead of starting an empty R session.
 
 ### Fixed
 

@@ -53,7 +53,6 @@ export type ViewSortDispatchStatus =
 const VIEW_SORT_HANDLE_KIND = "openWrangler.viewSort";
 const VIEW_SORT_TREE_ID_PREFIX = `${VIEW_SORT_HANDLE_KIND}:`;
 const VIEW_SORT_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiveVariable";
 const REFRESH_R_INTERACTIVE_VARIABLES_COMMAND = "openWrangler.refreshRInteractiveVariables";
 export type NotebookInsertionDiagnosticStatus =
   | NotebookInsertionResult["status"]
@@ -1386,9 +1385,7 @@ function dataSourceNodes(
 ): ViewNode[] {
   return [
     ...notebookLiveVariableNodes(notebookVariables),
-    ...rLiveVariableNodes(
-      notebookVariables && rVariables?.state === "idle" && rVariables.action === "start" ? undefined : rVariables
-    ),
+    ...rLiveVariableNodes(rVariables),
     new ViewNode("Open a data file", "Choose CSV, Parquet, Excel, or JSONL", "folder-opened", {
       command: "openWrangler.openPath",
       title: "Open a data file"
@@ -1460,12 +1457,10 @@ function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | unde
 function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
   if (snapshot.state === "idle") {
-    const startsSession = snapshot.action === "start";
-    const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
     return [
-      new ViewNode(label, snapshot.terminalLabel, "database", {
-        command: startsSession ? OPEN_R_INTERACTIVE_VARIABLE_COMMAND : REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
-        title: label
+      new ViewNode("Show R dataframes…", snapshot.terminalLabel, "database", {
+        command: REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
+        title: "Show R dataframes…"
       })
     ];
   }
