@@ -297,15 +297,109 @@ export function savedReferencePolicy(step: TransformStep): SavedReferencePolicy 
 /** Rewrite only declared references in a copy, preserving literals and repeated operands. */
 export function remapStepColumnReferences(
   step: TransformStep,
-  columnIds: ReadonlyMap<string, string>
+  columns: ReadonlyMap<string, ColumnReference>
 ): TransformStep | string {
   const mapped = structuredClone(step);
   const policy = savedReferencePolicy(mapped);
   if (typeof policy === "string") return policy;
-  // Resolve every ID before writing: a repeated reference may be the same object.
+  // Resolve every reference before writing: a repeated reference may be the same object.
   const replacements = policy.flatMap((group) =>
-    group.references.map(({ reference }) => ({ reference, id: columnIds.get(reference.id) ?? reference.id }))
+    group.references.map(({ reference }) => {
+      const target = columns.get(reference.id);
+      return { reference, id: target?.id ?? reference.id, name: target?.name ?? reference.name };
+    })
   );
-  for (const { reference, id } of replacements) reference.id = id;
+  for (const { reference, id, name } of replacements) {
+    reference.id = id;
+    reference.name = name;
+  }
   return mapped;
+}
+
+/** Point an in-place output at the mapped column's name, so a replacement never becomes a new column. */
+function followInPlaceOutput(
+  step: TransformStep,
+  originNames: ReadonlyMap<string, string>,
+  targetNames: ReadonlyMap<string, string>
+): void {
+  switch (step.kind) {
+    case "renameColumn": {
+      const target = targetNames.get(step.params.column.id);
+      if (target !== undefined && step.params.newName === originNames.get(step.params.column.id))
+        step.params.newName = target;
+      return;
+    }
+    case "findReplace":
+    case "stripText":
+    case "splitText":
+    case "capitalizeText":
+    case "lowerText":
+    case "upperText":
+    case "minMaxScale":
+    case "roundNumber":
+    case "floorNumber":
+    case "ceilNumber":
+    case "formatDatetime": {
+      const target = targetNames.get(step.params.column.id);
+      if (target !== undefined && step.params.newColumn === originNames.get(step.params.column.id))
+        step.params.newColumn = target;
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** Input columns whose names become output names, for steps that have no explicit output prefix. */
+function nameDerivingInputs(step: TransformStep): ColumnReference[] {
+  if (step.kind === "oneHotEncode") return step.params.columns;
+  if (step.kind === "multiLabelBinarize" && step.params.prefix === undefined) return [step.params.column];
+  return [];
+}
+
+/**
+ * Copy a plan onto another input schema. `targets` maps each original input column ID to its column in the new input.
+ * References take the target ID and the column's name at their step, outputs that replace a mapped column follow its
+ * name, and created output names stay literal. A later reference to an output named after a renamed input is refused,
+ * because that output's name changes with the input.
+ */
+export function translatePlanColumns(
+  steps: readonly TransformStep[],
+  original: readonly ColumnSchema[],
+  targets: ReadonlyMap<string, ColumnReference>
+): TransformStep[] | string {
+  const originNames = new Map(original.map((column) => [column.id, column.name]));
+  const targetNames = new Map([...targets].map(([id, target]) => [id, target.name]));
+  const renamedDerivations = new Map<string, string>();
+  const translated: TransformStep[] = [];
+  for (const step of steps) {
+    const copy = structuredClone(step);
+    const policy = savedReferencePolicy(copy);
+    if (typeof policy === "string") return policy;
+    const stepTargets = new Map<string, ColumnReference>();
+    for (const { reference } of policy.flatMap((group) => group.references)) {
+      for (const [stepId, input] of renamedDerivations) {
+        if (reference.id.startsWith(`c:step:${stepId}:`))
+          return `A later step uses “${reference.name}”, which is named after the renamed column “${input}”. Copy this plan onto a file that keeps that column name.`;
+      }
+      const target = targets.get(reference.id);
+      if (!target) continue;
+      if (reference.name !== originNames.get(reference.id))
+        return `The plan refers to “${reference.name}” by a name that does not match its input column.`;
+      stepTargets.set(reference.id, { id: target.id, name: targetNames.get(reference.id)! });
+    }
+    followInPlaceOutput(copy, originNames, targetNames);
+    const mapped = remapStepColumnReferences(copy, stepTargets);
+    if (typeof mapped === "string") return mapped;
+    for (const input of nameDerivingInputs(step)) {
+      const name = originNames.get(input.id);
+      if (targets.has(input.id) && name !== targetNames.get(input.id)) renamedDerivations.set(step.id, name!);
+    }
+    if (step.kind === "renameColumn" && copy.kind === "renameColumn" && targets.has(step.params.column.id)) {
+      originNames.set(step.params.column.id, step.params.newName);
+      targetNames.set(step.params.column.id, copy.params.newName);
+    }
+    translated.push(mapped);
+  }
+  return translated;
 }

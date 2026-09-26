@@ -199,7 +199,10 @@ describe("savedStepEditError", () => {
     expect(savedStepEditError(savedStep, schema)).toBeUndefined();
     const original = structuredClone(savedStep);
     const ids = new Map(schema.map((item, index) => [item.id, schema[(index + 1) % schema.length].id]));
-    const mapped = remapStepColumnReferences(savedStep, ids);
+    const mapped = remapStepColumnReferences(
+      savedStep,
+      new Map(schema.map((item) => [item.id, { id: ids.get(item.id)!, name: item.name }]))
+    );
     expect(typeof mapped).not.toBe("string");
     if (typeof mapped === "string") throw new Error(mapped);
     expect(
@@ -382,7 +385,10 @@ describe("savedStepEditError", () => {
     "checks missing references in %s",
     (_caseName, savedStep, message) => {
       expect(savedStepEditError(savedStep, schema)).toContain(`saved ${message} refers to column ID “c:missing”`);
-      const mapped = remapStepColumnReferences(savedStep, new Map([["c:missing", "c:remapped-missing"]]));
+      const mapped = remapStepColumnReferences(
+        savedStep,
+        new Map([["c:missing", { id: "c:remapped-missing", name: "missing" }]])
+      );
       if (typeof mapped === "string") throw new Error(mapped);
       expect(savedStepEditError(mapped, schema)).toContain(`saved ${message} refers to column ID “c:remapped-missing”`);
     }
@@ -477,8 +483,8 @@ describe("savedStepEditError", () => {
       remapStepColumnReferences(
         repeated,
         new Map([
-          [value.id, otherValue.id],
-          [otherValue.id, value.id]
+          [value.id, { id: otherValue.id, name: value.name }],
+          [otherValue.id, { id: value.id, name: otherValue.name }]
         ])
       )
     ).toEqual({
@@ -836,7 +842,7 @@ describe("savedStepEditError", () => {
     ).toContain("unsupported program kind");
   });
 
-  it("remaps declared references without changing derived identities, names or reference-shaped predicate values", () => {
+  it("remaps declared references without changing derived identities or reference-shaped predicate values", () => {
     const literal = { id: value.id, name: value.name };
     const saved = step("filterRows", {
       filterModel: {
@@ -846,7 +852,7 @@ describe("savedStepEditError", () => {
         sort: [{ column: { id: "c:step:derived:0", name: "result" }, direction: "asc", nulls: "last" }]
       }
     });
-    const mapped = remapStepColumnReferences(saved, new Map([[value.id, otherValue.id]]));
+    const mapped = remapStepColumnReferences(saved, new Map([[value.id, { id: otherValue.id, name: value.name }]]));
     expect(isTransformStep(saved)).toBe(true);
     expect(mapped).toEqual({
       ...saved,

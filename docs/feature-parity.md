@@ -962,15 +962,18 @@ the contract.
 ## Reuse a file cleaning plan
 
 **Open Wrangler: Open Another File with This Plan** opens a separate Editing session with a confirmed built-in
-plan from a Pandas, Polars, DuckDB or native R file session. The selected file must have matching original column names and
-types, in any order, and uses the same engine and import options. The target keeps its column order unless a cleaning
+plan from a Pandas, Polars, DuckDB or native R file session. The selected file needs one column of the same type for
+each original column and uses the same engine and import options. Same-name columns match in any order. For a renamed
+column, the command asks which selected-file column replaces it and confirms the complete mapping before replay; steps
+that rewrite a column in place keep writing to the renamed column. The target keeps its column order unless a cleaning
 step changes it. An unfinished draft, Custom Code, ambiguous column names, a target already open in Open Wrangler,
 or saved target work prevents reuse. Full replay must succeed before the new session is shown. Viewing filters and
 sorts are not copied, and both source files remain unchanged.
 
-Mapping renamed columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
+Extra or missing columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
 experimental file-editing status. Local R file support remains Preview. Source evidence: test:src/test/fileOpen.unit.test.ts;
-test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
+test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/planColumnTranslation.unit.test.ts;
+test:src/test/rProcessTransport.cross.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
 The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and late-cancellation
 semantics. The existing daily-core journey owns the installed command, file picker and rendered target interaction.
 

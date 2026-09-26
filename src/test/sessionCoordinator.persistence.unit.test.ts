@@ -22,6 +22,8 @@ import {
   type OpenWranglerBridge,
   type BridgeRequestOptions,
   type CancellationTokenLike,
+  type FilePlanColumnMappingChooser,
+  type FilePlanColumnMappingRequest,
   DetachedBridgeRequestError
 } from "../extension/dataBridge";
 import {
@@ -2426,8 +2428,48 @@ describe("SessionCoordinator file-plan reuse", () => {
       expect(await readFile(fixture.targetPath, "utf8")).toBe(
         reordered ? "other,value\n30,4.5\n40,6.7\n" : "value,other\n4.5,30\n6.7,40\n"
       );
+      expect(fixture.mappingRequests).toEqual([]);
     } finally {
       finalWrite.resolve();
+      await fixture.close();
+    }
+  });
+
+  it("copies a plan onto a renamed column after the user matches it", async () => {
+    const fixture = await filePlanFixture();
+    try {
+      fixture.targetColumnNames = ["other", "price"];
+      fixture.chooseColumnMapping = async ({ unmatched, candidates }) => new Map([[unmatched[0].id, candidates[0].id]]);
+      const result = await fixture.capture().bridge.request(fixture.targetRequest);
+      expect(fixture.mappingRequests).toEqual([
+        {
+          unmatched: [expect.objectContaining({ id: "c:source:0", name: "value" })],
+          candidates: [expect.objectContaining({ id: "c:source:1", name: "price" })]
+        }
+      ]);
+      if (result.kind !== "sessionOpened") throw new Error(JSON.stringify(result));
+      const copiedSteps: TransformStep[] = [
+        {
+          id: "rename-value",
+          kind: "renameColumn",
+          params: { column: { id: "c:source:1", name: "price" }, newName: "amount" }
+        },
+        {
+          id: "total",
+          kind: "formula",
+          params: {
+            leftColumn: { id: "c:source:1", name: "amount" },
+            rightColumn: { id: "c:source:0", name: "other" },
+            operator: "add",
+            newColumn: "total"
+          }
+        },
+        fixture.steps[2]
+      ];
+      expect(result.metadata.steps).toEqual(copiedSteps);
+      expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: copiedSteps } });
+      expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
+    } finally {
       await fixture.close();
     }
   });
@@ -2469,7 +2511,10 @@ describe("SessionCoordinator file-plan reuse", () => {
   it.each([
     "schema",
     "ambiguous schema",
-    "missing column",
+    "extra column",
+    "declined mapping",
+    "invalid mapping",
+    "origin change during mapping",
     "incomplete plan",
     "page source drift",
     "unsupported operation",
@@ -2488,7 +2533,15 @@ describe("SessionCoordinator file-plan reuse", () => {
       const selected = fixture.capture();
       if (failure === "schema") fixture.targetSchemaMismatch = true;
       if (failure === "ambiguous schema") fixture.targetColumnNames = ["value", "value"];
-      if (failure === "missing column") fixture.targetColumnNames = ["value", "absent"];
+      if (failure === "extra column") fixture.targetColumnNames = ["value", "other", "extra"];
+      if (failure.includes("mapping")) fixture.targetColumnNames = ["value", "absent"];
+      if (failure === "invalid mapping")
+        fixture.chooseColumnMapping = async () => new Map([["c:source:1", "c:source:0"]]);
+      if (failure === "origin change during mapping")
+        fixture.chooseColumnMapping = async () => {
+          fixture.runtimeOwnerCurrent = false;
+          return new Map([["c:source:1", "c:source:1"]]);
+        };
       if (failure === "incomplete plan") fixture.targetIncompletePlan = true;
       if (failure === "page source drift") fixture.targetPageSourceDrift = true;
       if (failure === "unsupported operation") fixture.targetUnsupported = true;
@@ -2528,12 +2581,31 @@ describe("SessionCoordinator file-plan reuse", () => {
       expect(fixture.targetRequests.filter((request) => request.kind === "applyDraft")).toHaveLength(
         failure === "incomplete plan" || failure === "page source drift" || failure === "persistence failure" ? 3 : 0
       );
-      if (failure === "schema")
+      expect(fixture.mappingRequests.map(({ unmatched, candidates }) => [unmatched, candidates])).toEqual(
+        failure.includes("mapping")
+          ? [[[expect.objectContaining({ name: "other" })], [expect.objectContaining({ name: "absent" })]]]
+          : []
+      );
+      const messages = new Map<typeof failure, [code: string, message?: string]>([
+        [
+          "schema",
+          ["file_plan_replay_failed", "The selected file has no remaining column with the same type as “other”."]
+        ],
+        [
+          "extra column",
+          ["file_plan_replay_failed", "The selected file has 3 columns, but the plan's original input has 2."]
+        ],
+        ["declined mapping", ["file_plan_mapping_declined"]],
+        ["invalid mapping", ["file_plan_replay_failed", "The chosen columns do not match the plan's original input."]],
+        ["origin change during mapping", ["file_plan_changed"]]
+      ]);
+      const expected = messages.get(failure);
+      if (expected)
         expect(result).toMatchObject({
           kind: "error",
-          code: "file_plan_replay_failed",
+          code: expected[0],
           recoverable: true,
-          message: "The selected file must have the same unique column names and types as the plan's original input."
+          ...(expected[1] ? { message: expected[1] } : {})
         });
       if (failure === "persistence failure")
         expect(result).toMatchObject({
@@ -2656,8 +2728,11 @@ async function filePlanFixture(reordered = false, backend: "polars" | "r" = "pol
     targetIncompletePlan: boolean;
     targetPageSourceDrift: boolean;
     targetUnsupported: boolean;
+    chooseColumnMapping?: FilePlanColumnMappingChooser;
+    mappingRequests: FilePlanColumnMappingRequest[];
   } = {
     stored: { [originKey]: savedOrigin },
+    mappingRequests: [],
     runtimeOwnerCurrent: true,
     targetRuntimeOwnerCurrent: true,
     targetSchemaMismatch: false,
@@ -2801,7 +2876,10 @@ async function filePlanFixture(reordered = false, backend: "polars" | "r" = "pol
     targetRequests,
     targetRequest: { ...openRequest, source: targetSource, backend },
     capture(delegate = targetDelegate) {
-      const selected = commandBridge.captureActiveFilePlan!();
+      const selected = commandBridge.captureActiveFilePlan!(async (request) => {
+        controls.mappingRequests.push(structuredClone(request));
+        return controls.chooseColumnMapping?.(request);
+      });
       if ("kind" in selected) throw new Error(selected.message);
       return { ...selected, bridge: selected.createBridge(delegate) };
     },

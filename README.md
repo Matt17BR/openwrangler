@@ -94,8 +94,9 @@ or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step 
 and generated code follow the updated plan.
 
 In **2.6**, use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the
-plan's original column names and types, even when their order changes. It opens a separate Editing session using the
-same engine and import options. This supports Pandas, Polars, DuckDB and native R file plans without Custom Code or an
+plan's original column names and types, even when their order changes. If a column was renamed, Open Wrangler asks
+which column in the new file replaces it and shows the complete match before copying the plan. It opens a separate
+Editing session using the same engine and import options. This supports Pandas, Polars, DuckDB and native R file plans without Custom Code or an
 unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
 options. Both source files remain unchanged.
 

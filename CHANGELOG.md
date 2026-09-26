@@ -7,6 +7,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Added
 
 - Open DuckDB Table also lists views. A view runs once when opened, and the viewer shows a fixed copy of its rows.
+- Open Another File with This Plan works when the new file renames a column. It asks which column replaces each unmatched one and shows the complete match before copying the plan.
 
 ### Changed
 

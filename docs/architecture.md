@@ -140,12 +140,19 @@ the picker opens. It excludes Custom Code and requires unique, non-empty origina
 the validated original file schema through ordinary edits, refreshing it on source/runtime replacement. This receipt
 is private and is not persisted. Target columns must have the same names, semantic types and raw types; observed
 nullability, row counts and row labels may differ. An exact positional match keeps the captured steps unchanged.
-Reordered input requires a bijection of unique, non-empty names. The host copies the plan and translates declared
-source-column references to the target IDs, preserving names, derived IDs, literal values and parameter order.
-The shared reference enumeration also serves saved-step editing; native replay still binds each step against its
-current input schema. Target column order is preserved unless a cleaning step changes it. Generated code retains the
-target's input-order requirements. Both files use the same concrete backend and
-import options. Renamed, extra or missing columns and notebook inputs remain outside this command's scope.
+Otherwise the target needs unique, non-empty names and the same column count. Same-name columns of equal type pair
+automatically. Any remaining original columns need, for each type, exactly as many remaining target columns; the
+host refuses before prompting otherwise, so every sequence of choices completes. The user then matches each remaining
+column and confirms the complete mapping before any step replays. The captured session must still be current after
+the prompt, the returned mapping is revalidated, and declining closes the candidate without saved state.
+The host copies the plan and translates declared source-column references to the target IDs and to each column's name
+at that step. An in-place output (a `newColumn` or rename `newName` equal to its input's current name) follows the
+mapped name; created output names, derived IDs, literal values and parameter order are unchanged. A later reference to
+a One-hot or prefixless Multi-label output of a renamed input is refused because those output names derive from the
+input name. The shared reference enumeration also serves saved-step editing; native replay still binds each step
+against its current input schema. Target column order is preserved unless a cleaning step changes it. Generated code
+retains the target's input-order requirements. Both files use the same concrete backend and import options. Extra or
+missing columns and notebook inputs remain outside this command's scope.
 
 The captured session, runtime owner and revision must remain current through replay and persistence staging;
 switching active editors cannot retarget the action. Python retains its exact process and environment selection.
