@@ -306,6 +306,7 @@ function SelectedColumnSummary({
               <h3 id={`summary-distribution-${summary.columnId}`}>Distribution</h3>
               <NumericHistogram
                 visualization={numericVisualization}
+                summary={summary.numeric}
                 valueMode={profileValueMode}
                 percentDenominator={distributionDenominator}
                 selectionDisabledReason={

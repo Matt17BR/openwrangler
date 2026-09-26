@@ -34,6 +34,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Histogram ranges and bin labels now show exact edges. The first and last edges match the column's Min and Max, and inner edges are no longer rounded to 5 significant digits, so a column starting at `-406,851` no longer reads as starting at `-406,850`. Bin labels use "to" instead of a hyphen, so negative ranges read clearly.
 - A dataframe or file with saved cleaning steps now reopens in Editing and restores them, even when the start mode is Viewing. Previously the panel stopped with instructions to change the start-mode setting and reopen.
 - Scrolling views with millions of rows no longer skips rows. A mouse-wheel notch moves about three rows and Page Down moves one screen, however large the view.
 - Pandas opens large files faster and with less memory. With pandas 3, adding Open Wrangler's row identity no longer copies every column when a file opens or a cleaning step applies; an 11.7-million-row Parquet file now opens in about 3 seconds instead of 7.

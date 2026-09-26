@@ -1189,11 +1189,11 @@ describe("DataGrid", () => {
     });
     const numericStatus = numericHeader.querySelector<HTMLElement>(".miniChartCaption");
     fireEvent.pointerMove(distribution, { clientX: 40 });
-    expect(numericStatus).toHaveTextContent("1-2.5: 100 rows");
+    expect(numericStatus).toHaveTextContent("1 to 2.5: 100 rows");
     expect(numericHeader.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
     expect(numericHeader.querySelectorAll(".numericHistogramBin.active")).toHaveLength(1);
     fireEvent.pointerMove(distribution, { clientX: 120 });
-    expect(numericStatus).toHaveTextContent("2.5-4: 1 row");
+    expect(numericStatus).toHaveTextContent("2.5 to 4: 1 row");
     expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
     fireEvent.pointerLeave(distribution);
     expect(numericStatus).toHaveTextContent("1 to 4 · 2 bins");
@@ -1346,7 +1346,7 @@ describe("DataGrid", () => {
 
     fireEvent.keyDown(
       screen.getByRole("button", {
-        name: "0-10: 1 row (50%); lower bound included, upper bound excluded"
+        name: "0 to 10: 1 row (50%); lower bound included, upper bound excluded"
       }),
       { key: "Enter" }
     );

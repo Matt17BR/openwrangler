@@ -198,6 +198,7 @@ export function useGridHeaderProfiles({
         <div className="summaryDistribution">
           <MiniChart
             visualization={summary.visualization}
+            numericSummary={summary.numeric}
             column={column}
             valueMode={valueMode}
             denominator={distributionDenominator}
@@ -328,12 +329,14 @@ function CompactExtremum({
 
 function MiniChart({
   visualization,
+  numericSummary,
   column,
   valueMode,
   denominator,
   onApplyFilter
 }: {
   visualization: ColumnVisualization | undefined;
+  numericSummary: ColumnSummary["numeric"];
   column: ColumnSchema;
   valueMode: ProfileValueMode;
   denominator: number;
@@ -344,6 +347,7 @@ function MiniChart({
     return (
       <NumericHistogram
         visualization={visualization}
+        summary={numericSummary}
         compact
         valueMode={valueMode}
         percentDenominator={denominator}
