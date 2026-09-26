@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
+import type { GridViewState } from "../shared/viewState";
 import { DataGrid } from "../webviews/grid/DataGrid";
 import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 import { valueActionChoices } from "./filterSummary.testFixtures";
@@ -2193,6 +2194,93 @@ describe("DataGrid", () => {
       "aria-rowindex",
       String(restoredRow + 2)
     );
+  });
+
+  it("moves wheel and page-key scrolling by logical rows beyond Chromium's layout ceiling", () => {
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const onViewStateChange = vi.fn();
+    const props = {
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined,
+      onViewStateChange
+    };
+    const { unmount } = render(<DataGrid {...props} metadata={largeMetadata} page={pageAt(0)} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 580 });
+    let physicalScrollTop = 0;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.round(Math.min(value, chromiumMaximumLayoutHeight));
+      }
+    });
+    fireEvent(window, new Event("resize"));
+    const firstVisibleRow = (): number | undefined =>
+      (onViewStateChange.mock.lastCall?.[0] as GridViewState | undefined)?.viewport.firstVisibleRow;
+
+    expect(fireEvent.wheel(scroller, { deltaY: 100 })).toBe(false);
+    expect(firstVisibleRow()).toBe(3);
+    fireEvent.wheel(scroller, { deltaY: 100 });
+    expect(firstVisibleRow()).toBe(6);
+    expect(document.querySelector('[data-grid-row="6"]')).not.toBeNull();
+    fireEvent.wheel(scroller, { deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_LINE });
+    expect(firstVisibleRow()).toBe(7);
+
+    expect(fireEvent.keyDown(scroller, { key: "PageDown" })).toBe(false);
+    expect(firstVisibleRow()).toBe(7 + 19);
+    fireEvent.keyDown(scroller, { key: "ArrowUp" });
+    expect(firstVisibleRow()).toBe(25);
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
+    expect(firstVisibleRow()).toBe(26);
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    fireEvent.wheel(scroller, { deltaY: -29 * 30 });
+    expect(firstVisibleRow()).toBe(0);
+    expect(fireEvent.wheel(scroller, { deltaX: 80, deltaY: 10 })).toBe(true);
+    unmount();
+
+    render(<DataGrid {...props} metadata={metadata} page={page} />);
+    expect(fireEvent.wheel(screen.getByTestId("data-grid-scroller"), { deltaY: 100 })).toBe(true);
+  });
+
+  it("consumes grid navigation keys while another block is loading", () => {
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const onPage = vi.fn();
+    render(
+      <DataGrid
+        metadata={largeMetadata}
+        summaries={[]}
+        page={pageAt(0)}
+        pageSize={largeGridPageSize}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        busy
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const cell = document.querySelector('[data-grid-row="0"][data-grid-column="0"]');
+    if (!(cell instanceof HTMLElement)) throw new Error("Expected the first grid cell.");
+
+    expect(fireEvent.keyDown(cell, { key: "End", ctrlKey: true })).toBe(false);
+    expect(onPage).not.toHaveBeenCalled();
+    expect(cell).toHaveAttribute("tabindex", "0");
   });
 
   it("keeps a terminal partial block visible when native scrolling starts before its offset", async () => {
