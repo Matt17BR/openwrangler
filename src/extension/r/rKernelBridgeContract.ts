@@ -247,17 +247,11 @@ export function metadataFor(session: RBridgeSession, filteredRows: number = sess
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
-    capabilities: {
-      ...rCapabilitiesForSource(
-        session.source,
-        session.mode === "editing" && session.exportCsv,
-        session.mode === "editing" && session.exportParquet
-      ),
-      ...((session.rLibrary === "data.table" || session.rLibrary === "collapse") &&
-      session.rSchema.some((column) => column.semantics.kind === "clock_datetime")
-        ? { supportedOperations: [] }
-        : {})
-    },
+    capabilities: rCapabilitiesForSource(
+      session.source,
+      session.mode === "editing" && session.exportCsv,
+      session.mode === "editing" && session.exportParquet
+    ),
     shape: { rows: session.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),

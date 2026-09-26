@@ -1710,13 +1710,13 @@ strings and exact ISO display text. `rawType` records both precision and civil/i
 compatibility and filter reconciliation cannot reinterpret ticks after a type change. Sorting can retain its column
 reference; filters on changed clock types are discarded.
 
-Clock columns require a base data.frame or tibble. All four selected libraries can open, view, profile, filter, sort
-and export these frames through the shared native owners. data.table and collapse sessions expose an empty cleaning
-operation catalog while clock columns remain, with help directing users to the existing base/dplyr editing-copy path.
-Their native step dispatcher also refuses before any mutation. The session keeps its selected library and existing
-mode/export/copy contract; it does not silently execute another library's transformations. Actual data.table frames
-containing clock records remain unsupported.
-Base R and dplyr support structural cleaning, exact filtering/sorting and missing/duplicate handling.
+Clock columns require a base data.frame or tibble. All four selected libraries can open, view, profile, filter, sort,
+clean and export these frames through the shared native owners. data.table and collapse containers cannot hold clock
+records, so the shared library helpers replace each clock column with a row-position stand-in before conversion and
+restore the clock values, sliced by the resulting positions, when converting back. Row keys are computed from the clock
+values themselves. Generated code deparses the same helpers. Actual data.table frames containing clock records remain
+unsupported.
+Every library supports structural cleaning, exact filtering/sorting and missing/duplicate handling.
 Temporal formatting, casts, Fill, grouping, pivoting and By Example
 do not acquire clock semantics implicitly; unsupported operations refuse before publication. Other operations remain
 available when clock columns are not inputs or grouping/identifier keys.

@@ -3374,12 +3374,7 @@ describe("native R kernel protocol", () => {
     ["invalid_source", "Excel sheet discovery requires the retained Excel file source", false],
     ["operation-output-too-large", "Pivot wider would exceed the portable 2,048-column limit", true],
     ["read_in_progress", "This R session already has two pending profiles", true],
-    ["unknown_profile", "The requested R profile is no longer available", true],
-    [
-      "unsupported_library",
-      "Precise native R timestamps require base or dplyr cleaning. Reopen this dataframe with base or dplyr.",
-      true
-    ]
+    ["unknown_profile", "The requested R profile is no longer available", true]
   ])("preserves the native %s diagnostic", (code, message, recoverable) => {
     const response = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

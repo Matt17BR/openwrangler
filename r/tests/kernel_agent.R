@@ -734,7 +734,7 @@ local({
     assert_identical(arrow::read_parquet(precise_path, as_data_frame = FALSE)$utc$type$timezone(), "Europe/Berlin",
       "the precise timestamp fixture did not restore its named Arrow timezone")
     expected <- data.frame(local = local, utc = clock::as_sys_time(local), amount = seq_along(ticks), text = c("alpha", "beta", "gamma", "delta", NA_character_, "x", "y"))
-    for (library in c("base", "dplyr")) {
+    for (library in c("base", "dplyr", "data.table", "collapse")) {
       code <- check_file(list(path = precise_path, format = "parquet"), expected, library = library, text_sibling = TRUE)
       exported <- arrow::read_parquet(file.path(root, "export.parquet"), as_data_frame = FALSE)
       for (name in c("local", "utc", "copied")) assert_identical(exported[[name]]$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks,
@@ -823,7 +823,7 @@ local({
       environment <- new.env(parent = baseenv()); environment$.ow_csv_source <- load_file(list(path = precise_path, format = "parquet"), maximum_columns = maximum_columns)
       viewer <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment, file_source = list(path = precise_path, format = "parquet"))
       opened <- dispatch_with(viewer, "openSession", list(sessionId = session_id, variableName = ".ow_csv_source", page = page_window(), library = library))
-      assert_identical(opened$kind, "page", "A viewing library could not open exact timestamps")
+      assert_identical(opened$kind, "page", "A library could not open exact timestamps")
       assert_identical(opened$library, library, "Opening exact timestamps changed the selected library")
       reference <- list(id = "r:c:0", name = "local")
       page <- page_window(
@@ -838,40 +838,31 @@ local({
       profile <- dispatch_with(viewer, "getSummary", list(sessionId = session_id, columns = I(list(reference)), view = page$view))
       assert_identical(profile$kind, "summary", "A viewing library could not profile exact timestamps")
       assert_identical(profile$summaries[[1L]]$totalCount, 3L, "Exact timestamp profile ignored the view filter")
-      for (step in list(
-        list(id = "blocked-rename", kind = "renameColumn", params = list(column = reference, newName = "renamed")),
-        formula_step("blocked-formula", "add", "sum", left_position = 3L, left_name = "amount", value = 1),
-        list(id = "blocked-custom", kind = "customCode", params = list(code = "result <- df"))
+      renamed <- expected; names(renamed)[[1L]] <- "renamed"
+      summed <- expected; summed$sum <- expected$amount + 1L
+      revision <- 0L
+      for (case in list(
+        list(step = list(id = "precise-rename", kind = "renameColumn", params = list(column = reference, newName = "renamed")), result = renamed),
+        list(step = formula_step("precise-formula", "add", "sum", left_position = 3L, left_name = "amount", value = 1), result = summed),
+        list(step = list(id = "precise-custom", kind = "customCode", params = list(code = "result <- df")), result = expected)
       )) {
-        refused <- dispatch_with(viewer, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(), step = step))
-        assert_identical(refused$code, "unsupported_library", "A viewing library silently cleaned an exact timestamp frame")
-        current <- dispatch_with(viewer, "getPage", list(sessionId = session_id, page = page_window()))
-        assert_identical(current$page, opened$page, "Refused cleaning changed the viewing frame")
-        clone <- dispatch_with(viewer, "openSession", list(sessionId = second_session_id, variableName = ".ow_csv_source", page = page_window(),
-          library = "base", cloneFromSessionId = session_id, cloneFromRevision = 0L))
-        assert_identical(clone$kind, "page", "Refused cleaning advanced the confirmed revision or prevented a safe copy")
-        dispatch_with(viewer, "closeSession", list(sessionId = second_session_id))
-      }
-      exported <- dispatch_with(viewer, "exportData", list(sessionId = session_id, revision = 0L, exportId = export_id, options = parquet_export_options))
-      assert_identical(exported$kind, "dataExported", "A viewing library could not export exact timestamps")
-      chunk <- dispatch_with(viewer, "readDataExport", list(sessionId = session_id, revision = 0L, exportId = export_id, offset = 0L, limit = 65536L))
-      output <- file.path(root, "view-only-export.parquet"); writeBin(jsonlite::base64_dec(chunk$data), output)
-      exported <- arrow::read_parquet(output, as_data_frame = FALSE)
-      assert_identical(exported$local$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks, "Viewing export changed exact civil timestamp ticks")
-      assert_identical(exported$utc$type$ToString(), "timestamp[ns, tz=UTC]", "Viewing export changed timestamp meaning")
-      for (target in c("base", "dplyr")) {
-        cloned <- dispatch_with(viewer, "openSession", list(sessionId = second_session_id, variableName = ".ow_csv_source", page = page_window(),
-          library = target, cloneFromSessionId = session_id, cloneFromRevision = 0L))
-        assert_identical(cloned$kind, "page", "Opening an editable timestamp copy failed")
-        preview <- dispatch_with(viewer, "previewStep", list(sessionId = second_session_id, revision = 0L, page = page_window(),
-          step = list(id = "copy-clone", kind = "cloneColumn", params = list(column = reference, newName = "copied"))))
-        assert_identical(preview$kind, "stepPreview", "An editable timestamp copy could not preview cleaning")
+        preview <- dispatch_with(viewer, "previewStep", list(sessionId = session_id, revision = revision, page = page_window(), step = case$step))
+        assert_identical(preview$kind, "stepPreview", paste(library, case$step$kind, "rejected a frame with exact timestamps"))
         generated <- new.env(parent = baseenv())
         eval(parse(text = preview$code), generated)
-        assert_identical(generated$open_wrangler_result$copied, expected$local, "Generated copy cleaning changed precise timestamps")
-        dispatch_with(viewer, "closeSession", list(sessionId = second_session_id))
+        assert_identical(generated$open_wrangler_result, case$result, paste(library, case$step$kind, "changed exact timestamps"))
+        discarded <- dispatch_with(viewer, "discardDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+        assert_identical(discarded$page, opened$page, paste(library, case$step$kind, "discard did not restore the source"))
+        revision <- preview$revision + 1L
       }
-      assert_identical(environment$.ow_csv_source, expected, "Viewing, export or copy cleaning changed the original source")
+      exported <- dispatch_with(viewer, "exportData", list(sessionId = session_id, revision = revision, exportId = export_id, options = parquet_export_options))
+      assert_identical(exported$kind, "dataExported", "A library could not export exact timestamps")
+      chunk <- dispatch_with(viewer, "readDataExport", list(sessionId = session_id, revision = revision, exportId = export_id, offset = 0L, limit = 65536L))
+      output <- file.path(root, "view-only-export.parquet"); writeBin(jsonlite::base64_dec(chunk$data), output)
+      exported <- arrow::read_parquet(output, as_data_frame = FALSE)
+      assert_identical(exported$local$cast(arrow::int64())$cast(arrow::utf8())$as_vector(), ticks, "Export changed exact civil timestamp ticks")
+      assert_identical(exported$utc$type$ToString(), "timestamp[ns, tz=UTC]", "Export changed timestamp meaning")
+      assert_identical(environment$.ow_csv_source, expected, "Viewing, cleaning or export changed the original source")
       viewer$dispose()
     }
   })

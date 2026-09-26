@@ -120,8 +120,8 @@ frame_bytes <- function(frame) serialize(canonical_frame(frame), NULL, version =
 
 same_character_encodings <- function(actual, expected) {
   if (is.character(actual) && !identical(Encoding(actual), Encoding(expected))) return(FALSE)
-  if (is.list(actual) && !all(vapply(seq_along(actual), function(index) {
-    same_character_encodings(actual[[index]], expected[[index]])
+  if (is.list(actual) && !all(vapply(seq_len(length(unclass(actual))), function(index) {
+    same_character_encodings(.subset2(actual, index), .subset2(expected, index))
   }, logical(1L)))) return(FALSE)
   metadata <- attributes(actual)
   if (is.null(metadata)) return(TRUE)
@@ -733,6 +733,49 @@ for (library in c("dplyr", "data.table", "collapse")) {
       error = function(error) stop(sprintf("the %s %s catalog case failed: %s", library, kind, conditionMessage(error)), call. = FALSE))
   }
 }
+
+# Every operation carries an untouched nanosecond timestamp column through each
+# library exactly as base does. No library accepts it as a Pivot wider identifier.
+precise_passenger_outputs <- list()
+retained_generated_code <- catalog_generated_code
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  for (index in seq_along(catalog_cases)) {
+    kind <- names(catalog_cases)[[index]]
+    if (identical(kind, "explodeList")) next
+    case <- catalog_cases[[index]]
+    original_source <- case$source
+    case$source <- function() {
+      frame <- if (is.null(original_source)) catalog_source() else original_source()
+      frame$precise <- clock::naive_time_parse(sprintf("2026-03-29 02:30:00.%09d", seq_len(nrow(frame))),
+        format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond")
+      frame
+    }
+    if (identical(kind, "pivotWider")) {
+      input <- case$source()
+      assign("catalog_frame", input, envir = source_environment)
+      opened <- dispatch("openSession", list(sessionId = session_id(7000L + index), variableName = "catalog_frame", page = page_window(), library = library))
+      assert_identical(opened$kind, "page", sprintf("%s precise Pivot wider source did not open", library))
+      refused <- dispatch("previewStep", list(sessionId = session_id(7000L + index), revision = 0L,
+        step = case$step(input, "precise-pivot-wider"), page = page_window()))
+      assert_identical(refused$message, "Pivot wider identifier columns require portable scalar R values",
+        sprintf("%s admitted a precise timestamp as a Pivot wider identifier", library))
+      assert_identical(dispatch("closeSession", list(sessionId = session_id(7000L + index)))$kind, "closed", "precise Pivot wider did not close")
+      remove("catalog_frame", envir = source_environment)
+      next
+    }
+    output <- tryCatch({
+      run_catalog_case(case, kind, 7000L + index, library)
+      snapshot_from_latest_capture(paste(library, kind, "with a precise timestamp"))
+    }, error = function(error) stop(sprintf("the %s %s case with a precise timestamp failed: %s", library, kind, conditionMessage(error)), call. = FALSE))
+    if (identical(library, "base")) {
+      precise_passenger_outputs[[kind]] <- output
+    } else {
+      assert_true(identical(canonical_frame(output), canonical_frame(precise_passenger_outputs[[kind]])),
+        sprintf("%s %s changed a precise timestamp column differently from base", library, kind))
+    }
+  }
+}
+catalog_generated_code <- retained_generated_code
 
 
 local({

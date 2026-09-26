@@ -67,29 +67,20 @@ local({
         'result <- df; result$at <- clock::naive_time_parse(c("2026-01-01T00:00:00.000000001", ',
         '"2026-01-01T00:00:00.000000002", NA_character_), format = "%Y-%m-%dT%H:%M:%S", precision = "nanosecond")'
       )))))
-    if (library %in% c("data.table", "collapse")) {
-      assert_identical(preview$code, "unsupported_library", "Custom Code admitted a clock column with an unsupported library")
-      current <- dispatch_with(custom, "getPage", list(sessionId = session_id, page = page_window()))
-      assert_identical(current$page, opened$page, "Refused Custom Code changed the published frame")
-      copy <- dispatch_with(custom, "openSession", list(sessionId = second_session_id, variableName = "frame", page = page_window(),
-        library = library, cloneFromSessionId = session_id, cloneFromRevision = 0L))
-      assert_identical(copy$kind, "page", "Refused Custom Code advanced the confirmed revision")
-      dispatch_with(custom, "closeSession", list(sessionId = second_session_id))
-    } else {
-      assert_identical(preview$kind, "stepPreview", "Custom Code failed to introduce an exact clock column")
-      applied <- dispatch_with(custom, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
-      sorted <- dispatch_with(custom, "previewStep", list(sessionId = session_id, revision = applied$revision, page = page_window(),
-        step = list(id = "sort-clock", kind = "sortRows", params = list(rules = I(list(list(
-          column = list(id = preview$page$schema[[2L]]$id, name = "at"), direction = "desc", nulls = "last"
-        )))))))
-      assert_identical(sorted$kind, "stepPreview", "Sort failed after Custom Code introduced a clock column")
-      result <- get("snapshot", envir = clock_capture, inherits = FALSE)
-      assert_identical(result$id, c(2L, 1L, 3L), "Custom clock sort lost nanosecond order or null position")
-      generated <- new.env(parent = baseenv()); generated$frame <- before
-      eval(parse(text = sorted$code), generated)
-      assert_identical(generated$open_wrangler_result, result, "Generated Custom clock introduction and later sort differ from live output")
-      assert_identical(generated$frame, before, "Generated Custom clock workflow changed its source")
-    }
+    assert_identical(opened$kind, "page", paste(library, "failed to open the Custom Code source"))
+    assert_identical(preview$kind, "stepPreview", paste(library, "Custom Code failed to introduce an exact clock column"))
+    applied <- dispatch_with(custom, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+    sorted <- dispatch_with(custom, "previewStep", list(sessionId = session_id, revision = applied$revision, page = page_window(),
+      step = list(id = "sort-clock", kind = "sortRows", params = list(rules = I(list(list(
+        column = list(id = preview$page$schema[[2L]]$id, name = "at"), direction = "desc", nulls = "last"
+      )))))))
+    assert_identical(sorted$kind, "stepPreview", paste(library, "Sort failed after Custom Code introduced a clock column"))
+    result <- get("snapshot", envir = clock_capture, inherits = FALSE)
+    assert_identical(result$id, c(2L, 1L, 3L), paste(library, "Custom clock sort lost nanosecond order or null position"))
+    generated <- new.env(parent = baseenv()); generated$frame <- before
+    eval(parse(text = sorted$code), generated)
+    assert_identical(generated$open_wrangler_result, result, paste(library, "generated Custom clock introduction and later sort differ from live output"))
+    assert_identical(generated$frame, before, "Generated Custom clock workflow changed its source")
     assert_identical(environment$frame, before, "Custom clock workflow changed its source")
     custom$dispose()
   }

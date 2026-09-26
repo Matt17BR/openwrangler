@@ -234,7 +234,7 @@ describe("native R frame contract decoder", () => {
     }
   });
 
-  it("retains viewing and export while restricting incompatible cleaning libraries", () => {
+  it("keeps viewing, export, and cleaning for precise timestamps in every R library", () => {
     const contract = decodeCandidate(clockContract());
     for (const library of ["base", "dplyr", "data.table", "collapse"] as const) {
       const session = sessionFromContract(
@@ -261,24 +261,13 @@ describe("native R frame contract decoder", () => {
         exportCsv: true,
         exportParquet: true
       });
-      const cleaningSupported = library === "base" || library === "dplyr";
-      expect(canStartOperation(metadata)).toBe(cleaningSupported);
-      if (!cleaningSupported) expect(metadata.capabilities.supportedOperations).toEqual([]);
+      expect(canStartOperation(metadata)).toBe(true);
       session.mode = "viewing";
       expect(metadataFor(session).capabilities).toMatchObject({
         editable: true,
         exportCsv: false,
         exportParquet: false
       });
-      const ordinary = sessionFromContract(
-        "ordinary",
-        session.source,
-        "editing",
-        decodeCandidate(minimalContract()),
-        [],
-        library
-      );
-      expect(canStartOperation(metadataFor(ordinary))).toBe(true);
     }
   });
 

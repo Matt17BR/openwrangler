@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
-import { cleaningUnavailableReason } from "../shared/sessionMode";
 import { SessionModeControl } from "../webviews/SessionModeControl";
 
 const appliedStep = {
@@ -147,33 +146,6 @@ describe("SessionModeControl", () => {
     expect(onSwitch).toHaveBeenCalledWith("editing", action);
     fireEvent.click(screen.getByText("viewing").closest("summary")!);
     expect(screen.getByText(/Switch to Editing to build a cleaning plan/u)).toBeVisible();
-  });
-
-  it.each(["data.table", "collapse"] as const)("explains exact timestamp cleaning limits for %s", (rLibrary) => {
-    const precise: SessionMetadata = {
-      ...metadata,
-      backend: "r",
-      rLibrary,
-      rDataframeFlavor: "r.data.frame",
-      capabilities: { ...metadata.capabilities, editable: true, supportedOperations: [] },
-      schema: [{ ...metadata.schema[0]!, type: "datetime", rawType: "clock_naive_time[ns]" }]
-    };
-    const { rerender } = render(<SessionModeControl metadata={precise} busy={false} onSwitch={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Switch to Editing" })).toBeEnabled();
-    fireEvent.click(screen.getByText("viewing").closest("summary")!);
-    expect(
-      screen.getByText(
-        "This R library supports viewing precise timestamps. Choose R · base or R · dplyr in the engine picker to add cleaning steps."
-      )
-    ).toBeVisible();
-    expect(screen.getByText(/Choose R · base or R · dplyr in the engine picker/u)).toBeVisible();
-    expect(cleaningUnavailableReason(precise)).toContain("Choose R · base or R · dplyr");
-    rerender(<SessionModeControl metadata={{ ...precise, mode: "editing" }} busy={false} onSwitch={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Switch to Viewing" })).toBeEnabled();
-    expect(screen.getByText(/Choose R · base or R · dplyr in the engine picker/u)).toBeVisible();
-    expect(cleaningUnavailableReason({ ...precise, mode: "editing" })).toBe(
-      "Choose R · base or R · dplyr in the engine picker to clean precise timestamps."
-    );
   });
 
   it("distinguishes a saved snapshot from a live editable dataframe", () => {

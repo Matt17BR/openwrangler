@@ -1637,15 +1637,33 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
+  # data.table and collapse store each column as one plain vector, so a clock
+  # record column, whose storage is a list of tick fields, enters their verbs as
+  # its row positions under its alias. library_restore rebuilds the exact values.
+  library_clock_standins <- function(frame, library) {
+    clock <- base::list()
+    if (!library %in% c("data.table", "collapse")) return(base::list(frame = frame, clock = clock))
+    positions <- base::which(base::vapply(frame, function(column) base::inherits(column, "clock_time_point"), base::logical(1L)))
+    if (base::length(positions) == 0L) return(base::list(frame = frame, clock = clock))
+    aliases <- base::paste0("ow_c", base::seq_along(frame))
+    rows <- base::seq_len(base::nrow(frame))
+    for (position in positions) {
+      clock[[aliases[[position]]]] <- frame[[position]]
+      frame[[position]] <- rows
+    }
+    base::names(frame) <- aliases
+    base::list(frame = frame, clock = clock)
+  }
+
   # Mutating verbs receive an isolated frame. Aliases exist only during a package
   # verb; scalar values and their types are untouched.
   library_prepare <- function(owned, library) {
-    if (library %in% c("data.table", "collapse") && base::any(base::vapply(owned, function(column) base::inherits(column, "clock_time_point"), base::logical(1L)))) {
-      base::stop("Exact clock timestamps support base or dplyr cleaning; choose one of those libraries", call. = FALSE)
-    }
     metadata <- library_frame_metadata(owned)
     aliases <- base::paste0("ow_c", base::seq_along(owned))
     if (base::inherits(owned, "data.table")) data.table::setnames(owned, aliases) else base::names(owned) <- aliases
+    standins <- library_clock_standins(owned, library)
+    owned <- standins$frame
+    metadata$clock <- standins$clock
     if (base::identical(library, "data.table") && !base::inherits(owned, "data.table")) data.table::setDT(owned)
     base::list(frame = owned, metadata = metadata)
   }
@@ -1654,8 +1672,16 @@ openwrangler_r_frame_contract <- local({
     if (!base::is.data.frame(actual)) base::stop("The selected R library did not return a dataframe", call. = FALSE)
     wanted <- base::length(metadata$names)
     if (wanted != 0L && base::length(actual) != wanted) base::stop("The selected R library changed the expected column count", call. = FALSE)
+    result_names <- base::names(actual)
     columns <- if (wanted == 0L) base::list() else base::unclass(actual)
     base::attributes(columns) <- NULL
+    for (alias in base::names(metadata$clock)) {
+      values <- metadata$clock[[alias]]
+      for (position in base::which(result_names == alias)) {
+        rows <- columns[[position]]
+        columns[[position]] <- if (base::identical(rows, base::seq_len(vctrs::vec_size(values)))) values else vctrs::vec_slice(values, rows)
+      }
+    }
     if (base::identical(metadata$class, c("data.table", "data.frame"))) {
       base::names(columns) <- metadata$names
       data.table::setDT(columns)
@@ -1674,11 +1700,11 @@ openwrangler_r_frame_contract <- local({
 
   library_rows <- function(owned, rows, library) {
     base::force(rows)
-    if (library %in% c("data.table", "collapse") && base::any(base::vapply(owned, function(column) base::inherits(column, "clock_time_point"), base::logical(1L)))) {
-      base::stop("Exact clock timestamps support base or dplyr cleaning; choose one of those libraries", call. = FALSE)
-    }
     if (base::length(owned) == 0L && base::identical(rows, base::seq_len(base::nrow(owned)))) return(owned)
     metadata <- library_frame_metadata(owned)
+    standins <- library_clock_standins(owned, library)
+    owned <- standins$frame
+    metadata$clock <- standins$clock
     labels <- metadata$row.names
     if (base::is.integer(labels) && base::length(labels) == 2L && base::is.na(labels[[1L]])) labels <- base::seq_len(base::abs(labels[[2L]]))
     metadata$row.names <- if (!base::identical(metadata$class, "data.frame") || base::anyDuplicated(rows)) base::.set_row_names(base::length(rows)) else labels[rows]
@@ -1693,7 +1719,7 @@ openwrangler_r_frame_contract <- local({
           column <- owned[[i]]
           if (base::is.null(metadata$element_names[[i]])) column else base::unname(column)
         })
-        base::names(columns) <- metadata$names
+        base::names(columns) <- base::names(owned)
         data.table::setDT(columns)
         columns[rows]
       },
@@ -1728,6 +1754,7 @@ openwrangler_r_frame_contract <- local({
     metadata <- prepared$metadata
     old_name <- metadata$names[[position]]
     metadata$names[[position]] <- new_name
+    if (base::length(metadata$clock)) base::names(metadata$clock)[base::names(metadata$clock) == base::paste0("ow_c", position)] <- "ow_renamed"
     if (!base::is.null(metadata$key)) metadata$key[metadata$key == old_name] <- new_name
     result <- base::switch(library,
       dplyr = base::do.call(dplyr::rename, c(base::list(.data = prepared$frame), stats::setNames(base::list(position), "ow_renamed"))),
@@ -1750,6 +1777,16 @@ openwrangler_r_frame_contract <- local({
     for (i in base::seq_along(positions)) metadata$element_names[positions[[i]]] <- column_names[i]
     if (base::any(previous_names[positions[positions <= base::length(previous_names)]] %in% metadata$key)) metadata$key <- NULL
     values <- stats::setNames(columns, base::paste0("ow_c", positions))
+    if (library %in% c("data.table", "collapse")) {
+      for (i in base::seq_along(values)) {
+        alias <- base::names(values)[[i]]
+        metadata$clock[[alias]] <- NULL
+        if (base::inherits(values[[i]], "clock_time_point")) {
+          metadata$clock[[alias]] <- values[[i]]
+          values[[i]] <- base::seq_len(vctrs::vec_size(values[[i]]))
+        }
+      }
+    }
     result <- base::switch(library,
       dplyr = dplyr::mutate(prepared$frame, !!!values),
       data.table = { for (i in base::seq_along(positions)) data.table::set(prepared$frame, j = base::names(values)[[i]], value = values[[i]]); prepared$frame },
@@ -1888,8 +1925,9 @@ openwrangler_r_frame_contract <- local({
   library_helpers_for <- function(requested) {
     dependencies <- list(
       abort = character(), require_package = character(), require_r_library = c("abort", "require_package"), library_frame_metadata = character(),
-      library_prepare = "library_frame_metadata", library_restore = character(),
-      library_rows = c("library_frame_metadata", "library_restore"),
+      library_clock_standins = character(),
+      library_prepare = c("library_frame_metadata", "library_clock_standins"), library_restore = character(),
+      library_rows = c("library_frame_metadata", "library_clock_standins", "library_restore"),
       library_columns = c("library_prepare", "library_restore"),
       library_rename = c("library_prepare", "library_restore"),
       library_assign = c("library_prepare", "library_restore"),
@@ -3986,7 +4024,7 @@ openwrangler_r_frame_contract <- local({
     })
 
     if (identical(flavor, "r.data.table") && any(vapply(schema, function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))) {
-      abort("unsupported-frame", "Exact clock timestamps require a data.frame or tibble with base or dplyr cleaning")
+      abort("unsupported-frame", "Exact clock timestamps require a data.frame or tibble")
     }
     descriptor <- list(
       contractVersion = contract_version,

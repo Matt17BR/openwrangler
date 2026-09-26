@@ -67,7 +67,6 @@ export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "unknown_profile",
   "unknown_session",
   "unknown_variable",
-  "unsupported_library",
   "unsupported_operation",
   "unsupported_frame"
 ] as const);
