@@ -512,10 +512,17 @@ export function createReleasedRDocumentJourney({
       await quote.locator(".quick-input-box input").press("Enter");
       const lineEnding = await waitForImportQuickInput(workbench, testing, csvUri, "Line ending", detected.sessionId);
       await acceptQuickPickOptionWithKeyboard(workbench, lineEnding, "Line ending", "CR");
+      const configuredOptions = {
+        delimiter: ";",
+        encoding: "windows-1252",
+        hasHeader: false,
+        quoteChar: "'",
+        lineEnding: "cr"
+      };
       await waitFor(
         () =>
           testing.activeSession()?.sessionId === detected.sessionId &&
-          testing.activeSession()?.metadata.source.importOptions?.delimiter === ";",
+          isDeepStrictEqual(testing.activeSession()?.metadata.source.importOptions, configuredOptions),
         30_000,
         "the publicly selected native R CSV options to reopen in the same tab"
       );
@@ -523,13 +530,6 @@ export function createReleasedRDocumentJourney({
       assert.ok(configured);
       assert.equal(testing.diagnostics().sessionCount, sessionsBeforeOptions);
       assert.equal(configured.metadata.backend, "r");
-      assert.deepEqual(configured.metadata.source.importOptions, {
-        delimiter: ";",
-        encoding: "windows-1252",
-        hasHeader: false,
-        quoteChar: "'",
-        lineEnding: "cr"
-      });
       const csvRows = [
         ["1", "  €  "],
         ["2", "two;parts"],
