@@ -251,7 +251,6 @@ export function DataGrid({
   const gridClipboard = useGridClipboard({
     contextId: logicalViewContext,
     metadata,
-    pageSize,
     schema: metadata.schema,
     page,
     initialCoordinate: focusedCell,
@@ -1439,21 +1438,21 @@ export function DataGrid({
                               role="menuitem"
                               disabled={
                                 cellFilterMenuTarget.clipboardSelection === "column"
-                                  ? !gridClipboard.wholeColumnResult.ok
+                                  ? gridClipboard.columnCopyAction(column).disabled
                                   : !gridClipboard.results.range.ok
                               }
                               title={
                                 cellFilterMenuTarget.clipboardSelection === "column"
-                                  ? gridClipboard.wholeColumnResult.ok
-                                    ? "Copy column"
-                                    : gridClipboard.wholeColumnResult.reason
+                                  ? gridClipboard.columnCopyAction(column).title
                                   : gridClipboard.results.range.ok
                                     ? "Copy selected cells"
                                     : gridClipboard.results.range.reason
                               }
                               onClick={() => void copySelection()}
                             >
-                              {cellFilterMenuTarget.clipboardSelection === "column" ? "Copy column" : "Copy selection"}
+                              {cellFilterMenuTarget.clipboardSelection === "column"
+                                ? gridClipboard.columnCopyAction(column).menuLabel
+                                : "Copy selection"}
                             </button>
                           )}
                         </div>
