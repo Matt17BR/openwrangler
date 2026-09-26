@@ -287,6 +287,77 @@ def test_kernel_generated_code_preserves_source_bindings(
         manager.close_all()
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+def test_kernel_opens_a_dataframe_subclass_like_its_base_class(monkeypatch: pytest.MonkeyPatch, backend: str) -> None:
+    import __main__
+
+    base: Any = pd.DataFrame if backend == "pandas" else pytest.importorskip("polars").DataFrame
+
+    class SubclassedFrame(base):
+        @property
+        def _constructor(self) -> Any:
+            return SubclassedFrame
+
+    frame = SubclassedFrame({"value": [1, 2]})
+    monkeypatch.setattr(__main__, "subclassed", frame, raising=False)
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+
+    def send(request: dict[str, Any], request_id: str) -> dict[str, Any]:
+        result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id=request_id)))
+        assert result["response"]["kind"] != "error", result["response"]
+        return result["response"]
+
+    try:
+        opened = send(
+            {
+                "kind": "openSession",
+                "source": {"kind": "notebookVariable", "variableName": "subclassed", "label": "subclassed"},
+                "backend": backend,
+                "mode": "editing",
+                "pageSize": 2,
+                "columnOffset": 0,
+                "columnLimit": 2,
+            },
+            "subclass-open",
+        )
+        window = {
+            "sessionId": opened["metadata"]["sessionId"],
+            "offset": 0,
+            "limit": 2,
+            "columnOffset": 0,
+            "columnLimit": 2,
+        }
+        step = {
+            "id": "subclass-formula",
+            "kind": "formula",
+            "params": {
+                "leftColumn": {"id": opened["metadata"]["schema"][0]["id"], "name": "value"},
+                "operator": "add",
+                "value": 1,
+                "newColumn": "result",
+            },
+        }
+        preview = send({"kind": "previewStep", "revision": 0, **window, "step": step}, "subclass-preview")
+        applied = send({"kind": "applyDraft", "revision": preview["revision"], **window}, "subclass-apply")
+        assert [[cell["display"] for cell in row["values"]] for row in applied["page"]["rows"]] == [
+            ["1", "2"],
+            ["2", "3"],
+        ]
+        namespace: dict[str, Any] = {"subclassed": frame}
+        exec(compile(applied["code"], "<generated>", "exec", dont_inherit=True), namespace)
+        generated = namespace["clean_data"](frame)
+        expected = base({"value": [1, 2], "result": [2, 3]})
+        if backend == "pandas":
+            pd.testing.assert_frame_equal(pd.DataFrame(generated), expected)
+            pd.testing.assert_frame_equal(pd.DataFrame(frame), pd.DataFrame({"value": [1, 2]}))
+        else:
+            assert generated.equals(expected)
+            assert frame.equals(base({"value": [1, 2]}))
+    finally:
+        manager.close_all()
+
+
 def test_kernel_confirmed_view_reaches_all_five_native_mutation_owners(tmp_path, monkeypatch) -> None:
     path = tmp_path / "confirmed-kernel-view.csv"
     source = "name,value\na,1\nb,2\nc,3\n"

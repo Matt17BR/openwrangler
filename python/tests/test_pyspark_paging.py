@@ -124,6 +124,27 @@ def test_explicit_sort_page_preserves_sort_order_and_stable_row_identity(
         engine.close()
 
 
+def test_a_dataframe_subclass_opens_like_its_base_class(sample_frame: Any) -> None:
+    base: Any = type(sample_frame)
+
+    class EventFrame(base):
+        pass
+
+    sample_frame.__class__ = EventFrame
+    engine, indexed = _open_engine(sample_frame, "subclass")
+    try:
+        page = engine.page(indexed, 0, 10, total_rows=None, column_projection=[(0, "name-id")])
+        assert sorted(row["values"][0]["display"] for row in page["rows"]) == [
+            "ALPHA",
+            "Beta",
+            "Beta",
+            "alpha",
+            "ÄLPHA",
+        ]
+    finally:
+        engine.close()
+
+
 def test_owned_source_pages_use_progressive_offset_without_inventing_a_total(
     sample_frame: Any,
     monkeypatch: pytest.MonkeyPatch,

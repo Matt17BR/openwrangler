@@ -167,6 +167,7 @@ Discovery selections remain bound to their originating Python kernel until the i
 opens likewise retain the terminal selected when the command starts. Replacing either runtime before that open
 completes requires a new open action.
 Data sources lists cached Python and R dataframes and keeps **Open a data file** available while a dataframe is open.
+Subclasses of supported Python dataframes are listed and open as the Pandas, Polars or PySpark type they extend.
 Operations contains the cleaning catalog for the active dataframe.
 Data sources lists dataframes from the focused R terminal, or from the most recently focused or only R terminal while
 another terminal has focus. With no R terminal open it shows no R rows; start R with **R: Create R Terminal**.

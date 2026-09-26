@@ -2290,7 +2290,10 @@ the runtime session is confirmed. Refreshing the list cannot retire an already o
 cannot bootstrap or execute against a replacement kernel.
 
 Host-injected Python helpers use a private execution dictionary. Discovery reads the original notebook namespace,
-and cell-result inspection reads its IPython history. Helper imports, payloads and temporary results do not replace
+and cell-result inspection reads its IPython history. Discovery classifies each value by its class hierarchy without
+reading its contents: a value is listed as the first supported class it inherits from, and that class must be the exact
+object its module exports. The PySpark preflight applies the same rule, and the engines accept subclasses through
+`isinstance`. Helper imports, payloads and temporary results do not replace
 or remove user bindings, including when bootstrap or a runtime request fails.
 
 Python bootstrap imports the bundled source into a fresh private directory and retains that directory for the
