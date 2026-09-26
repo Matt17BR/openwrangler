@@ -206,20 +206,8 @@ initialize <- function() {
       error = function(error) failed_binding
     )
     if (identical(value, failed_binding)) next
-    classes <- class(value)
-    flavor <- if (identical(classes, c("data.table", "data.frame"))) {
-      "r.data.table"
-    } else if (
-      identical(classes, c("tbl_df", "tbl", "data.frame")) ||
-        identical(classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
-    ) {
-      "r.tibble"
-    } else if (identical(classes, "data.frame")) {
-      "r.data.frame"
-    } else {
-      NULL
-    }
-    if (is.null(flavor)) next
+    if (!is.data.frame(value)) next
+    flavor <- if (inherits(value, "data.table")) "r.data.table" else if (inherits(value, "tbl_df")) "r.tibble" else "r.data.frame"
     if (length(variables) >= maximum_variables) {
       truncated <- TRUE
       break

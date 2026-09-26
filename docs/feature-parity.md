@@ -685,8 +685,8 @@ package and runtime versions, reliability review and publication verification. L
 [native and installed qualification requirements](releasing.md#release-candidate).
 
 The historical [R acceptance timeout](https://github.com/Matt17BR/openwrangler/issues/1088) remains unexplained;
-later passes do not establish its cause or recurrence rate. Unsupported grouped/indexed objects, full Quarto rendering,
-Windows managed-document execution remains outside this notebook scope. The 2.5.0 qualification predates the
+later passes do not establish its cause or recurrence rate. Full Quarto rendering and Windows managed-document
+execution remain outside this notebook scope. The 2.5.0 qualification predates the
 [selectable cleaning libraries](#r-cleaning-libraries) added in 2.6.
 
 ### R cleaning libraries
@@ -709,7 +709,7 @@ Exact scalar calculations and operation admission rules remain shared. Generated
 and package checks. Viewing pages, filters, sorts and profiles use shared native R implementations, as do imports
 and export writers. Choosing dplyr does not convert the source to a tibble; choosing data.table or collapse likewise
 preserves the admitted frame class.
-Grouped and indexed objects remain unsupported. For data.table duplicate operations, the owning R environment's
+For data.table duplicate operations, the owning R environment's
 numeric-rounding option controls equality; other operation-specific limits below continue to apply.
 
 Choosing another library switches the current tab, like any other engine switch, for files and live R variables alike.
@@ -723,9 +723,10 @@ Old saved R file plans keep their base behavior; non-base libraries have separat
 
 ### Frames, cleaning and export limits
 
-Supported frames are base `data.frame`, tibble and `data.table`, including ordinary default `collapse::qDF()`,
-`qTBL()` and `qDT()` outputs. Grouped `GRP_df`, `indexed_frame`, unsupported attributes and unsupported cell classes
-are refused. IRkernel works across the supported desktop platforms; direct `.R`, `.Rmd` and `.qmd` execution is
+Every R dataframe opens. data.table subclasses open as `data.table`, `tbl_df` subclasses such as grouped and rowwise
+tibbles open as tibbles, and every other `data.frame`, including collapse grouped and indexed frames, opens as a base
+`data.frame`. The opened copy has no grouping, index or other subclass attributes; the R variable keeps them.
+Unsupported cell classes are refused. IRkernel works across the supported desktop platforms; direct `.R`, `.Rmd` and `.qmd` execution is
 limited to macOS and Linux. Literate support runs selected lexical R cells, without promising document-render
 semantics. An active R terminal has no source document for generated-code insertion.
 
@@ -783,10 +784,9 @@ Filter Rows and Conditional Column use the same labels in live execution and gen
 levels, ordering and missing values.
 
 The [generated reference](reference.md#transformation-operations) lists the complete operation set and parameters.
-Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return a supported base
-`data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes. Preview, history, profiling,
-export and generated code retain that result's class. Grouped objects, unsupported attributes and cell classes still
-require an explicit conversion. Missing packages and failed code leave the confirmed result available.
+Custom Code can call installed packages such as `dplyr`, `data.table` and `collapse`, and return any dataframe.
+The result becomes its closest flavor, like an opened source, and may differ from the input's. Preview, history,
+profiling, export and generated code retain that flavor. Unsupported cell classes still require an explicit conversion. Missing packages and failed code leave the confirmed result available.
 Custom Code can create the first column of a supported zero-column source, with inspection, Undo and Redo. Drop
 Missing Rows and Drop Duplicates may retain an empty schema; Custom Code output still requires a column.
 Sorting and reducing rows work with ordinary `read.csv` inputs, preserving native row-name behavior. Active

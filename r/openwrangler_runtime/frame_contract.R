@@ -649,10 +649,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   assert_frame_attributes <- function(value, flavor) {
-    allowed <- c("names", "row.names", "class")
-    if (flavor == "r.data.table") {
-      allowed <- c(allowed, ".internal.selfref", "sorted")
-    }
+    allowed <- frame_attribute_names(flavor)
     attribute_names <- names(attributes(value)) %||% character()
     if (anyNA(attribute_names) || any(attribute_names == "") || anyDuplicated(attribute_names)) {
       abort("unsupported-frame-attributes", "the dataframe has malformed attribute names")
@@ -1527,39 +1524,40 @@ openwrangler_r_frame_contract <- local({
   }
 
   frame_flavor <- function(value) {
-    classes <- class(value)
-    if (inherits(value, "grouped_df") || inherits(value, "rowwise_df")) {
-      abort("unsupported-frame-class", "grouped and rowwise tibbles are not yet supported")
-    }
-    if (inherits(value, "data.table")) {
-      if (!identical(classes, c("data.table", "data.frame"))) {
-        abort("unsupported-frame-class", "the data.table has unsupported subclasses")
-      }
-      return("r.data.table")
-    }
-    if (inherits(value, "tbl_df")) {
-      if (
-        !identical(classes, c("tbl_df", "tbl", "data.frame")) &&
-          !identical(classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
-      ) {
-        abort("unsupported-frame-class", "the tibble has unsupported subclasses")
-      }
-      return("r.tibble")
-    }
-    if (identical(classes, "data.frame")) return("r.data.frame")
-    abort("unsupported-frame-class", "the value must be a base data.frame, tibble, or data.table")
+    if (inherits(value, "data.table")) return("r.data.table")
+    if (inherits(value, "tbl_df")) return("r.tibble")
+    "r.data.frame"
   }
 
+  frame_flavor_classes <- list(
+    r.data.frame = "data.frame",
+    r.tibble = c("tbl_df", "tbl", "data.frame"),
+    r.data.table = c("data.table", "data.frame")
+  )
+
+  frame_attribute_names <- function(flavor) {
+    c("names", "row.names", "class", if (identical(flavor, "r.data.table")) c(".internal.selfref", "sorted"))
+  }
+
+  # Every data.frame opens as the closest of data.table, tibble and data.frame.
+  # Other classes and frame attributes, such as dplyr groups, readr specs and
+  # data.table secondary indices, are not part of the opened or cleaned frame.
+  # collapse indexed frames also index each column, so they are unindexed.
   normalize_supported_frame <- function(value) {
-    frame_flavor(value)
-    if (identical(class(value), c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))) {
-      normalized <- value
-      attr(normalized, "spec") <- NULL
-      attr(normalized, "problems") <- NULL
-      class(normalized) <- c("tbl_df", "tbl", "data.frame")
-      return(normalized)
+    if (inherits(value, "indexed_frame")) {
+      if (!requireNamespace("collapse", quietly = TRUE)) {
+        abort("unsupported-frame", "Opening a collapse indexed frame requires the collapse package")
+      }
+      value <- collapse::unindex(value)
     }
-    value
+    flavor <- frame_flavor(value)
+    classes <- frame_flavor_classes[[flavor]]
+    extras <- without_values(names(attributes(value)) %||% character(), frame_attribute_names(flavor))
+    if (identical(class(value), classes) && length(extras) == 0L) return(value)
+    normalized <- value
+    for (name in extras) attr(normalized, name) <- NULL
+    class(normalized) <- classes
+    normalized
   }
 
   validate_frame_structure <- function(value) {

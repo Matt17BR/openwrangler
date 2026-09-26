@@ -241,22 +241,10 @@ ${buildRDependencyPreflightCode("selected R kernel")}
     if (identical(.ow_value, .ow_failed_binding)) {
       next
     }
-    .ow_classes <- class(.ow_value)
-    .ow_flavor <- if (identical(.ow_classes, c("data.table", "data.frame"))) {
-      "r.data.table"
-    } else if (
-      identical(.ow_classes, c("tbl_df", "tbl", "data.frame")) ||
-        identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
-    ) {
-      "r.tibble"
-    } else if (identical(.ow_classes, "data.frame")) {
-      "r.data.frame"
-    } else {
-      NULL
-    }
-    if (is.null(.ow_flavor)) {
+    if (!is.data.frame(.ow_value)) {
       next
     }
+    .ow_flavor <- if (inherits(.ow_value, "data.table")) "r.data.table" else if (inherits(.ow_value, "tbl_df")) "r.tibble" else "r.data.frame"
     if (length(.ow_variables) >= .ow_max_variables) {
       .ow_truncated <- TRUE
       break
@@ -334,23 +322,9 @@ ${buildRDependencyPreflightCode("selected R kernel")}
         get(.ow_name, envir = .ow_source, inherits = FALSE),
         error = function(.ow_error) .ow_failed_binding
       )
-      if (!identical(.ow_value, .ow_failed_binding)) {
-        .ow_classes <- class(.ow_value)
-        .ow_flavor <- if (identical(.ow_classes, c("data.table", "data.frame"))) {
-          "r.data.table"
-        } else if (
-          identical(.ow_classes, c("tbl_df", "tbl", "data.frame")) ||
-            identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
-        ) {
-          "r.tibble"
-        } else if (identical(.ow_classes, "data.frame")) {
-          "r.data.frame"
-        } else {
-          NULL
-        }
-        if (!is.null(.ow_flavor)) {
-          .ow_variables[[1L]] <- list(name = .ow_name, dataframeFlavor = .ow_flavor)
-        }
+      if (!identical(.ow_value, .ow_failed_binding) && is.data.frame(.ow_value)) {
+        .ow_flavor <- if (inherits(.ow_value, "data.table")) "r.data.table" else if (inherits(.ow_value, "tbl_df")) "r.tibble" else "r.data.frame"
+        .ow_variables[[1L]] <- list(name = .ow_name, dataframeFlavor = .ow_flavor)
       }
     }
   }

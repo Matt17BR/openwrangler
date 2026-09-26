@@ -1726,6 +1726,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
       expect(discovery).toEqual({
         truncated: false,
         variables: [
+          { backend: "r", dataframeFlavor: "r.tibble", name: "grouped_frame" },
           { backend: "r", dataframeFlavor: "r.data.frame", name: "helper_frame" },
           { backend: "r", dataframeFlavor: "r.data.frame", name: "plain_frame" },
           { backend: "r", dataframeFlavor: "r.tibble", name: "readr_frame" },

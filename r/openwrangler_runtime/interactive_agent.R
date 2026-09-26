@@ -165,19 +165,8 @@ openwrangler_r_interactive_agent <- local({
   }
 
   dataframe_flavor <- function(value) {
-    classes <- class(value)
-    if (identical(classes, c("data.table", "data.frame"))) {
-      "r.data.table"
-    } else if (
-      identical(classes, c("tbl_df", "tbl", "data.frame")) ||
-        identical(classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
-    ) {
-      "r.tibble"
-    } else if (identical(classes, "data.frame")) {
-      "r.data.frame"
-    } else {
-      NULL
-    }
+    if (!is.data.frame(value)) return(NULL)
+    if (inherits(value, "data.table")) "r.data.table" else if (inherits(value, "tbl_df")) "r.tibble" else "r.data.frame"
   }
 
   discovery_response <- function(request_id, truncated, variables) {

@@ -1538,14 +1538,12 @@ assert_error(
   ),
   "invalid-view-query"
 )
-assert_error(
-  openwrangler_r_frame_contract$capture_custom_code_result(
-    structure(data.frame(value = 1:2), class = c("unsupported", "data.frame")),
-    custom_validation_source,
-    "unsupported-flavor"
-  ),
-  "unsupported-frame-class"
+custom_subclass_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
+  structure(data.frame(value = 1:2), class = c("foreign_frame", "data.frame")),
+  custom_validation_source,
+  "foreign-subclass"
 )
+assert_identical(custom_subclass_capture$descriptor$dataframeFlavor, "r.data.frame", "Custom Code kept a foreign dataframe subclass")
 private_custom_output <- data.frame(value = 1:2, check.names = FALSE)
 names(private_custom_output) <- "__OPEN_WRANGLER_INTERNAL_ROW_ID_FORBIDDEN"
 assert_error(
@@ -9748,17 +9746,34 @@ base_frame <- frame_contract_base_frame()
 base_capture <- openwrangler_r_frame_contract$capture_frame(base_frame)
 collapse_source <- frame_contract_collapse_source()
 
-grouped_tibble <- tibble::tibble(value = 1:2)
-class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
-assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
-
-collapse_grouped_frame <- collapse::fgroup_by(collapse_source, group)
-assert_true(inherits(collapse_grouped_frame, "GRP_df"), "collapse did not create a grouped GRP_df")
-assert_error(openwrangler_r_frame_contract$capture_frame(collapse_grouped_frame), "unsupported-frame-class")
-
-collapse_indexed_frame <- collapse::findex_by(collapse_source, group, row_id)
-assert_true(inherits(collapse_indexed_frame, "indexed_frame"), "collapse did not create an indexed_frame")
-assert_error(openwrangler_r_frame_contract$capture_frame(collapse_indexed_frame), "unsupported-frame-class")
+# Every data.frame opens as its closest supported flavor, without subclass-only
+# classes, frame attributes or collapse column indexes.
+tibble_source <- tibble::as_tibble(collapse_source)
+indexed_table <- data.table::as.data.table(collapse_source)
+data.table::setindex(indexed_table, value)
+source_columns <- lapply(seq_along(collapse_source), function(position) .subset2(collapse_source, position))
+for (case in list(
+  list(value = collapse_source, flavor = "r.data.frame"),
+  list(value = tibble_source, flavor = "r.tibble"),
+  list(value = structure(collapse_source, class = c("tbl", "data.frame")), flavor = "r.data.frame"),
+  list(value = dplyr::group_by(tibble_source, group), flavor = "r.tibble"),
+  list(value = dplyr::rowwise(tibble_source), flavor = "r.tibble"),
+  list(value = collapse::fgroup_by(collapse_source, group), flavor = "r.data.frame"),
+  list(value = collapse::findex_by(collapse_source, group, row_id), flavor = "r.data.frame"),
+  list(value = structure(collapse_source, class = c("foreign_frame", "data.frame"), origin = "test"), flavor = "r.data.frame"),
+  list(value = indexed_table, flavor = "r.data.table")
+)) {
+  label <- paste(class(case$value), collapse = "/")
+  capture <- openwrangler_r_frame_contract$capture_frame(case$value)
+  assert_identical(capture$descriptor$dataframeFlavor, case$flavor, paste(label, "opened with the wrong flavor"))
+  snapshot <- get("snapshot", envir = capture, inherits = FALSE)
+  assert_identical(class(snapshot), switch(case$flavor, r.data.frame = "data.frame",
+    r.tibble = c("tbl_df", "tbl", "data.frame"), r.data.table = c("data.table", "data.frame")), paste(label, "kept its subclasses"))
+  assert_true(all(names(attributes(snapshot)) %in% c("names", "row.names", "class", ".internal.selfref", "sorted")),
+    paste(label, "kept subclass-only frame attributes"))
+  assert_identical(lapply(seq_along(snapshot), function(position) .subset2(snapshot, position)), source_columns,
+    paste(label, "changed its columns"))
+}
 
 list_frame <- data.frame(value = I(list(list(1L), list(2L))))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")
@@ -9782,14 +9797,6 @@ assert_error(
   openwrangler_r_frame_contract$capture_frame(malformed_named_frame),
   "unsupported-column-attributes"
 )
-
-attributed_frame <- data.frame(value = 1:2)
-attr(attributed_frame, "origin") <- "test"
-assert_error(openwrangler_r_frame_contract$capture_frame(attributed_frame), "unsupported-frame-attributes")
-
-indexed_table <- data.table::data.table(value = 1:2)
-data.table::setindex(indexed_table, value)
-assert_error(openwrangler_r_frame_contract$capture_frame(indexed_table), "unsupported-frame-attributes")
 
 invalid_key_table <- data.table::data.table(value = 1:2)
 attr(invalid_key_table, "sorted") <- 1L

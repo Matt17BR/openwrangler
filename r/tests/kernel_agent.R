@@ -866,6 +866,47 @@ local({
       viewer$dispose()
     }
   })
+  # Every data.frame opens, cleans and generates code as its plain flavor in every library.
+  local({
+    plain <- data.frame(id = 1:3, group = c("b", "a", "a"), value = c(3L, 1L, 2L))
+    tibble_plain <- tibble::as_tibble(plain)
+    table_plain <- data.table::as.data.table(plain)
+    auto_indexed <- data.table::copy(table_plain)
+    invisible(auto_indexed[value == 2L])
+    stopifnot("index" %in% names(attributes(auto_indexed)))
+    cases <- list(
+      list(source = structure(plain, class = c("tbl", "data.frame")), plain = plain),
+      list(source = structure(plain, class = c("foreign_frame", "data.frame"), origin = "test"), plain = plain),
+      list(source = dplyr::group_by(tibble_plain, group), plain = tibble_plain),
+      list(source = dplyr::rowwise(tibble_plain), plain = tibble_plain),
+      list(source = collapse::findex_by(plain, group, id), plain = plain),
+      list(source = auto_indexed, plain = table_plain)
+    )
+    step <- list(id = "subclass-sort", kind = "sortRows", params = list(
+      rules = I(list(list(column = list(id = "r:c:2", name = "value"), direction = "desc", nulls = "last")))
+    ))
+    run <- function(source, library) {
+      environment <- new.env(parent = baseenv()); environment$frame <- source
+      agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, environment)
+      on.exit(agent$dispose())
+      opened <- dispatch_with(agent, "openSession", list(sessionId = session_id, variableName = "frame", page = page_window(), library = library))
+      assert_identical(opened$kind, "page", paste(library, "could not open", paste(class(source), collapse = "/")))
+      preview <- dispatch_with(agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(), step = step))
+      applied <- dispatch_with(agent, "applyDraft", list(sessionId = session_id, revision = preview$revision, page = page_window()))
+      generated <- new.env(parent = baseenv()); generated$frame <- source
+      eval(parse(text = applied$code), generated)
+      assert_identical(environment$frame, source, "Opening a dataframe subclass changed its source")
+      assert_identical(generated$frame, source, "Generated code changed a dataframe subclass source")
+      list(page = applied$page, result = generated$open_wrangler_result)
+    }
+    for (library in c("base", "dplyr", "data.table", "collapse")) for (case in cases) {
+      label <- paste(library, paste(class(case$source), collapse = "/"))
+      expected <- run(case$plain, library)
+      actual <- run(case$source, library)
+      assert_identical(actual$page, expected$page, paste(label, "showed a different page than its plain flavor"))
+      assert_identical(actual$result, expected$result, paste(label, "generated a different result than its plain flavor"))
+    }
+  })
   # DuckDB 1.5.5 fixtures use COPY (<query>) TO '<fixture>' (FORMAT PARQUET).
   # r-file-legacy-integers.parquet:
   # SELECT signed8::TINYINT AS signed8,signed16::SMALLINT AS signed16,
@@ -7034,48 +7075,23 @@ assert_identical(
 )
 assert_identical(formula_hijack_source, formula_before, "caller-isolated generated R Formula mutated its source")
 
-formula_subclass_source <- formula_before
-base::class(formula_subclass_source) <- c("evil_frame", "data.frame")
+# Generated code opens a subclassed source with extra frame attributes as its plain flavor.
+formula_plain_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_before, envir = formula_plain_environment)
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_plain_environment)
+formula_subclass_source <- base::structure(formula_before, class = c("foreign_frame", "data.frame"), origin = "test")
 formula_subclass_environment <- new.env(parent = baseenv())
 base::assign("formula_frame", formula_subclass_source, envir = formula_subclass_environment)
-formula_subclass_error <- tryCatch(
-  {
-    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_subclass_environment)
-    NULL
-  },
-  error = identity
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_subclass_environment)
+assert_identical(
+  base::get("open_wrangler_result", envir = formula_subclass_environment, inherits = FALSE),
+  base::get("open_wrangler_result", envir = formula_plain_environment, inherits = FALSE),
+  "generated R Formula did not open a subclassed source as a plain data.frame"
 )
 assert_identical(
-  conditionMessage(formula_subclass_error),
-  "Open Wrangler generated R supports only a base data.frame, tibble, or data.table without subclasses",
-  "generated R Formula accepted an unsupported dataframe subclass"
-)
-assert_identical(
-  base::exists("open_wrangler_result", envir = formula_subclass_environment, inherits = FALSE),
-  FALSE,
-  "a rejected dataframe subclass published a generated R result"
-)
-
-formula_attribute_source <- formula_before
-base::attr(formula_attribute_source, "evil") <- "unsupported"
-formula_attribute_environment <- new.env(parent = baseenv())
-base::assign("formula_frame", formula_attribute_source, envir = formula_attribute_environment)
-formula_attribute_error <- tryCatch(
-  {
-    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_attribute_environment)
-    NULL
-  },
-  error = identity
-)
-assert_identical(
-  conditionMessage(formula_attribute_error),
-  "Open Wrangler generated R received unsupported dataframe attributes: evil",
-  "generated R Formula accepted unsupported dataframe attributes"
-)
-assert_identical(
-  base::exists("open_wrangler_result", envir = formula_attribute_environment, inherits = FALSE),
-  FALSE,
-  "rejected dataframe attributes published a generated R result"
+  base::get("formula_frame", envir = formula_subclass_environment, inherits = FALSE),
+  formula_subclass_source,
+  "generated R Formula changed a subclassed source"
 )
 
 formula_name_source <- formula_before

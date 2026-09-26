@@ -237,7 +237,10 @@ cat("exact-literals:ok")
       );
       const discovery = await transport.discoverVariables({ timeoutMs: 10_000 });
       expect(discovery).toEqual({
-        variables: [{ name: "orders", backend: "r", dataframeFlavor: "r.tibble" }],
+        variables: [
+          { name: "grouped_orders", backend: "r", dataframeFlavor: "r.tibble" },
+          { name: "orders", backend: "r", dataframeFlavor: "r.tibble" }
+        ],
         truncated: false
       });
 

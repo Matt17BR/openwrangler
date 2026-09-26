@@ -103,6 +103,9 @@ describe("vscode-R workspace metadata adapter", () => {
       tidy_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 2, dim: [3, 2] },
       table_orders: { class: ["data.table", "data.frame"], type: "list", length: 2, dim: [3, 2] },
       ".Last.value": { class: ["tbl_df", "tbl", "data.frame"], type: "list", length: 2, dim: [3, 2] },
+      parquet_orders: { class: ["tbl", "data.frame"], type: "list", length: 2, dim: [3, 2] },
+      grouped_orders: { class: ["grouped_df", "tbl_df", "tbl", "data.frame"], type: "list", length: 2, dim: [3, 2] },
+      table_like: { class: ["data.table"], type: "list", length: 2, dim: [3, 2] },
       scalar: { class: ["numeric"], type: "double", length: 1 }
     });
     const terminal = officialTerminal(fixture, 802);
@@ -119,7 +122,9 @@ describe("vscode-R workspace metadata adapter", () => {
         { name: "base_orders", backend: "r", dataframeFlavor: "r.data.frame" },
         { name: "tidy_orders", backend: "r", dataframeFlavor: "r.tibble" },
         { name: "table_orders", backend: "r", dataframeFlavor: "r.data.table" },
-        { name: ".Last.value", backend: "r", dataframeFlavor: "r.tibble" }
+        { name: ".Last.value", backend: "r", dataframeFlavor: "r.tibble" },
+        { name: "parquet_orders", backend: "r", dataframeFlavor: "r.data.frame" },
+        { name: "grouped_orders", backend: "r", dataframeFlavor: "r.tibble" }
       ],
       truncated: false
     });
