@@ -749,7 +749,10 @@ Pandas executes viewing, its supported cleaning operations, profiling, generated
 Viewing filters and sorts compose row positions into a row view. Pages take only their rows and columns, statistics
 that ignore row order read the selected rows in source order, and other reads materialize the view once. Arrow text
 columns are combined into one chunk when a file opens. Text predicates evaluate each distinct value once, and text
-sorts rank the dictionary instead of comparing every row.
+sorts rank the dictionary instead of comparing every row. A view sorted by one NumPy numeric, Boolean, datetime or
+duration column finds its first 16,384 rows with a partition, keeping every row tied with the boundary value so ties
+stay in source order. A later page or a read that needs every position sorts the column once
+with Arrow's stable sort. Multi-column sorts use the same stable sort for each such column.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
 source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
