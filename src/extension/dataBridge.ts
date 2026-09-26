@@ -1,5 +1,6 @@
 import type {
   CancelledResponse,
+  ColumnSchema,
   ConfirmedView,
   DataBackend,
   ErrorResponse,
@@ -98,6 +99,18 @@ export interface SessionRuntimeReplacement {
   }): Promise<{ response: PageResponse | ErrorResponse | CancelledResponse; isCurrent(): boolean } | undefined>;
 }
 
+/** Original input columns without a same-name, same-type column in the target, and the target's other columns. */
+export interface FilePlanColumnMappingRequest {
+  readonly unmatched: readonly ColumnSchema[];
+  readonly candidates: readonly ColumnSchema[];
+}
+
+/** Resolves original column IDs to target column IDs, or undefined when the user declines or the open is cancelled. */
+export type FilePlanColumnMappingChooser = (
+  request: FilePlanColumnMappingRequest,
+  cancellation?: CancellationTokenLike
+) => Promise<ReadonlyMap<string, string> | undefined>;
+
 /** A confirmed file plan captured before choosing its target; replay stays owned by the coordinator. */
 export interface FilePlanOpenContext {
   readonly backend: Extract<DataBackend, "pandas" | "polars" | "duckdb" | "r">;
@@ -138,7 +151,7 @@ export interface OpenWranglerBridge {
   /** Retains the exact mapped runtime while a native R editing copy is prepared. */
   captureSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and its target bridge factory, or returns an eligibility diagnostic. */
-  captureActiveFilePlan?(): FilePlanOpenContext | ErrorResponse;
+  captureActiveFilePlan?(chooseColumnMapping: FilePlanColumnMappingChooser): FilePlanOpenContext | ErrorResponse;
   captureRLibraryCopy?(sessionId: string, revision: number): RLibraryCopyContext | ErrorResponse;
   prepareFileAutoFallback?(
     source: SessionSource,

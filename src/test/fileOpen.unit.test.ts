@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as vscode from "vscode";
 import type { ExtensionContext } from "vscode";
-import type { DuckDBTableDiscovery, FilePlanOpenContext, OpenWranglerBridge } from "../extension/dataBridge";
+import type {
+  DuckDBTableDiscovery,
+  FilePlanColumnMappingChooser,
+  FilePlanOpenContext,
+  OpenWranglerBridge
+} from "../extension/dataBridge";
 import type { SessionSourceProtection } from "../extension/files/safeFileExport";
-import type { SessionSource } from "../shared/protocol";
+import type { ColumnSchema, SessionSource } from "../shared/protocol";
 import { FileBackendUnavailableError } from "../extension/dataBridge";
 import { isSessionSource } from "../shared/protocolValidation";
 import type { RFileBridgeFactory } from "../extension/files/fileOpen";
@@ -435,6 +440,78 @@ describe("file launch command", () => {
     );
     expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
+
+  it.each(["confirmed", "picker dismissed", "confirmation declined", "open cancelled"] as const)(
+    "asks which selected-file column replaces each unmatched plan column: %s",
+    async (outcome) => {
+      const { bridge } = register();
+      let choose: FilePlanColumnMappingChooser | undefined;
+      bridge.captureActiveFilePlan = (chooser) => {
+        choose = chooser;
+        return { kind: "error", code: "file_plan_unavailable", message: "Captured.", recoverable: true };
+      };
+      await command("openWrangler.openFileWithPlan")();
+      const column = (id: string, name: string, type: "float" | "string", position: number): ColumnSchema => ({
+        id,
+        name,
+        position,
+        type,
+        rawType: type === "float" ? "Float64" : "String",
+        nullable: true
+      });
+      const opening = new vscode.CancellationTokenSource();
+      fileMocks.showQuickPick.mockImplementationOnce(async (items) => {
+        if (outcome === "open cancelled") opening.cancel();
+        return outcome === "picker dismissed" ? undefined : items[1];
+      });
+      fileMocks.showInformationMessage.mockImplementationOnce(async () =>
+        outcome === "confirmed" ? ("Use Matches" as never) : undefined
+      );
+
+      const mapping = await choose!(
+        {
+          unmatched: [
+            column("o:amount", "amount", "float", 0),
+            column("o:units", "units", "float", 1),
+            column("o:label", "label", "string", 2)
+          ],
+          candidates: [
+            column("t:name", "name", "string", 0),
+            column("t:price", "price", "float", 1),
+            column("t:cost", "cost", "float", 2)
+          ]
+        },
+        opening.token
+      );
+
+      expect(fileMocks.showQuickPick).toHaveBeenCalledOnce();
+      expect(fileMocks.showQuickPick.mock.calls[0]).toEqual([
+        [
+          expect.objectContaining({ label: "price", description: "Float64" }),
+          expect.objectContaining({ label: "cost" })
+        ],
+        expect.objectContaining({ title: "Match Plan Columns (1 of 3)", ignoreFocusOut: true }),
+        expect.objectContaining({ isCancellationRequested: outcome === "open cancelled" })
+      ]);
+      if (outcome === "picker dismissed" || outcome === "open cancelled")
+        expect(fileMocks.showInformationMessage).toHaveBeenCalledOnce();
+      else
+        expect(fileMocks.showInformationMessage).toHaveBeenLastCalledWith(
+          "Copy the plan with these column matches?",
+          { modal: true, detail: "“amount” uses “cost”\n“units” uses “price”\n“label” uses “name”" },
+          "Use Matches"
+        );
+      expect(mapping).toEqual(
+        outcome === "confirmed"
+          ? new Map([
+              ["o:amount", "t:cost"],
+              ["o:units", "t:price"],
+              ["o:label", "t:name"]
+            ])
+          : undefined
+      );
+    }
+  );
 
   it.each([
     "success",

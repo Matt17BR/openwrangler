@@ -1,8 +1,19 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { isRLibrary, type DataBackend, type RLibrary, type SessionSource } from "../../shared/protocol";
+import {
+  isRLibrary,
+  type ColumnSchema,
+  type DataBackend,
+  type RLibrary,
+  type SessionSource
+} from "../../shared/protocol";
 import { isSessionSource } from "../../shared/protocolValidation";
-import { FileBackendUnavailableError, type CancellationTokenLike, type OpenWranglerBridge } from "../dataBridge";
+import {
+  FileBackendUnavailableError,
+  type CancellationTokenLike,
+  type FilePlanColumnMappingRequest,
+  type OpenWranglerBridge
+} from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { configuredRLibrary, getSetting } from "../configuration";
 import { formatQuickPickName } from "../quickPickName";
@@ -46,6 +57,60 @@ async function selectFileBridge(
       return { bridge: pythonBridge, backend, isCurrent: () => current() && fallback.isCurrent() };
     throw error;
   }
+}
+
+/** Ask which selected-file column replaces each unmatched plan column, then confirm the complete mapping. */
+async function chooseFilePlanColumnMapping(
+  request: FilePlanColumnMappingRequest,
+  cancellation: CancellationTokenLike | undefined
+): Promise<ReadonlyMap<string, string> | undefined> {
+  const dismiss = new vscode.CancellationTokenSource();
+  const subscription = cancellation?.onCancellationRequested(() => dismiss.cancel());
+  try {
+    return await chooseColumns(request, dismiss.token);
+  } finally {
+    subscription?.dispose();
+    dismiss.dispose();
+  }
+}
+
+async function chooseColumns(
+  request: FilePlanColumnMappingRequest,
+  cancellation: vscode.CancellationToken
+): Promise<ReadonlyMap<string, string> | undefined> {
+  const mapping = new Map<string, ColumnSchema>();
+  for (const [index, original] of request.unmatched.entries()) {
+    if (cancellation.isCancellationRequested) return undefined;
+    const used = new Set([...mapping.values()].map((column) => column.id));
+    const choices = request.candidates
+      .filter((column) => !used.has(column.id) && column.type === original.type && column.rawType === original.rawType)
+      .map((column) => ({ label: formatQuickPickName(column.name), description: column.rawType, column }));
+    const picked =
+      choices.length === 1
+        ? choices[0]
+        : await vscode.window.showQuickPick(
+            choices,
+            {
+              title: `Match Plan Columns (${index + 1} of ${request.unmatched.length})`,
+              placeHolder: `Choose the column in the selected file that replaces “${original.name}”`,
+              ignoreFocusOut: true
+            },
+            cancellation
+          );
+    if (!picked) return undefined;
+    mapping.set(original.id, picked.column);
+  }
+  if (cancellation.isCancellationRequested) return undefined;
+  const detail = request.unmatched
+    .map((original) => `“${original.name}” uses “${mapping.get(original.id)!.name}”`)
+    .join("\n");
+  const answer = await vscode.window.showInformationMessage(
+    "Copy the plan with these column matches?",
+    { modal: true, detail },
+    "Use Matches"
+  );
+  if (answer !== "Use Matches") return undefined;
+  return new Map([...mapping].map(([id, column]) => [id, column.id]));
 }
 
 export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
@@ -328,7 +393,9 @@ export const registerFileCommands = (
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openFileWithPlan", async () => {
-      const captured = bridge.captureActiveFilePlan?.();
+      const captured = bridge.captureActiveFilePlan?.((request, cancellation) =>
+        disposed ? Promise.resolve(undefined) : chooseFilePlanColumnMapping(request, cancellation)
+      );
       if (!captured) {
         await vscode.window.showInformationMessage(
           "Open a file with a confirmed cleaning plan before using it on another file."

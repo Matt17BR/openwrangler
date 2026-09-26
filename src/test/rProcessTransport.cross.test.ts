@@ -321,199 +321,208 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     }
   }, 30_000);
 
-  it("reuses a confirmed native file plan on a reordered second file with matching generated R", async () => {
-    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-plan-test-"));
-    const originPath = resolve(temporaryParent, "origin.csv");
-    const targetPath = resolve(temporaryParent, "target.csv");
-    const originBytes = "amount,other\n1.2,10.1\n2.3,20.2\n";
-    const targetBytes = "other,amount\n30.2,4.5\n40.3,6.7\n";
-    await writeFile(originPath, originBytes);
-    await writeFile(targetPath, targetBytes);
-    const source = (path: string): SessionSource => ({
-      kind: "file",
-      path,
-      uri: vscode.Uri.file(path).toString(),
-      label: path
-    });
-    const originSource = source(originPath);
-    const targetSource = source(targetPath);
-    const context = {
-      extension: { packageJSON: { version: "2.6.0" } },
-      subscriptions: []
-    } as unknown as vscode.ExtensionContext;
-    const native = (selected: SessionSource, path: string): RKernelBridge =>
-      new RKernelBridge(
-        context,
-        new RProcessSessionTransport({
+  it.each(["reordered", "renamed"] as const)(
+    "reuses a confirmed native file plan on a %s second file with matching generated R",
+    async (layout) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-file-plan-test-"));
+      const originPath = resolve(temporaryParent, "origin.csv");
+      const targetPath = resolve(temporaryParent, "target.csv");
+      const originBytes = "amount,other\n1.2,10.1\n2.3,20.2\n";
+      const targetBytes = `other,${layout === "renamed" ? "price" : "amount"}\n30.2,4.5\n40.3,6.7\n`;
+      await writeFile(originPath, originBytes);
+      await writeFile(targetPath, targetBytes);
+      const source = (path: string): SessionSource => ({
+        kind: "file",
+        path,
+        uri: vscode.Uri.file(path).toString(),
+        label: path
+      });
+      const originSource = source(originPath);
+      const targetSource = source(targetPath);
+      const context = {
+        extension: { packageJSON: { version: "2.6.0" } },
+        subscriptions: []
+      } as unknown as vscode.ExtensionContext;
+      const native = (selected: SessionSource, path: string): RKernelBridge =>
+        new RKernelBridge(
+          context,
+          new RProcessSessionTransport({
+            runtimeRoot,
+            rscriptPath,
+            temporaryParent,
+            workingDirectory: temporaryParent,
+            fileSource: { path, format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: '"' }
+          }),
+          randomUUID,
+          () => undefined,
+          undefined,
+          {},
+          undefined,
+          selected
+        );
+      const storage = new Map<string, unknown>();
+      const coordinator = new SessionCoordinator({
+        get: (key: string) => storage.get(key),
+        update: async (key: string, value: unknown) => {
+          storage.set(key, value);
+        },
+        keys: () => [...storage.keys()]
+      } as vscode.Memento);
+      const originNative = native(originSource, originPath);
+      const targetNative = native(targetSource, targetPath);
+      const origin = coordinator.createBridge(originNative);
+      const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+      let generated: RProcessSessionTransport | undefined;
+      try {
+        const opened = await origin.request({
+          kind: "openSession",
+          backend: "r",
+          source: originSource,
+          mode: "editing",
+          pageSize: 10,
+          columnOffset: 0,
+          columnLimit: 10
+        });
+        expect(opened.kind, JSON.stringify(opened)).toBe("sessionOpened");
+        if (opened.kind !== "sessionOpened") throw new Error("Origin did not open");
+        let metadata = opened.metadata;
+        const steps: TransformStep[] = [
+          { id: "rename", kind: "renameColumn", params: { column: { id: "r:c:0", name: "amount" }, newName: "value" } },
+          {
+            id: "total",
+            kind: "formula",
+            params: {
+              leftColumn: { id: "r:c:0", name: "value" },
+              rightColumn: { id: "r:c:1", name: "other" },
+              operator: "add",
+              newColumn: "total"
+            }
+          },
+          { id: "floor", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
+        ];
+        for (const step of steps) {
+          const preview = await origin.request({
+            kind: "previewStep",
+            sessionId: metadata.sessionId,
+            revision: metadata.revision,
+            step,
+            ...window
+          });
+          expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
+          if (preview.kind !== "stepPreview") throw new Error("Origin did not preview");
+          const applied = await origin.request({
+            kind: "applyDraft",
+            sessionId: metadata.sessionId,
+            revision: preview.metadata.revision,
+            ...window
+          });
+          expect(applied.kind, JSON.stringify(applied)).toBe("planUpdated");
+          if (applied.kind !== "planUpdated") throw new Error("Origin did not apply");
+          metadata = applied.metadata;
+        }
+        const snapshot = coordinator.activeSession()!;
+        const originSnapshot = {
+          ...snapshot,
+          metadata: structuredClone(snapshot.metadata),
+          viewState: structuredClone(snapshot.viewState)
+        };
+        const commandBridge = coordinator.createBridge({ request: vi.fn() });
+        const prompts: string[][] = [];
+        const captured = commandBridge.captureActiveFilePlan!(async ({ unmatched, candidates }) => {
+          prompts.push([...unmatched, ...candidates].map((column) => column.name));
+          return new Map([[unmatched[0].id, candidates[0].id]]);
+        });
+        if ("kind" in captured) throw new Error(captured.message);
+        expect(captured.backend).toBe("r");
+        expect(() => captured.createBridge(originNative)).toThrow("own matching target runtime");
+        const target = captured.createBridge(targetNative);
+        const replayed = await target.request({
+          kind: "openSession",
+          backend: "r",
+          source: targetSource,
+          mode: "editing",
+          pageSize: 10,
+          columnOffset: 0,
+          columnLimit: 10
+        });
+        expect(replayed.kind, JSON.stringify(replayed)).toBe("sessionOpened");
+        if (replayed.kind !== "sessionOpened") throw new Error("Target did not replay");
+        expect(replayed.metadata).toMatchObject({
+          backend: "r",
+          source: targetSource,
+          shape: { rows: 2, columns: 3 },
+          steps: [
+            { params: { column: { id: "r:c:1", name: layout === "renamed" ? "price" : "amount" } } },
+            { params: { leftColumn: { id: "r:c:1", name: "value" }, rightColumn: { id: "r:c:0", name: "other" } } },
+            { params: { column: { id: "c:step:total:0", name: "total" } } }
+          ]
+        });
+        expect(prompts).toEqual(layout === "renamed" ? [["amount", "price"]] : []);
+        expect(replayed.metadata.schema.map(({ id, name, type }) => ({ id, name, type }))).toEqual([
+          { id: "r:c:0", name: "other", type: "float" },
+          { id: "r:c:1", name: "value", type: "float" },
+          { id: "c:step:total:0", name: "total", type: "float" }
+        ]);
+        const expected = [
+          [30.2, 4.5, 34],
+          [40.3, 6.7, 47]
+        ];
+        expect(replayed.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
+        const code = coordinator.activeSession()!.code;
+        expect(code).toContain(targetPath);
+        expect(code).not.toContain(originPath);
+        origin.setActiveSession!(metadata.sessionId);
+        expect(coordinator.activeSession()).toEqual(originSnapshot);
+        await origin.request({ kind: "closeSession", sessionId: metadata.sessionId, revision: metadata.revision });
+        expect(captured.isCurrent()).toBe(false);
+        const page = await target.request({
+          kind: "getPage",
+          viewRequestId: "target-after-origin-close",
+          filterModel: replayed.metadata.filterModel,
+          sessionId: replayed.metadata.sessionId,
+          revision: replayed.metadata.revision,
+          ...window
+        });
+        expect(page.kind, JSON.stringify(page)).toBe("page");
+        if (page.kind !== "page") throw new Error("Target did not survive origin close");
+        expect(page.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
+        await target.request({
+          kind: "closeSession",
+          sessionId: replayed.metadata.sessionId,
+          revision: replayed.metadata.revision
+        });
+        generated = new RProcessSessionTransport({
           runtimeRoot,
           rscriptPath,
           temporaryParent,
           workingDirectory: temporaryParent,
-          fileSource: { path, format: "csv", header: true, delimiter: ",", encoding: "utf-8", quoteChar: '"' }
-        }),
-        randomUUID,
-        () => undefined,
-        undefined,
-        {},
-        undefined,
-        selected
-      );
-    const storage = new Map<string, unknown>();
-    const coordinator = new SessionCoordinator({
-      get: (key: string) => storage.get(key),
-      update: async (key: string, value: unknown) => {
-        storage.set(key, value);
-      },
-      keys: () => [...storage.keys()]
-    } as vscode.Memento);
-    const originNative = native(originSource, originPath);
-    const targetNative = native(targetSource, targetPath);
-    const origin = coordinator.createBridge(originNative);
-    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
-    let generated: RProcessSessionTransport | undefined;
-    try {
-      const opened = await origin.request({
-        kind: "openSession",
-        backend: "r",
-        source: originSource,
-        mode: "editing",
-        pageSize: 10,
-        columnOffset: 0,
-        columnLimit: 10
-      });
-      expect(opened.kind, JSON.stringify(opened)).toBe("sessionOpened");
-      if (opened.kind !== "sessionOpened") throw new Error("Origin did not open");
-      let metadata = opened.metadata;
-      const steps: TransformStep[] = [
-        { id: "rename", kind: "renameColumn", params: { column: { id: "r:c:0", name: "amount" }, newName: "value" } },
-        {
-          id: "total",
-          kind: "formula",
-          params: {
-            leftColumn: { id: "r:c:0", name: "value" },
-            rightColumn: { id: "r:c:1", name: "other" },
-            operator: "add",
-            newColumn: "total"
-          }
-        },
-        { id: "floor", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
-      ];
-      for (const step of steps) {
-        const preview = await origin.request({
-          kind: "previewStep",
-          sessionId: metadata.sessionId,
-          revision: metadata.revision,
-          step,
-          ...window
+          documentText: code
         });
-        expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
-        if (preview.kind !== "stepPreview") throw new Error("Origin did not preview");
-        const applied = await origin.request({
-          kind: "applyDraft",
-          sessionId: metadata.sessionId,
-          revision: preview.metadata.revision,
-          ...window
-        });
-        expect(applied.kind, JSON.stringify(applied)).toBe("planUpdated");
-        if (applied.kind !== "planUpdated") throw new Error("Origin did not apply");
-        metadata = applied.metadata;
+        const result = await generated.open("open_wrangler_result", pageWindow());
+        expect(result.page.schema.map((column) => column.name)).toEqual(["other", "value", "total"]);
+        expect(result.page.page.rows.map((row) => row.values.map((value) => value.kind))).toEqual([
+          ["number", "number", "number"],
+          ["number", "number", "number"]
+        ]);
+        expect(result.page.page.rows.map((row) => row.values.map((value) => Number(value.raw)))).toEqual(expected);
+        await generated.close(result.sessionId);
+        await generated.dispose();
+        await coordinator.shutdown();
+        await originNative.dispose();
+        await targetNative.dispose();
+        expect(await readdir(temporaryParent)).toEqual(["origin.csv", "target.csv"]);
+        expect(await readFile(originPath, "utf8")).toBe(originBytes);
+        expect(await readFile(targetPath, "utf8")).toBe(targetBytes);
+      } finally {
+        await coordinator.shutdown();
+        await originNative.dispose();
+        await targetNative.dispose();
+        await generated?.dispose();
+        await rm(temporaryParent, { recursive: true, force: true });
       }
-      const snapshot = coordinator.activeSession()!;
-      const originSnapshot = {
-        ...snapshot,
-        metadata: structuredClone(snapshot.metadata),
-        viewState: structuredClone(snapshot.viewState)
-      };
-      const commandBridge = coordinator.createBridge({ request: vi.fn() });
-      const captured = commandBridge.captureActiveFilePlan!();
-      if ("kind" in captured) throw new Error(captured.message);
-      expect(captured.backend).toBe("r");
-      expect(() => captured.createBridge(originNative)).toThrow("own matching target runtime");
-      const target = captured.createBridge(targetNative);
-      const replayed = await target.request({
-        kind: "openSession",
-        backend: "r",
-        source: targetSource,
-        mode: "editing",
-        pageSize: 10,
-        columnOffset: 0,
-        columnLimit: 10
-      });
-      expect(replayed.kind, JSON.stringify(replayed)).toBe("sessionOpened");
-      if (replayed.kind !== "sessionOpened") throw new Error("Target did not replay");
-      expect(replayed.metadata).toMatchObject({
-        backend: "r",
-        source: targetSource,
-        shape: { rows: 2, columns: 3 },
-        steps: [
-          { params: { column: { id: "r:c:1", name: "amount" } } },
-          { params: { leftColumn: { id: "r:c:1", name: "value" }, rightColumn: { id: "r:c:0", name: "other" } } },
-          { params: { column: { id: "c:step:total:0", name: "total" } } }
-        ]
-      });
-      expect(replayed.metadata.schema.map(({ id, name, type }) => ({ id, name, type }))).toEqual([
-        { id: "r:c:0", name: "other", type: "float" },
-        { id: "r:c:1", name: "value", type: "float" },
-        { id: "c:step:total:0", name: "total", type: "float" }
-      ]);
-      const expected = [
-        [30.2, 4.5, 34],
-        [40.3, 6.7, 47]
-      ];
-      expect(replayed.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
-      const code = coordinator.activeSession()!.code;
-      expect(code).toContain(targetPath);
-      expect(code).not.toContain(originPath);
-      origin.setActiveSession!(metadata.sessionId);
-      expect(coordinator.activeSession()).toEqual(originSnapshot);
-      await origin.request({ kind: "closeSession", sessionId: metadata.sessionId, revision: metadata.revision });
-      expect(captured.isCurrent()).toBe(false);
-      const page = await target.request({
-        kind: "getPage",
-        viewRequestId: "target-after-origin-close",
-        filterModel: replayed.metadata.filterModel,
-        sessionId: replayed.metadata.sessionId,
-        revision: replayed.metadata.revision,
-        ...window
-      });
-      expect(page.kind, JSON.stringify(page)).toBe("page");
-      if (page.kind !== "page") throw new Error("Target did not survive origin close");
-      expect(page.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual(expected);
-      await target.request({
-        kind: "closeSession",
-        sessionId: replayed.metadata.sessionId,
-        revision: replayed.metadata.revision
-      });
-      generated = new RProcessSessionTransport({
-        runtimeRoot,
-        rscriptPath,
-        temporaryParent,
-        workingDirectory: temporaryParent,
-        documentText: code
-      });
-      const result = await generated.open("open_wrangler_result", pageWindow());
-      expect(result.page.schema.map((column) => column.name)).toEqual(["other", "value", "total"]);
-      expect(result.page.page.rows.map((row) => row.values.map((value) => value.kind))).toEqual([
-        ["number", "number", "number"],
-        ["number", "number", "number"]
-      ]);
-      expect(result.page.page.rows.map((row) => row.values.map((value) => Number(value.raw)))).toEqual(expected);
-      await generated.close(result.sessionId);
-      await generated.dispose();
-      await coordinator.shutdown();
-      await originNative.dispose();
-      await targetNative.dispose();
-      expect(await readdir(temporaryParent)).toEqual(["origin.csv", "target.csv"]);
-      expect(await readFile(originPath, "utf8")).toBe(originBytes);
-      expect(await readFile(targetPath, "utf8")).toBe(targetBytes);
-    } finally {
-      await coordinator.shutdown();
-      await originNative.dispose();
-      await targetNative.dispose();
-      await generated?.dispose();
-      await rm(temporaryParent, { recursive: true, force: true });
-    }
-  }, 30_000);
+    },
+    30_000
+  );
 
   it.each([
     { kind: "denseRank", expected: ["2", "1", "2", null], rawType: "integer", type: "integer", nullable: true },

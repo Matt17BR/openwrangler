@@ -15,9 +15,15 @@ import type {
 } from "../shared/protocol";
 import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { supportsOperation } from "../shared/operations";
-import { remapStepColumnReferences } from "../shared/transformStepReferences";
+import { translatePlanColumns } from "../shared/transformStepReferences";
 import { canRequestLiveSessionMode } from "../shared/sessionMode";
-import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "./dataBridge";
+import {
+  DetachedBridgeRequestError,
+  type BridgeRequestOptions,
+  type CancellationTokenLike,
+  type FilePlanColumnMappingChooser,
+  type OpenWranglerBridge
+} from "./dataBridge";
 import type { CoordinatedSessionOrigin } from "./sessionOrigin";
 import { captureSessionSourceFiles, sessionOriginMismatch } from "./sessionOrigin";
 import { confirmSessionSourceProtection, type SessionSourceProtection } from "./files/safeFileExport";
@@ -73,6 +79,8 @@ export interface InitialFilePlan {
   readonly importOptions: SessionSource["importOptions"];
   readonly sourceSchema: readonly ColumnSchema[];
   readonly steps: readonly TransformStep[];
+  /** Asks the user to match original columns that have no same-name, same-type column in the target. */
+  readonly chooseColumnMapping: FilePlanColumnMappingChooser;
   isCurrent(): boolean;
   assertTargetAvailable(source: SessionSource, protection: SessionSourceProtection): Promise<void>;
 }
@@ -94,7 +102,23 @@ export function isRLibraryCopy(plan: InitialSessionPlan | undefined): plan is In
   return plan !== undefined && "kind" in plan && plan.kind === "rLibraryCopy";
 }
 
-function initialFilePlanSteps(plan: InitialFilePlan, schema: readonly ColumnSchema[]): TransformStep[] {
+/** The user declined to match the copied plan's columns. */
+class FilePlanMappingDeclined extends Error {}
+
+function sameColumnType(left: ColumnSchema, right: ColumnSchema): boolean {
+  return left.type === right.type && left.rawType === right.rawType;
+}
+
+function quotedColumnList(columns: readonly ColumnSchema[]): string {
+  return columns.map((column) => `“${column.name}”`).join(", ");
+}
+
+async function initialFilePlanSteps(
+  plan: InitialFilePlan,
+  schema: readonly ColumnSchema[],
+  assertCurrent: () => void,
+  cancellation: CancellationTokenLike | undefined
+): Promise<TransformStep[]> {
   if (
     schema.length === plan.sourceSchema.length &&
     schema.every((column, index) => {
@@ -103,39 +127,62 @@ function initialFilePlanSteps(plan: InitialFilePlan, schema: readonly ColumnSche
         column.id === original.id &&
         column.name === original.name &&
         column.position === original.position &&
-        column.type === original.type &&
-        column.rawType === original.rawType
+        sameColumnType(column, original)
       );
     })
   )
     return structuredClone([...plan.steps]);
 
-  const targets = new Map(schema.map((column) => [column.name, column]));
-  const names = new Set(plan.sourceSchema.map((column) => column.name));
-  const columnIds = new Map<string, string>();
-  if (
-    schema.length !== plan.sourceSchema.length ||
-    targets.size !== schema.length ||
-    names.size !== plan.sourceSchema.length ||
-    targets.has("") ||
-    names.has("") ||
-    plan.sourceSchema.some((original) => {
-      const target = targets.get(original.name);
-      if (!target || target.type !== original.type || target.rawType !== original.rawType) return true;
-      columnIds.set(original.id, target.id);
-      return false;
-    })
-  )
+  const byName = new Map(schema.map((column) => [column.name, column]));
+  if (byName.size !== schema.length || byName.has(""))
     throw new RuntimeStateRestoreError(
-      "The selected file must have the same unique column names and types as the plan's original input."
+      "The selected file has duplicate or empty column names, so its columns cannot be matched to the plan."
+    );
+  if (schema.length !== plan.sourceSchema.length)
+    throw new RuntimeStateRestoreError(
+      `The selected file has ${schema.length} columns, but the plan's original input has ${plan.sourceSchema.length}.`
     );
 
-  return plan.steps.map((step) => {
-    const mapped = remapStepColumnReferences(step, columnIds);
-    if (typeof mapped === "string")
-      throw new RuntimeStateRestoreError("The copied plan contains an unsupported column-reference variant.");
-    return mapped;
-  });
+  const targets = new Map<string, ColumnSchema>();
+  for (const original of plan.sourceSchema) {
+    const target = byName.get(original.name);
+    if (target && sameColumnType(target, original)) targets.set(original.id, target);
+  }
+  const unmatched = plan.sourceSchema.filter((original) => !targets.has(original.id));
+  if (unmatched.length > 0) {
+    const matched = new Set([...targets.values()].map((column) => column.id));
+    const candidates = schema.filter((column) => !matched.has(column.id));
+    // Type equality partitions both sides, so equal per-type counts guarantee that any sequence of choices completes.
+    const incompatible = unmatched.filter(
+      (original) =>
+        unmatched.filter((other) => sameColumnType(other, original)).length >
+        candidates.filter((column) => sameColumnType(column, original)).length
+    );
+    if (incompatible.length > 0)
+      throw new RuntimeStateRestoreError(
+        `The selected file has no remaining column with the same type as ${quotedColumnList(incompatible)}.`
+      );
+    const chosen = await plan.chooseColumnMapping(
+      { unmatched: structuredClone(unmatched), candidates: structuredClone(candidates) },
+      cancellation
+    );
+    assertCurrent();
+    if (!chosen) throw new FilePlanMappingDeclined();
+    const used = new Set<string>();
+    for (const original of unmatched) {
+      const target = candidates.find((column) => column.id === chosen.get(original.id));
+      if (!target || used.has(target.id) || !sameColumnType(target, original))
+        throw new RuntimeStateRestoreError("The chosen columns do not match the plan's original input.");
+      used.add(target.id);
+      targets.set(original.id, target);
+    }
+    if (chosen.size !== unmatched.length)
+      throw new RuntimeStateRestoreError("The chosen columns do not match the plan's original input.");
+  }
+
+  const translated = translatePlanColumns(plan.steps, plan.sourceSchema, targets);
+  if (typeof translated === "string") throw new RuntimeStateRestoreError(translated);
+  return translated;
 }
 
 export class SessionRuntimeEstablisher {
@@ -388,9 +435,14 @@ export class SessionRuntimeEstablisher {
     };
     const source = structuredClone(session.metadata.source);
     try {
+      if (
+        !session.metadata.capabilities.editable ||
+        plan.steps.some((step) => !supportsOperation(session.metadata.capabilities, step.kind))
+      )
+        throw new RuntimeStateRestoreError("The selected file does not support every operation in this plan.");
       const steps = isRLibraryCopy(plan)
         ? structuredClone([...plan.steps])
-        : initialFilePlanSteps(plan, session.sourceSchema!);
+        : await initialFilePlanSteps(plan, session.sourceSchema!, assertCurrent, options?.cancellation);
       const assertCompletePlan = (): void => {
         if (
           session.metadata.backend !== plan.backend ||
@@ -407,11 +459,6 @@ export class SessionRuntimeEstablisher {
             "The runtime did not confirm the complete copied plan and generated code."
           );
       };
-      if (
-        !session.metadata.capabilities.editable ||
-        plan.steps.some((step) => !supportsOperation(session.metadata.capabilities, step.kind))
-      )
-        throw new RuntimeStateRestoreError("The selected file does not support every operation in this plan.");
       await this.runtimeStateRestorer.restoreCleaningState(
         session,
         { steps },
@@ -467,13 +514,19 @@ export class SessionRuntimeEstablisher {
     } catch (error) {
       const response =
         currentFailure() ??
-        protocolError(
-          "file_plan_replay_failed",
-          error instanceof RuntimeStateRestoreError
-            ? error.message
-            : "Open Wrangler could not finish copying this plan. The original session was kept.",
-          true
-        );
+        (error instanceof FilePlanMappingDeclined
+          ? protocolError(
+              "file_plan_mapping_declined",
+              "The plan was not copied because no column mapping was chosen. Close this tab and choose the file again to match its columns.",
+              true
+            )
+          : protocolError(
+              "file_plan_replay_failed",
+              error instanceof RuntimeStateRestoreError
+                ? error.message
+                : "Open Wrangler could not finish copying this plan. The original session was kept.",
+              true
+            ));
       if (error instanceof DetachedBridgeRequestError) {
         this.runtimeCleanup.trackDelegateSettlement(
           session.delegate,

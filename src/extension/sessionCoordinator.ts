@@ -22,6 +22,7 @@ import { sessionModeAction } from "../shared/sessionMode";
 import type { GridViewState } from "../shared/viewState";
 import {
   type BridgeRequestOptions,
+  type FilePlanColumnMappingChooser,
   type FilePlanOpenContext,
   type RLibraryCopyContext,
   type OpenWranglerBridge,
@@ -181,7 +182,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (request.kind === "openSession" && response.kind === "sessionOpened") initialPlan = undefined;
         return response;
       },
-      captureActiveFilePlan: () => this.captureActiveFilePlan(),
+      captureActiveFilePlan: (chooseColumnMapping) => this.captureActiveFilePlan(chooseColumnMapping),
       captureRLibraryCopy: (sessionId, revision) => this.captureRLibraryCopy(delegate, sessionId, revision),
       prepareFileAutoFallback: (source, options) =>
         delegate.prepareFileAutoFallback?.(source, options) ?? Promise.resolve(undefined),
@@ -230,7 +231,9 @@ export class SessionCoordinator implements vscode.Disposable {
     };
   }
 
-  private captureActiveFilePlan(): FilePlanOpenContext | ErrorResponse {
+  private captureActiveFilePlan(
+    chooseColumnMapping: FilePlanColumnMappingChooser
+  ): FilePlanOpenContext | ErrorResponse {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
     if (
       !session ||
@@ -294,6 +297,7 @@ export class SessionCoordinator implements vscode.Disposable {
       importOptions: structuredClone(openRequest.source.importOptions),
       sourceSchema: structuredClone(sourceSchema),
       steps: structuredClone(session.metadata.steps),
+      chooseColumnMapping,
       isCurrent: () =>
         vscode.workspace.isTrusted &&
         this.isLiveSession(session) &&

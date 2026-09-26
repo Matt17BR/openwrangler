@@ -110,6 +110,7 @@ describe("SessionCoordinator", () => {
       importOptions: undefined,
       sourceSchema: [],
       steps: [],
+      chooseColumnMapping: vi.fn(async () => undefined),
       isCurrent: vi.fn(() => true),
       assertTargetAvailable: vi.fn(async () => undefined)
     };
