@@ -13,7 +13,7 @@ import type {
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
-import { isDuckDBTableSource, rLibraries, rLibraryLabel, sourceDisplayLabel } from "../shared/protocol";
+import { engineLabel, isDuckDBTableSource, rLibraries, sourceDisplayLabel } from "../shared/protocol";
 import {
   isRecoveryViewContextId,
   RECOVERY_VIEW_CONTEXT_PREFIX,
@@ -1372,7 +1372,7 @@ export class OpenWranglerPanel {
               (candidate) =>
                 candidate === "r"
                   ? rLibraries.map((library) => ({
-                      label: library === "base" ? "Base R" : `R · ${rLibraryLabel(library)}`,
+                      label: engineLabel("r", library),
                       description:
                         currentBackend === "r" && currentLibrary === library
                           ? "Current"
@@ -1384,7 +1384,7 @@ export class OpenWranglerPanel {
                     }))
                   : [
                       {
-                        label: `Python · ${backendDisplayName(candidate)}`,
+                        label: engineLabel(candidate),
                         description:
                           candidate === currentBackend
                             ? "Current"
@@ -1398,9 +1398,7 @@ export class OpenWranglerPanel {
             ),
             {
               title: "Dataframe engine",
-              placeHolder: currentLibrary
-                ? `Current: ${currentLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(currentLibrary)}`}`
-                : `Current: Python · ${backendDisplayName(currentBackend)}`,
+              placeHolder: `Current: ${engineLabel(currentBackend, currentLibrary)}`,
               matchOnDescription: true
             },
             cancellation.token
@@ -1413,7 +1411,7 @@ export class OpenWranglerPanel {
         await this.post({
           kind: "error",
           code: "unsupported_backend",
-          message: `${backendDisplayName(backend)} cannot open this file with its current import options.`,
+          message: `${engineLabel(backend, selected?.rLibrary)} cannot open this file with its current import options.`,
           recoverable: true,
           sessionId: this.sessionId
         });
@@ -1437,10 +1435,10 @@ export class OpenWranglerPanel {
       if (backend === "r" && currentBackend === "r" && copy && !("kind" in copy) && selected?.rLibrary) {
         const targetLibrary = selected.rLibrary;
         const confirmation = await vscode.window.showWarningMessage(
-          `Open an editing copy with ${rLibraryLabel(targetLibrary)}?`,
+          `Open an editing copy with ${engineLabel("r", targetLibrary)}?`,
           {
             modal: true,
-            detail: `The new tab replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"} from this session's captured source. This tab keeps its draft, redo history and view. The copy has no draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? ` Open file separately reloads the file and restores steps saved for ${rLibraryLabel(targetLibrary)}.` : ""}`
+            detail: `The new tab replays ${copy.appliedStepCount} applied ${copy.appliedStepCount === 1 ? "step" : "steps"} from this session's captured source. This tab keeps its draft, redo history and view. The copy has no draft or redo history.${copy.rerunsCustomCode ? " Applied Custom Code runs again in the original R environment and may have side effects." : ""}${source.kind === "file" ? ` Open file separately reloads the file and restores steps saved for ${engineLabel("r", targetLibrary)}.` : ""}`
           },
           "Open editing copy",
           ...(source.kind === "file" ? ["Open file separately"] : [])
@@ -1483,10 +1481,10 @@ export class OpenWranglerPanel {
           .filter((value): value is string => Boolean(value))
           .join(" and ");
         const confirmation = await vscode.window.showWarningMessage(
-          `Switch to ${backendDisplayName(backend)}?`,
+          `Switch to ${engineLabel(backend)}?`,
           {
             modal: true,
-            detail: `Open Wrangler will replay ${planDescription} with ${backendDisplayName(backend)}. If replay fails, the current ${backendDisplayName(currentBackend)} session stays open.`
+            detail: `Open Wrangler will replay ${planDescription} with ${engineLabel(backend)}. If replay fails, the current ${engineLabel(currentBackend)} session stays open.`
           },
           "Replay and switch"
         );
@@ -2322,7 +2320,7 @@ export class OpenWranglerPanel {
   private async rememberConfirmedFileImportOptions(metadata: SessionMetadata): Promise<void> {
     const { source, backend, rLibrary } = metadata;
     this.rLibrary = rLibrary;
-    this.panel.title = `Open Wrangler: ${sourceDisplayLabel(source)}${backend === "r" && rLibrary ? ` (${rLibrary === "base" ? "Base R" : `R · ${rLibraryLabel(rLibrary)}`})` : ""}`;
+    this.panel.title = `Open Wrangler: ${sourceDisplayLabel(source)} (${engineLabel(backend, rLibrary)})`;
     const uri = fileSourceUri(source);
     if (!uri) return;
     try {
@@ -2475,14 +2473,6 @@ function canChangeImportOptions(source: SessionSource): boolean {
   if (source.kind !== "file" || isDuckDBTableSource(source)) return false;
   const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
   return extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls";
-}
-
-function backendDisplayName(backend: DataBackend): string {
-  if (backend === "duckdb") return "DuckDB";
-  if (backend === "polars") return "Polars";
-  if (backend === "pandas") return "Pandas";
-  if (backend === "pyspark") return "PySpark";
-  return "R";
 }
 
 function modeName(mode: SessionMode): "Editing" | "Viewing" {

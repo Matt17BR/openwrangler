@@ -7280,7 +7280,7 @@ async function exercisePackagedBackendSwitchJourney(
       `The ${current} renderer must acknowledge the current session before its engine badge is clicked.`
     );
     const badge = app.getByRole("button", {
-      name: `Change dataframe engine. Current engine: ${current}`,
+      name: `Change dataframe engine. Current engine: Python · ${current}`,
       exact: true
     });
     await badge.waitFor({ state: "visible", timeout: 10_000 });

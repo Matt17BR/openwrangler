@@ -194,7 +194,7 @@ describe("OpenWranglerPanel retained view state", () => {
         expect(capture).toHaveBeenCalledWith("session", 0);
         expect(items).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ label: "Base R", description: "Current" }),
+            expect.objectContaining({ label: "R · base", description: "Current" }),
             expect.objectContaining({ label: "R · dplyr", description: "Open editing copy" })
           ])
         );
@@ -2361,7 +2361,7 @@ describe("OpenWranglerPanel retained view state", () => {
           (item) => item.backend === target
         );
         expect(choice).toMatchObject({
-          label: target === "r" ? "Base R" : "Python · Pandas",
+          label: target === "r" ? "R · base" : "Python · Pandas",
           description: "Reopen file in new tab"
         });
         return choice;
@@ -2696,7 +2696,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(choices.map(({ label }) => label)).toEqual([
       "Python · Polars",
       "Python · Pandas",
-      "Base R",
+      "R · base",
       "R · dplyr",
       "R · data.table",
       "R · collapse"
@@ -2738,10 +2738,10 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "changeBackend" });
 
     expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledWith(
-      "Switch to Pandas?",
+      "Switch to Python · Pandas?",
       expect.objectContaining({
         modal: true,
-        detail: expect.stringContaining("replay 1 applied step with Pandas")
+        detail: expect.stringContaining("replay 1 applied step with Python · Pandas")
       }),
       "Replay and switch"
     );

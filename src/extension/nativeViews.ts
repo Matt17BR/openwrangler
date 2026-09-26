@@ -16,7 +16,7 @@ import {
   supportedOperationCatalog,
   supportsOperation
 } from "../shared/operations";
-import { dataBackendLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
+import { engineLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import {
   isCodePreviewWebviewMessage,
@@ -1556,7 +1556,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       : selectedColumn.name
     : "None";
   const nodes = [
-    new ViewNode(metadata.source.label, `${dataBackendLabel(metadata.backend)} · ${metadata.mode}`, "table"),
+    new ViewNode(
+      metadata.source.label,
+      `${engineLabel(metadata.backend, metadata.rLibrary)} · ${metadata.mode}`,
+      "table"
+    ),
     new ViewNode(
       "Shape",
       `${formatSessionRowCount(metadata.filteredShape.rows)} × ${metadata.filteredShape.columns.toLocaleString()}`,

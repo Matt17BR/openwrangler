@@ -85,7 +85,7 @@ export function backendSwitchPhysicalViewMatches(
   backend: BackendSwitchLabel
 ): boolean {
   return (
-    sample.backendLabel === `Change dataframe engine. Current engine: ${backend}` &&
+    sample.backendLabel === `Change dataframe engine. Current engine: Python · ${backend}` &&
     sample.backendWidth !== null &&
     sample.backendWidth > 0 &&
     sample.connected &&

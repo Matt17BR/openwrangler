@@ -218,7 +218,7 @@ export function createReleasedRCloneEditingJourney({
       app = await releasedRSessionApp(workbench, testing, sessionId, "the R source before choosing a cleaning library");
       await app
         .getByRole("button", {
-          name: "Change dataframe engine. Current engine: Base R",
+          name: "Change dataframe engine. Current engine: R · base",
           exact: true
         })
         .click();
@@ -230,9 +230,9 @@ export function createReleasedRCloneEditingJourney({
       const labels = await Promise.all(
         [0, 1, 2, 3].map((index) => choices.nth(index).locator(".label-name:visible").first().innerText())
       );
-      assert.deepEqual(labels, ["Base R", "R · dplyr", "R · data.table", "R · collapse"]);
+      assert.deepEqual(labels, ["R · base", "R · dplyr", "R · data.table", "R · collapse"]);
       await choices.nth(1).click();
-      const confirmation = await waitForVisibleEditorDialog(workbench, "Open an editing copy with dplyr?");
+      const confirmation = await waitForVisibleEditorDialog(workbench, "Open an editing copy with R · dplyr?");
       await confirmation.page.bringToFront();
       await confirmation.dialog.getByRole("button", { name: "Open editing copy", exact: true }).click();
       await waitForReleasedRCloneState(

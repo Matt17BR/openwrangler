@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Engines are named the same way everywhere: **Python · Pandas**, **Python · Polars**, **Python · DuckDB**, **R · base**, **R · dplyr**, **R · data.table** and **R · collapse**, in the engine picker, engine badge, panel title and Data Sources view.
 - DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.
 - Local R files reuse unchanged filtered sort order across grid pages.
 - R text filters and value search reuse case conversion for repeated values within bounded batches.

@@ -122,8 +122,8 @@ Open Wrangler works in R directly, with no conversion through Python. Base `data
 objects in IRkernel notebooks are supported in desktop VS Code on Linux, macOS and Windows. Preview steps, inspect the
 history, and copy, save or insert the generated R.
 
-Choose base R, dplyr, data.table or collapse for cleaning and generated code, either in the engine picker or with
-`openWrangler.defaultRLibrary`. The package must be installed in the R environment that owns the dataframe. Custom
+Choose **R · base**, **R · dplyr**, **R · data.table** or **R · collapse** for cleaning and generated code, either in
+the engine picker or with `openWrangler.defaultRLibrary`. The package must be installed in the R environment that owns the dataframe. Custom
 Code can call any installed package and return a base `data.frame`, tibble or `data.table`.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft with regional totals, cleaning history and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-r-editing.png" width="960"></a>
