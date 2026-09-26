@@ -278,7 +278,7 @@ export class SessionRuntimeEstablisher {
           response: protocolError(
             absent.kind === "occupied" ? "file_plan_target_occupied" : "persistence_unavailable",
             absent.kind === "occupied"
-              ? "This file already has saved Open Wrangler work for this engine, R library and import options. For an R library, choose Open file separately in the library picker."
+              ? "This file already has saved Open Wrangler work for this engine, R library and import options. Open the file and choose that engine to continue it."
               : "Open Wrangler could not read workspace storage. Retry after storage is available.",
             true
           )

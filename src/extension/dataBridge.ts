@@ -9,8 +9,10 @@ import type {
   PageResponse,
   RLibrary,
   SessionMode,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
+import type { FileEngine } from "../shared/operations";
 import type { GridViewState } from "../shared/viewState";
 import type { SessionPresentation } from "../shared/sessionRecovery";
 export type { SessionPresentation } from "../shared/sessionRecovery";
@@ -83,6 +85,22 @@ export interface BridgeRequestOptions {
   backendPreference?: DataBackend | "auto";
   /** Host-only progress for an expensive live-notebook session open. */
   onOpenProgress?: (stage: SessionOpenProgressStage) => void;
+}
+
+/** Host-only inputs for reopening a file session with other import options or another engine. */
+export interface FileReconfigurationOptions extends BridgeRequestOptions {
+  /** The target R library when the target engine is R; defaults to the current library. */
+  rLibrary?: RLibrary;
+  /** The coordinated bridge that owns the target engine's runtime; defaults to this bridge. */
+  targetBridge?: OpenWranglerBridge;
+  /** The work the target replays: the current plan (default), only its first applied steps, or the work saved for the target. */
+  plan?: "current" | "saved" | { readonly steps: number };
+}
+
+/** Cleaning work saved for a file with one engine. */
+export interface SavedFileWork {
+  readonly steps: readonly TransformStep[];
+  readonly draftStep: TransformStep | undefined;
 }
 
 /** Exact private replacement; retained only until its owning panel confirms a fresh view. */
@@ -182,15 +200,18 @@ export interface OpenWranglerBridge {
   ): Promise<readonly string[] | undefined>;
   /**
    * Atomically replaces the private runtime behind an existing file session
-   * after opening the same source with different import options. This is a
-   * host-only lifecycle operation and is intentionally absent from the runtime protocol.
+   * after opening the same source with different import options or another
+   * engine. This is a host-only lifecycle operation and is intentionally absent
+   * from the runtime protocol.
    */
   reconfigureFileSession?(
     sessionId: string,
     revision: number,
     source: SessionSource,
-    options?: BridgeRequestOptions
+    options?: FileReconfigurationOptions
   ): Promise<OpenWranglerResponse>;
+  /** Summarizes the cleaning work saved for a file with an engine, if any. */
+  savedFileWork?(source: SessionSource, engine: FileEngine): SavedFileWork | undefined;
   /**
    * Atomically replaces a supported live-variable runtime in the requested mode
    * while remaining bound to the same live source. This is a host-only lifecycle

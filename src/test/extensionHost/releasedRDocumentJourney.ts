@@ -496,6 +496,7 @@ export function createReleasedRDocumentJourney({
         detected.sessionId,
         "the detected CP1252 source"
       );
+      const sessionsBeforeOptions = testing.diagnostics().sessionCount;
       await detectedApp.getByRole("button", { name: "Import options", exact: true }).click();
       recordAcceptanceProgress("jupyter-r:file:options:configure");
       for (const [title, choice] of [
@@ -513,14 +514,14 @@ export function createReleasedRDocumentJourney({
       await acceptQuickPickOptionWithKeyboard(workbench, lineEnding, "Line ending", "CR");
       await waitFor(
         () =>
-          testing.activeSession()?.metadata.source.uri === csvUri.toString() &&
-          testing.activeSession()?.sessionId !== detected.sessionId,
+          testing.activeSession()?.sessionId === detected.sessionId &&
+          testing.activeSession()?.metadata.source.importOptions?.delimiter === ";",
         30_000,
-        "the publicly selected native R CSV options"
+        "the publicly selected native R CSV options to reopen in the same tab"
       );
       const configured = testing.activeSession();
       assert.ok(configured);
-      ownedSessions.add(configured.sessionId);
+      assert.equal(testing.diagnostics().sessionCount, sessionsBeforeOptions);
       assert.equal(configured.metadata.backend, "r");
       assert.deepEqual(configured.metadata.source.importOptions, {
         delimiter: ";",
@@ -682,24 +683,23 @@ export function createReleasedRDocumentJourney({
         excel.sessionId,
         "the native Excel grid before its actual sheet picker"
       );
+      const sessionsBeforeSheet = testing.diagnostics().sessionCount;
       await app.getByRole("button", { name: "Import options", exact: true }).click();
       await acceptSearchableExcelSheet(workbench, testing, excelUri, excel.sessionId, "cached");
       await waitFor(
         () =>
-          testing.activeSession()?.sessionId !== excel.sessionId &&
+          testing.activeSession()?.sessionId === excel.sessionId &&
           testing.activeSession()?.metadata.source.importOptions?.sheetName === "cached",
         30_000,
-        "the selected nonfirst worksheet to own a separate native R session"
+        "the selected nonfirst worksheet to reopen in the same native R tab"
       );
       const selected = testing.activeSession();
       assert.ok(selected);
-      ownedSessions.add(selected.sessionId);
+      assert.equal(testing.diagnostics().sessionCount, sessionsBeforeSheet);
       assert.equal(selected.metadata.backend, "r");
       assert.equal(selected.metadata.source.uri, excelUri.toString());
       assert.equal(selected.metadata.source.path, excelUri.fsPath);
       assert.deepEqual(selected.metadata.source.importOptions, { sheetName: "cached" });
-      assert.deepEqual(testing.sessionSnapshot(excel.sessionId)?.metadata.source, excel.metadata.source);
-      assert.deepEqual(testing.sessionSnapshot(excel.sessionId)?.metadata.schema, excel.metadata.schema);
       app = await checkCells(
         selected,
         ["true_zero", "cached_zero", "cached_three", "uncached", "error", "whitespace"],
