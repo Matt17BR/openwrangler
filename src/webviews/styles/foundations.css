@@ -1,4 +1,7 @@
 :root {
+  --ow-font-size: var(--vscode-font-size, 13px);
+  --ow-font-size-small: calc(var(--ow-font-size) - 1px);
+  --ow-font-size-caption: calc(var(--ow-font-size) - 2px);
   color-scheme: light dark;
   font-family: var(--vscode-font-family, system-ui, sans-serif);
   color: var(--vscode-foreground);
@@ -6,6 +9,7 @@
 }
 
 body {
+  font-size: var(--ow-font-size);
   margin: 0;
 }
 
@@ -46,12 +50,21 @@ textarea {
   font: inherit;
 }
 
+small {
+  font-size: var(--ow-font-size-caption);
+}
+
 button {
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
   border: 0;
   border-radius: 3px;
   padding: 4px 8px;
+}
+
+button:not([class]),
+.secondaryButton {
+  min-height: 24px;
 }
 
 button:not(:disabled) {

@@ -124,7 +124,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
       visibleRowsOverride: "Rows 99,999,997 to 100,000,000 of 100,000,000",
       expectSingleLine: false
     },
-    ...[241, 300, 312, 313, 314].map((width) => ({
+    ...[241, 300, 322, 323, 324].map((width) => ({
       harness: "grid-view.html",
       width,
       expectedDataGridWidth: width,

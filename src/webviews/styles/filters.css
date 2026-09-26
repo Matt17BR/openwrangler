@@ -25,7 +25,7 @@
 .filterSection summary {
   color: var(--vscode-descriptionForeground);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   font-weight: 600;
   letter-spacing: 0.04em;
 }
@@ -46,7 +46,7 @@
 }
 
 .activeFilterOverview > header {
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
 }
 
 .activeFilterOverview p {
@@ -112,7 +112,7 @@
 
 .activeValueLogic {
   color: var(--vscode-descriptionForeground);
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   white-space: nowrap;
 }
 
@@ -120,7 +120,7 @@
   border: 1px solid var(--vscode-panel-border);
   border-radius: 999px;
   color: var(--vscode-descriptionForeground);
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
   padding: 2px 7px;
 }
 
@@ -162,7 +162,7 @@
   border-radius: 999px;
   color: var(--vscode-badge-foreground);
   display: inline-flex;
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   height: 18px;
   justify-content: center;
   width: 18px;

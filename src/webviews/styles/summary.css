@@ -83,7 +83,7 @@
 .summaryEyebrow {
   color: var(--vscode-descriptionForeground);
   display: block;
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -93,7 +93,7 @@
   border-radius: 999px;
   color: var(--vscode-descriptionForeground);
   flex: 0 1 auto;
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   max-width: 48%;
   overflow: hidden;
   padding: 2px 7px;
@@ -107,7 +107,7 @@
   border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
   border-radius: 999px;
   display: grid;
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
   gap: 5px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   margin: 0 0 8px;
@@ -164,7 +164,7 @@
 }
 
 .summaryPanel h3 {
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.05em;
   margin: 14px 0 7px;
   text-transform: uppercase;
@@ -244,6 +244,7 @@
   border-radius: 3px;
   color: var(--vscode-foreground);
   padding: 3px 4px;
+  min-height: 24px;
   text-align: left;
   width: 100%;
 }
@@ -274,7 +275,7 @@
 
 .summaryPlaceholder {
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   margin: 8px 0 0;
 }
 
@@ -321,7 +322,7 @@ dd {
 
 .mutedText {
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   margin: 6px 0 0;
 }
 

@@ -63,7 +63,7 @@
 
 .panelNote {
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   line-height: 1.4;
   margin: 0 0 10px;
 }

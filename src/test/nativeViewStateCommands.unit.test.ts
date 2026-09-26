@@ -16,6 +16,7 @@ import {
   snapshot,
   snapshotWithDraft,
   treeChildren,
+  treeLeaves,
   uncancelledViewToken
 } from "./nativeViews.testFixtures";
 
@@ -311,16 +312,16 @@ describe("native state and presentation commands", () => {
     const registered = register(noDraftSnapshot());
     registered.setActiveSession(undefined);
 
-    expect(treeChildren("openWrangler.operations").map(nodePresentation)).toEqual([
+    expect(treeLeaves("openWrangler.operations").map(nodePresentation)).toEqual([
       ["No active dataframe", "Open a source from Data sources"]
     ]);
     expect(treeChildren("openWrangler.dataSources").map((node) => [node.label, node.command])).toEqual([
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
     registered.setActiveSession(noDraftSnapshot());
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toContain("Rename column");
+    expect(treeLeaves("openWrangler.operations").map((node) => node.label)).toContain("Rename column");
     expect(
-      treeChildren("openWrangler.operations").every(
+      treeLeaves("openWrangler.operations").every(
         (node) => (node.command as { command: string }).command === "openWrangler.startOperation"
       )
     ).toBe(true);
@@ -355,7 +356,7 @@ describe("native state and presentation commands", () => {
     const sources = nativeMocks.treeDataProviders.get("openWrangler.dataSources")!;
     const sourceChanges = vi.fn();
     const operationChanges = vi.fn();
-    const operations = treeChildren("openWrangler.operations").map((node) => node.label);
+    const operations = treeLeaves("openWrangler.operations").map((node) => node.label);
     expect(operations).toContain("Rename column");
     sources.onDidChangeTreeData!(sourceChanges);
     nativeMocks.treeDataProviders.get("openWrangler.operations")!.onDidChangeTreeData!(operationChanges);
@@ -377,7 +378,7 @@ describe("native state and presentation commands", () => {
         [`R ${state}`, undefined],
         ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
       ]);
-      expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(operations);
+      expect(treeLeaves("openWrangler.operations").map((node) => node.label)).toEqual(operations);
     }
     expect(sourceChanges).toHaveBeenCalledTimes(6);
     expect(operationChanges).not.toHaveBeenCalled();
@@ -1051,7 +1052,11 @@ describe("native state and presentation commands", () => {
     };
     register(limited);
 
-    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(["Rename column"]);
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(["Columns / types"]);
+    expect(treeLeaves("openWrangler.operations").map(nodePresentation)).toEqual([["Rename column", ""]]);
+    expect(treeLeaves("openWrangler.operations")[0]?.tooltip).toBe(
+      "Rename column: Change a column name without touching the source."
+    );
 
     await command("openWrangler.startOperation")("customCode");
     expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
@@ -1540,7 +1545,7 @@ describe("native state and presentation commands", () => {
     register(snapshotWithDraft());
     nativeMocks.showInformationMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
-    const operations = treeChildren("openWrangler.operations");
+    const operations = treeLeaves("openWrangler.operations");
     expect(operations.every((node) => node.description !== "Apply or discard the current draft")).toBe(true);
     expect(
       operations.every((node) =>
@@ -1591,7 +1596,7 @@ describe("native state and presentation commands", () => {
     savedOutput.viewState.selectedColumnId = "c:score";
     const registered = register(savedOutput);
 
-    const operations = treeChildren("openWrangler.operations");
+    const operations = treeLeaves("openWrangler.operations");
     expect(operations.length).toBeGreaterThan(0);
     expect(operations.every((node) => node.description !== "Viewing mode" && node.command === undefined)).toBe(true);
     expect(
@@ -1717,7 +1722,7 @@ describe("native state and presentation commands", () => {
     editable.metadata.steps.push({ ...appliedStep, id: "second" });
     editable.code = "def clean_data(df):\n    return df.dropna(how='all').head(10)\n";
     registered.setActiveSession(editable);
-    expect(treeChildren("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
+    expect(treeLeaves("openWrangler.operations").every((node) => node.command !== undefined)).toBe(true);
     expect(posted.at(-1)).toEqual({
       kind: "codePreview",
       inspection: null,
@@ -1935,7 +1940,7 @@ describe("native state and presentation commands", () => {
         editable: false,
         runtimeIdentity: { runtimeLanguage: "r", codeDialect: `r.${rLibrary}` }
       });
-      expect(treeChildren("openWrangler.operations")).toEqual([
+      expect(treeLeaves("openWrangler.operations")).toEqual([
         expect.objectContaining({
           label: "Cleaning unavailable",
           description: expect.stringContaining("Choose R · base or R · dplyr"),

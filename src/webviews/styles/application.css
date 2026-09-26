@@ -58,7 +58,7 @@
 
 .importOptionsStatus {
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
 }
 
 .sessionModeChangeStatus {
@@ -66,7 +66,7 @@
   border-top: 1px solid var(--vscode-panel-border);
   color: var(--vscode-descriptionForeground);
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   padding: 6px 12px;
 }
 
@@ -100,19 +100,19 @@
 }
 
 .toolbarIdentity strong {
-  font-size: 13px;
+  font-size: var(--ow-font-size);
 }
 
 .toolbarIdentity span {
   color: var(--vscode-descriptionForeground);
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
 }
 
 .modeBadge {
   background: var(--vscode-badge-background);
   border-radius: 999px;
   color: var(--vscode-badge-foreground);
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.02em;
   padding: 1px 7px;
   text-transform: uppercase;
@@ -122,7 +122,7 @@
   border: 1px solid var(--vscode-panel-border);
   border-radius: 999px;
   color: var(--vscode-descriptionForeground);
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.02em;
   padding: 1px 7px;
 }
@@ -190,7 +190,7 @@
   border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
   box-shadow: 0 2px 8px var(--vscode-widget-shadow);
   color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   line-height: 1.4;
   padding: 8px 10px;
   position: absolute;
@@ -258,7 +258,7 @@
   align-items: center;
   color: var(--vscode-descriptionForeground);
   display: flex;
-  font-size: 12px;
+  font-size: var(--ow-font-size-small);
   gap: 5px;
   white-space: nowrap;
 }
@@ -298,7 +298,7 @@
 
 .draftReviewLabel {
   color: var(--vscode-descriptionForeground);
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -323,7 +323,7 @@
   background: var(--vscode-inputValidation-warningBackground);
   border: 1px solid var(--vscode-inputValidation-warningBorder);
   color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
   margin: 0;
   padding: 4px 7px;
 }
@@ -333,7 +333,7 @@
   border: 1px solid var(--vscode-textLink-foreground, var(--vscode-focusBorder));
   border-radius: 999px;
   color: var(--vscode-badge-foreground, var(--vscode-button-foreground));
-  font-size: 10px;
+  font-size: var(--ow-font-size-caption);
   letter-spacing: 0.02em;
   padding: 1px 7px;
   text-transform: uppercase;
@@ -366,7 +366,7 @@
 .inspectionPanel > header span,
 .inspectionPanel > [role="status"] {
   color: var(--vscode-descriptionForeground);
-  font-size: 11px;
+  font-size: var(--ow-font-size-caption);
 }
 
 .layout[aria-busy="true"] {

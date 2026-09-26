@@ -13,8 +13,10 @@ import {
   canStartOperation,
   operationCatalog,
   operationByKind,
+  operationGroups,
   supportedOperationCatalog,
-  supportsOperation
+  supportsOperation,
+  type OperationCatalogItem
 } from "../shared/operations";
 import { engineLabel, formatSessionRowCount, supportsViewingCapability } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
@@ -62,8 +64,8 @@ export type NotebookInsertionDiagnosticStatus =
   | "missing-source-document"
   | "dispatching";
 
-class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
-  private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
+class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewTreeNode>, vscode.Disposable {
+  private readonly changeEmitter = new vscode.EventEmitter<ViewTreeNode | undefined>();
   private readonly subscriptions: vscode.Disposable[] = [this.changeEmitter];
   private snapshot: ActiveSessionSnapshot | undefined;
   private sortRegistryContext: string;
@@ -117,11 +119,12 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     }
   }
 
-  getTreeItem(element: ViewNode): vscode.TreeItem {
+  getTreeItem(element: ViewTreeNode): vscode.TreeItem {
     return element;
   }
 
-  getChildren(): ViewNode[] {
+  getChildren(element?: ViewTreeNode): ViewTreeNode[] {
+    if (element) return element instanceof ViewGroupNode ? [...element.children] : [];
     if (this.kind === "dataSources") {
       return dataSourceNodes(this.notebookVariables?.snapshot(), this.rVariables?.snapshot());
     }
@@ -189,6 +192,18 @@ class ViewNode extends vscode.TreeItem {
     if (viewSortHandle) this.id = `${VIEW_SORT_TREE_ID_PREFIX}${viewSortHandle.token}`;
   }
 }
+
+class ViewGroupNode extends vscode.TreeItem {
+  constructor(
+    label: string,
+    readonly children: readonly ViewNode[]
+  ) {
+    super(label, vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `openWrangler.group:${label}`;
+  }
+}
+
+type ViewTreeNode = ViewNode | ViewGroupNode;
 
 interface ViewSortTarget {
   readonly sessionId: string;
@@ -1381,7 +1396,7 @@ function dataSourceNodes(
   ];
 }
 
-function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
+function operationNodes(metadata: SessionMetadata | undefined): ViewTreeNode[] {
   if (!metadata) return [new ViewNode("No active dataframe", "Open a source from Data sources", "info")];
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
@@ -1389,23 +1404,32 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   if (operations.length === 0) {
     return [new ViewNode("Cleaning unavailable", cleaningUnavailableReason(metadata), "info")];
   }
-  return operations.map(
-    (operation) =>
-      new ViewNode(
-        operation.title,
-        operation.group,
-        operation.icon,
-        canStart
-          ? {
-              command: "openWrangler.startOperation",
-              title: `Start ${operation.title}`,
-              arguments: [operation.kind]
-            }
-          : undefined,
-        undefined,
-        !editable || metadata.draftStep ? cleaningUnavailableReason(metadata) : undefined
-      )
+  const disabledReason = !editable || metadata.draftStep ? cleaningUnavailableReason(metadata) : undefined;
+  return operationGroups.flatMap((group) => {
+    const children = operations
+      .filter((operation) => operation.group === group)
+      .map((operation) => operationNode(operation, canStart, disabledReason));
+    return children.length === 0 ? [] : [new ViewGroupNode(group, children)];
+  });
+}
+
+function operationNode(
+  operation: OperationCatalogItem,
+  canStart: boolean,
+  disabledReason: string | undefined
+): ViewNode {
+  const node = new ViewNode(
+    operation.title,
+    "",
+    operation.icon,
+    canStart
+      ? { command: "openWrangler.startOperation", title: `Start ${operation.title}`, arguments: [operation.kind] }
+      : undefined
   );
+  const detail = disabledReason ? `${operation.description} ${disabledReason}` : operation.description;
+  node.tooltip = `${operation.title}: ${detail}`;
+  node.accessibilityInformation = { label: `${operation.title}, ${detail}` };
+  return node;
 }
 
 function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | undefined): ViewNode[] {

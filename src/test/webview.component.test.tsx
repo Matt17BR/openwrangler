@@ -674,6 +674,25 @@ describe("DataGrid", () => {
     expect(scroller.scrollLeft).toBe(190);
   });
 
+  it("widens the row-number gutter to fit the largest row number", () => {
+    const props = {
+      metadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={{ ...page, totalRows: 100_000_000 }} />);
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "92px" });
+
+    rerender(<DataGrid {...props} page={{ ...page, totalRows: 2 }} />);
+    expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
+  });
+
   it("keeps the row-label gutter compact and stable while paging", () => {
     const labeledPage = (labels: readonly string[]): GridPage => ({
       ...page,
