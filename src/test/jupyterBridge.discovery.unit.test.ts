@@ -917,7 +917,7 @@ describe("notebook variable discovery", () => {
     expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
   });
 
-  it("discovers types without repr, shape, count, collection, or dataframe imports", () => {
+  it("discovers types and subclasses without repr, shape, count, collection, or dataframe imports", () => {
     const code = buildNotebookVariableDiscoveryCode("0123456789abcdef0123456789abcdef");
 
     expect(code).not.toContain("repr(");
@@ -937,10 +937,20 @@ class DataFrame:
         raise AssertionError("discovery accessed source data")
 module.DataFrame = DataFrame
 sys.modules[module.__name__] = module
+class GeoFrame(DataFrame):
+    __module__ = "user_frames"
+LookAlike = type("DataFrame", (), {"__module__": "polars.dataframe.frame"})
 source = DataFrame()
+subclassed = GeoFrame()
 sentinels = {name: object() for name in ("__ow_discover_variables_v1", "__ow_discovery_result_v1")}
 for seeded in (True, False):
-    namespace = {**(sentinels if seeded else {}), "frame": source, "__builtins__": builtins}
+    namespace = {
+        **(sentinels if seeded else {}),
+        "frame": source,
+        "geo_frame": subclassed,
+        "look_alike": LookAlike(),
+        "__builtins__": builtins,
+    }
     original = dict(namespace)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
@@ -948,9 +958,12 @@ for seeded in (True, False):
     lines = output.getvalue().splitlines()
     assert lines[0] == "__OPEN_WRANGLER_VARIABLES_START_0123456789abcdef0123456789abcdef__"
     assert lines[2] == "__OPEN_WRANGLER_VARIABLES_END_0123456789abcdef0123456789abcdef__"
-    assert json.loads(lines[1]) == {"protocolVersion": 1, "truncated": False, "variables": [{"name": "frame", "type": "polars.dataframe.frame.DataFrame", "backend": "polars"}]}
+    assert json.loads(lines[1]) == {"protocolVersion": 1, "truncated": False, "variables": [
+        {"name": "frame", "type": "polars.dataframe.frame.DataFrame", "backend": "polars"},
+        {"name": "geo_frame", "type": "polars.dataframe.frame.DataFrame", "backend": "polars"},
+    ]}
     assert namespace.keys() == original.keys() and all(namespace[name] is value for name, value in original.items()), "discovery helpers changed user bindings"
-    assert namespace["frame"] is source and "get_ipython" not in namespace
+    assert namespace["frame"] is source and namespace["geo_frame"] is subclassed and "get_ipython" not in namespace
 `,
       maxBuffer: 128 * 1024,
       timeout: 30_000,
@@ -1008,6 +1021,42 @@ with contextlib.redirect_stdout(output):
     exec(${JSON.stringify(pinnedCode)}, namespace)
 assert json.loads(output.getvalue().splitlines()[1]) == {"isPySpark": True, "protocolVersion": 1, "version": "4.1.3"}
 assert "get_ipython" not in namespace
+`,
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+  });
+
+  it("recognizes PySpark dataframe subclasses in the preflight", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const code = buildPySparkNotebookPreflightCode(marker, "spark_frame");
+    const result = spawnSync(process.env.OPEN_WRANGLER_TEST_PYTHON ?? "python3", ["-I", "-"], {
+      encoding: "utf8",
+      input: `
+import builtins, contextlib, io, json, sys, types
+pyspark = types.ModuleType("pyspark")
+pyspark.__version__ = "4.2.0"
+sys.modules["pyspark"] = pyspark
+classic = types.ModuleType("pyspark.sql.classic.dataframe")
+class DataFrame:
+    __module__ = "pyspark.sql.classic.dataframe"
+    def __getattribute__(self, name):
+        raise AssertionError("preflight accessed source data")
+classic.DataFrame = DataFrame
+sys.modules[classic.__name__] = classic
+class EventFrame(DataFrame):
+    __module__ = "user_frames"
+LookAlike = type("DataFrame", (), {"__module__": "pyspark.sql.classic.dataframe"})
+for value, expected in ((EventFrame(), {"isPySpark": True, "protocolVersion": 1, "version": "4.2.0"}), (LookAlike(), {"isPySpark": False, "protocolVersion": 1, "version": None})):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(${JSON.stringify(code)}, {"spark_frame": value, "__builtins__": builtins})
+    assert json.loads(output.getvalue().splitlines()[1]) == expected, output.getvalue()
 `,
       maxBuffer: 128 * 1024,
       timeout: 30_000,

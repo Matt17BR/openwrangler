@@ -563,20 +563,25 @@ ${policySource}
             or __ow_name.startswith("_")
         ):
             continue
-        __ow_actual_type = type(__ow_value)
-        __ow_module_name = getattr(__ow_actual_type, "__module__", None)
-        __ow_type_name = getattr(__ow_actual_type, "__name__", None)
-        if not isinstance(__ow_module_name, str) or not isinstance(__ow_type_name, str):
-            continue
-        __ow_spec = __ow_specs.get((__ow_module_name, __ow_type_name))
-        __ow_module = __ow_sys.modules.get(__ow_module_name)
-        __ow_module_namespace = getattr(__ow_module, "__dict__", None)
-        if (
-            __ow_spec is None
-            or __ow_module is None
-            or not isinstance(__ow_module_namespace, dict)
-            or __ow_module_namespace.get(__ow_type_name) is not __ow_actual_type
-        ):
+        # A subclass is listed as the first supported class it inherits from.
+        __ow_spec = None
+        __ow_classes = getattr(type(__ow_value), "__mro__", None)
+        for __ow_class in __ow_classes if isinstance(__ow_classes, tuple) else ():
+            __ow_module_name = getattr(__ow_class, "__module__", None)
+            __ow_type_name = getattr(__ow_class, "__name__", None)
+            if not isinstance(__ow_module_name, str) or not isinstance(__ow_type_name, str):
+                continue
+            __ow_candidate = __ow_specs.get((__ow_module_name, __ow_type_name))
+            __ow_module = __ow_sys.modules.get(__ow_module_name)
+            __ow_module_namespace = getattr(__ow_module, "__dict__", None)
+            if (
+                __ow_candidate is not None
+                and isinstance(__ow_module_namespace, dict)
+                and __ow_module_namespace.get(__ow_type_name) is __ow_class
+            ):
+                __ow_spec = __ow_candidate
+                break
+        if __ow_spec is None:
             continue
         if len(__ow_variables) >= ${MAX_DISCOVERY_VARIABLES}:
             __ow_truncated = True
@@ -654,8 +659,8 @@ else:
                     __ow_value_is_live = True
                 except Exception:
                     __ow_value = __ow_missing
-    __ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
     if __ow_value is not __ow_missing:
+        __ow_value_classes = __ow_builtins.type(__ow_value).__mro__
         for __ow_module_name in (
             "pyspark.sql.dataframe.DataFrame",
             "pyspark.sql.classic.dataframe.DataFrame",
@@ -665,7 +670,7 @@ else:
             __ow_class_module_dict = None if __ow_class_module is None else __ow_class_module.__dict__
             if (
                 __ow_builtins.isinstance(__ow_class_module_dict, dict)
-                and __ow_class_module_dict.get("DataFrame") is __ow_value_type
+                and __ow_class_module_dict.get("DataFrame") in __ow_value_classes
             ):
                 try:
                     if __ow_value_is_live:
