@@ -370,11 +370,11 @@ single-step cases run once per library, preserving their native/generated and so
 unrelated large fixtures or installed catalog journeys once for every library. Measure the added catalog cost against
 the existing phase deadline before accepting the change.
 Host checks own the resource-scoped default, requested/confirmed library, old base saved-plan keys, per-library
-persistence and exact-source editing copies. Copy cases include occupied targets, Custom Code confirmation, cancellation,
-original draft/redo retention and either editor closing while its sibling remains usable. Installed evidence must exercise
-the visible library choice and copy path; source mocks alone do not prove that the selected package executes.
-The existing local Linux VS Code Clone lifecycle chooses dplyr through the library picker, confirms the editing copy,
-checks its applied plan and package code, then closes it and continues Undo in the original editor. It runs in the
+persistence and in-tab switches of live R variables from their captured frame, including Custom Code confirmation,
+cancellation and failed replay. Installed evidence must exercise the visible library choice; source mocks alone do not
+prove that the selected package executes.
+The existing local Linux VS Code Clone lifecycle switches the live tab to dplyr through the library picker, checks its
+applied plan and package code, switches back to base and continues Undo. It runs in the
 default/core profile; other editors, platforms and focused operation profiles retain their existing journeys. The
 native catalog owns the complete per-library operation matrix.
 The existing frame profiling owner checks complete numeric bin membership and exact categorical counts, medians,
@@ -748,7 +748,7 @@ selectors also omit the collapse and Rcpp roots, collapse residents and their di
 tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
 including native flavor labels and unsupported grouped/indexed exclusions; literate preparation retains its structural
 probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
-Local Linux VS Code default/core preparation also includes dplyr 1.2.1 for its library-copy check, using the existing
+Local Linux VS Code default/core preparation also includes dplyr 1.2.1 for its library-switch check, using the existing
 June 1 supplemental snapshot. Other notebook profiles, terminal/document preparation and remote runs do not add it.
 On macOS, selected collapse fixtures use the exact CRAN 2.1.8 binary when the selected R executable reports R 4.5.2
 and `aarch64-apple-darwin20`. Preparation verifies the archive's pinned size and SHA-256 before local installation,

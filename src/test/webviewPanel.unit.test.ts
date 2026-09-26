@@ -203,63 +203,75 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "confirms Custom Code replay before opening a separate R library copy (origin changed: %s)",
-    async (changed) => {
+  it.each([
+    { step: "customCode", confirmation: "Switch to R · dplyr", switches: true },
+    { step: "customCode", confirmation: undefined, switches: false },
+    { step: "lowerText", confirmation: undefined, switches: true }
+  ] as const)(
+    "switches a live R dataframe's library in this tab after a $step step (confirmed: $confirmation)",
+    async ({ step, confirmation, switches }) => {
       const source: SessionSource = { kind: "rInteractiveVariable", label: "frame", variableName: "frame" };
+      const steps: TransformStep[] = [
+        step === "customCode"
+          ? { id: "custom", kind: "customCode", params: { code: "df" } }
+          : { id: "lower", kind: "lowerText", params: { column: { id: "r:c:0", name: "city" } } }
+      ];
       const response: SessionOpenedResponse = {
         ...openedResponse,
-        metadata: { ...metadata, source, backend: "r", rLibrary: "base", rDataframeFlavor: "r.data.frame" }
+        metadata: { ...metadata, source, backend: "r", rLibrary: "base", rDataframeFlavor: "r.data.frame", steps }
       };
-      let current = true;
-      const copyBridge = { request: vi.fn() };
-      const createBridge = vi.fn(() => copyBridge);
-      const capture = vi.fn(() => ({
-        source,
-        rLibrary: "base" as const,
-        appliedStepCount: 2,
-        rerunsCustomCode: true,
-        isCurrent: () => current,
-        createBridge
-      }));
+      const switched: SessionOpenedResponse = {
+        ...response,
+        metadata: { ...response.metadata, revision: 1, rLibrary: "dplyr" }
+      };
+      const switchLiveRLibrary = vi.fn(async (): Promise<OpenWranglerResponse> => switched);
+      const reconfigureFileSession = vi.fn();
       const harness = createPanelHarness(
-        { request: vi.fn(), captureRLibraryCopy: capture },
+        { request: vi.fn(), switchLiveRLibrary, reconfigureFileSession },
         { source, backend: "r", openResponse: response }
       );
       await harness.open();
-      const create = vi.spyOn(OpenWranglerPanel, "create").mockReturnValue({} as OpenWranglerPanel);
+      const create = vi.spyOn(OpenWranglerPanel, "create");
       panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
-        expect(capture).toHaveBeenCalledWith("session", 0);
-        expect(items).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ label: "R · base", description: "Current" }),
-            expect.objectContaining({ label: "R · dplyr", description: "Open editing copy" })
-          ])
-        );
-        return (items as Array<{ rLibrary: RLibrary }>).find((item) => item.rLibrary === "dplyr");
+        expect(items).toEqual([
+          expect.objectContaining({ label: "R · base", description: "Current" }),
+          expect.objectContaining({ label: "R · dplyr", description: "Replays 1 applied step" }),
+          expect.objectContaining({ label: "R · data.table" }),
+          expect.objectContaining({ label: "R · collapse" })
+        ]);
+        return (items as FileEngine[]).find((item) => item.rLibrary === "dplyr");
       });
-      panelPromptMocks.showWarningMessage.mockImplementation(async (_message, options) => {
-        expect(options?.detail).toContain(
-          "Applied Custom Code runs again in the original R environment and may have side effects."
-        );
-        current = !changed;
-        return "Open editing copy";
-      });
+      panelPromptMocks.showWarningMessage.mockResolvedValue(confirmation);
+
       await harness.receive({ kind: "changeBackend" });
-      if (changed) {
-        expect(createBridge).not.toHaveBeenCalled();
-        expect(create).not.toHaveBeenCalled();
-      } else {
-        expect(createBridge).toHaveBeenCalledExactlyOnceWith("dplyr");
-        expect(create).toHaveBeenCalledExactlyOnceWith(
-          expect.anything(),
-          copyBridge,
-          source,
-          "r",
-          "r",
-          "editing",
-          "dplyr"
+
+      if (step === "customCode")
+        expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledExactlyOnceWith(
+          "Run Custom Code again to switch to R · dplyr?",
+          expect.objectContaining({
+            modal: true,
+            detail: expect.stringContaining("Custom Code runs again in the R session and may have side effects.")
+          }),
+          "Switch to R · dplyr"
         );
+      else expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(reconfigureFileSession).not.toHaveBeenCalled();
+      if (switches) {
+        expect(switchLiveRLibrary).toHaveBeenCalledExactlyOnceWith("session", 0, "dplyr", {
+          cancellation: expect.anything(),
+          plan: "current"
+        });
+        expect(harness.posted).toContainEqual({
+          kind: "importOptionsState",
+          busy: true,
+          activity: "Switching to R · dplyr…",
+          pendingEngine: "R · dplyr"
+        });
+        expect(harness.title).toContain("R · dplyr");
+      } else {
+        expect(switchLiveRLibrary).not.toHaveBeenCalled();
+        expect(harness.title).toContain("R · base");
       }
     }
   );

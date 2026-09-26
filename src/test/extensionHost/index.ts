@@ -1814,15 +1814,13 @@ const previewReleasedRClone = createReleasedRClonePreview({
 
 const exerciseReleasedRCloneEditingLifecycle = createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
-  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
   waitFor,
-  waitForReleasedRCloneState,
-  waitForVisibleEditorDialog
+  waitForReleasedRCloneState
 });
 
 const { releasedRVisibleRows, releasedRFirstVisibleRow } = createReleasedRPageBoundary({ GRID_COLUMN_WINDOW });

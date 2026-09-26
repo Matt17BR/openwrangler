@@ -11025,8 +11025,9 @@ openwrangler_r_kernel_agent <- local({
       request_id <- identifier(request$requestId, "request.requestId")
       kind <- bounded_text(request$kind, "request.kind", 32L)
 
-      # File library copies share this private source. Replay and inspection can
-      # execute Custom Code, so source-reaching changes wait across all sessions.
+      # A library-switch candidate shares this private source with the session it
+      # replaces. Replay and inspection can execute Custom Code, so source-reaching
+      # changes wait across all sessions.
       if (kind %in% c("previewStep", "redoStep", "undoStep", "inspectStepPage", "applyDraft", "discardDraft")) {
         if (length(ls(pending_summaries, all.names = TRUE)) != 0L || length(ls(pending_stats, all.names = TRUE)) != 0L) {
           abort("read_in_progress", "Finish or cancel pending R profiles before changing the source", TRUE)

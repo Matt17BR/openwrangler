@@ -712,16 +712,13 @@ preserves the admitted frame class.
 Grouped and indexed objects remain unsupported. For data.table duplicate operations, the owning R environment's
 numeric-rounding option controls equality; other operation-specific limits below continue to apply.
 
-For a file, choosing another library switches the current tab, like any other engine switch. For a live R variable,
-choosing another library opens an **editing copy**. It starts from the captured original source
-and replays applied steps. The original remains open with its draft, redo history and view; these are not transferred
-to the copy. Applied Custom Code executes again after an explicit confirmation and may have side effects. If this
-editor already has a copy using the target library, use that copy. Separately opened live editors remain independent.
-If the retained source is still live, it is verified and captured when the runtime opens the copy.
-Copies made from an already isolated source retain that snapshot.
-Opening the picker does not freeze live values. Live sessions remain tied to the exact kernel, terminal or document process; copying does not move work to another R environment.
-Missing or incompatible packages identify the owning environment and leave the original available. A failed local-file
-open offers the package repair described above; live sources retain manual installation guidance.
+Choosing another library switches the current tab, like any other engine switch, for files and live R variables alike.
+For a live R variable, the new library starts from the frame the tab captured, not the variable's current value, and
+replays the tab's steps and draft in the same R session. When that would run Custom Code again, the switch asks first
+because the code may have side effects. Live sessions remain tied to the exact kernel, terminal or document process;
+switching does not move work to another R environment.
+Missing or incompatible packages identify the owning environment and leave the current library active. A failed
+local-file open offers the package repair described above; live sources retain manual installation guidance.
 Old saved R file plans keep their base behavior; non-base libraries have separate saved plans.
 
 ### Frames, cleaning and export limits

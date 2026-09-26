@@ -115,6 +115,9 @@ Custom Code replays only between R libraries, Extract Struct Fields needs Polars
 Polars or R. The panel asks before leaving such steps behind. Saved work for the target that this tab has built on (a
 step-ID prefix) gives way to the tab's work, and saved work that continues this tab's exact steps is restored; the panel
 asks which to keep only when neither holds. Saved work for the previous engine stays stored, so switching back restores it.
+A live R variable switches library through the same replacement on its current bridge. The candidate clones the frame
+captured by the current runtime (`cloneFrom`) in the same kernel, terminal or document process, so a changed variable
+does not change the replayed input. The panel confirms first when the replay would run Custom Code again there.
 
 **Open DuckDB Table** resolves a local regular file, its resource-scoped Python interpreter and a bounded native
 catalog of non-temporary tables and views before asking for one. Discovery closes its reader before the picker opens.
@@ -177,11 +180,11 @@ configuration keys are preserved. The existing store repeats that absence check 
 The existing restorer replays the complete plan privately, with one-row intermediate responses, and obtains the final
 page. Small responses do not bound native scans or temporary memory. The target key must still be absent when replay
 finishes. The candidate is then published as a copied-plan preview that saves nothing: step mutations, import or
-backend changes, plan rewrites, R library copies and further plan captures are refused, and view changes stay in
+backend changes, plan rewrites and further plan captures are refused, and view changes stay in
 memory. Reads, profiles, recovery and exports work normally. **Keep plan** commits the confirmed plan and current view
 through the store's absent-key commit and then clears the preview. A concurrent save for that key, a storage failure
 or a runtime change leaves the preview pending with nothing saved. Discard or closing the tab closes the session
-without saved state. R library copies are not previews; they save when they open.
+without saved state.
 Failure closes only that candidate, after detached execution settles.
 A failed native close cannot strand an unpublished R file process: coordinator idle retires that exact file delegate
 once its pending and detached work settles. Notebook mappings keep their retryable close behavior.

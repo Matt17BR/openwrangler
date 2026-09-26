@@ -1,5 +1,6 @@
 import * as assert from "node:assert/strict";
 import type { Locator, Page } from "playwright-core";
+import type { RLibrary } from "../../shared/protocol";
 import { assertReleasedRCloneGeneratedCode } from "./releasedRGeneratedCode";
 import type { createReleasedRCloneState } from "./releasedRCloneState";
 import type { TestApi } from "./extensionHostTestApi";
@@ -8,7 +9,6 @@ type ReleasedRCloneState = ReturnType<typeof createReleasedRCloneState>;
 
 interface ReleasedRCloneEditingDependencies {
   readonly arrangePackagedProductSidebar: (workbench: Page, scene: "inspection") => Promise<Locator>;
-  readonly disposePackagedSessionPanel: (testing: TestApi, sessionId: string, description: string) => Promise<void>;
   readonly previewReleasedRClone: (
     testing: TestApi,
     workbench: Page,
@@ -35,20 +35,17 @@ interface ReleasedRCloneEditingDependencies {
     diagnostics?: () => string
   ) => Promise<void>;
   readonly waitForReleasedRCloneState: ReleasedRCloneState["waitForReleasedRCloneState"];
-  readonly waitForVisibleEditorDialog: (workbench: Page, text: string) => Promise<{ page: Page; dialog: Locator }>;
 }
 
 export function createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
-  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,
   releasedRCloneMutationRevisionAdvanced,
   releasedRSessionApp,
   waitFor,
-  waitForReleasedRCloneState,
-  waitForVisibleEditorDialog
+  waitForReleasedRCloneState
 }: ReleasedRCloneEditingDependencies) {
   return async function exerciseReleasedRCloneEditingLifecycle(
     testing: TestApi,
@@ -211,66 +208,50 @@ export function createReleasedRCloneEditingJourney({
     assert.ok(reappliedClone, "The edited native R clone must retain its session.");
     assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
     if (phase === "jupyter-r" && process.platform === "linux" && process.env.OPEN_WRANGLER_TEST_EDITOR !== "cursor") {
-      recordAcceptanceProgress(`${phase}:editing:library-copy:start`);
+      recordAcceptanceProgress(`${phase}:editing:library-switch:start`);
       const originalMetadata = structuredClone(reappliedClone.metadata);
-      const originalView = structuredClone(reappliedClone.viewState);
-      const libraryCopyBefore = releasedRCloneFailureSnapshot(testing, sessionId);
-      app = await releasedRSessionApp(workbench, testing, sessionId, "the R source before choosing a cleaning library");
-      await app
-        .getByRole("button", {
-          name: "Change dataframe engine. Current engine: R · base",
-          exact: true
-        })
-        .click();
-      const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
-      await picker.waitFor({ state: "visible", timeout: 10_000 });
-      const choices = picker.getByRole("option");
-      await choices.nth(3).waitFor({ state: "visible", timeout: 10_000 });
-      assert.equal(await choices.count(), 4);
-      const labels = await Promise.all(
-        [0, 1, 2, 3].map((index) => choices.nth(index).locator(".label-name:visible").first().innerText())
-      );
-      assert.deepEqual(labels, ["R · base", "R · dplyr", "R · data.table", "R · collapse"]);
-      await choices.nth(1).click();
-      const confirmation = await waitForVisibleEditorDialog(workbench, "Open an editing copy with R · dplyr?");
-      await confirmation.page.bringToFront();
-      await confirmation.dialog.getByRole("button", { name: "Open editing copy", exact: true }).click();
-      await waitForReleasedRCloneState(
-        testing,
-        workbench,
-        sessionId,
-        libraryCopyBefore,
-        (last) => last.active !== null && last.active.sessionId !== sessionId && last.active.rLibrary === "dplyr",
-        "opening the confirmed dplyr editing copy",
-        10_000
-      );
-      const copied = testing.activeSession();
-      assert.ok(copied);
-      assert.equal(copied.metadata.backend, "r");
-      assert.equal(copied.metadata.mode, "editing");
-      assert.deepEqual(copied.metadata.source, originalMetadata.source);
-      assert.deepEqual(copied.metadata.schema, originalMetadata.schema);
-      assert.deepEqual(copied.metadata.steps, originalMetadata.steps);
-      assert.equal(copied.metadata.draftStep, undefined);
-      assert.equal(copied.metadata.canRedo, false);
-      assert.ok(copied.code?.includes("dplyr::"), "The copied plan must provide generated package code.");
-      assert.ok(copied.code?.includes('.ow_library <- "dplyr"'), "The generated plan must select dplyr.");
-      const copyApp = await releasedRSessionApp(workbench, testing, copied.sessionId, "the confirmed dplyr editor");
-      await copyApp
-        .getByRole("button", {
-          name: "Change dataframe engine. Current engine: R · dplyr",
-          exact: true
-        })
-        .waitFor({ state: "visible", timeout: 10_000 });
-      assert.deepEqual(testing.sessionSnapshot(sessionId)?.metadata, originalMetadata);
-      assert.deepEqual(testing.sessionSnapshot(sessionId)?.viewState, originalView);
-      await disposePackagedSessionPanel(testing, copied.sessionId, "the dplyr editing copy");
-      await waitFor(
-        () => testing.activeSession()?.sessionId === sessionId,
-        10_000,
-        "the original R editor after its copy closes"
-      );
-      recordAcceptanceProgress(`${phase}:editing:library-copy:complete`);
+      const switchLibrary = async (from: RLibrary, to: RLibrary, index: number) => {
+        const before = releasedRCloneFailureSnapshot(testing, sessionId);
+        app = await releasedRSessionApp(workbench, testing, sessionId, `the R source before choosing R · ${to}`);
+        await app
+          .getByRole("button", { name: `Change dataframe engine. Current engine: R · ${from}`, exact: true })
+          .click();
+        const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
+        await picker.waitFor({ state: "visible", timeout: 10_000 });
+        const choices = picker.getByRole("option");
+        await choices.nth(3).waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(await choices.count(), 4);
+        const labels = await Promise.all(
+          [0, 1, 2, 3].map((choice) => choices.nth(choice).locator(".label-name:visible").first().innerText())
+        );
+        assert.deepEqual(labels, ["R · base", "R · dplyr", "R · data.table", "R · collapse"]);
+        await choices.nth(index).click();
+        await waitForReleasedRCloneState(
+          testing,
+          workbench,
+          sessionId,
+          before,
+          (last) => last.active?.sessionId === sessionId && last.active.rLibrary === to,
+          `switching this tab to R · ${to} without a dialog`,
+          10_000
+        );
+        const switched = testing.activeSession();
+        assert.ok(switched);
+        assert.equal(switched.metadata.backend, "r");
+        assert.equal(switched.metadata.mode, "editing");
+        assert.deepEqual(switched.metadata.source, originalMetadata.source);
+        assert.deepEqual(switched.metadata.schema, originalMetadata.schema);
+        assert.deepEqual(switched.metadata.steps, originalMetadata.steps);
+        assert.ok(switched.code?.includes(`.ow_library <- "${to}"`), `The generated plan must select ${to}.`);
+        await app
+          .getByRole("button", { name: `Change dataframe engine. Current engine: R · ${to}`, exact: true })
+          .waitFor({ state: "visible", timeout: 10_000 });
+        return switched;
+      };
+      const dplyr = await switchLibrary("base", "dplyr", 1);
+      assert.ok(dplyr.code?.includes("dplyr::"), "The switched plan must provide generated package code.");
+      await switchLibrary("dplyr", "base", 0);
+      recordAcceptanceProgress(`${phase}:editing:library-switch:complete`);
     }
     app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
     const undoBefore = releasedRCloneFailureSnapshot(testing, sessionId);

@@ -1724,62 +1724,39 @@ function presentationOpenedResponse(): ReturnType<typeof openedResponse> {
   };
 }
 
-describe("SessionCoordinator R library copies", () => {
-  it.each([
-    ["rInteractiveVariable", "active"],
-    ["rInteractiveVariable", "pending"],
-    ["documentVariable", "active"],
-    ["documentVariable", "pending"]
-  ] as const)("keeps independent %s copy families separate from an %s target", async (kind, state) => {
-    const coordinator = new SessionCoordinator();
-    const document = {
-      uri: vscode.Uri.parse("untitled:copy-family.R"),
-      isClosed: false,
-      version: 1
-    } as vscode.TextDocument;
-    const source: SessionSource = {
-      kind,
-      label: "df",
-      variableName: "df",
-      ...(kind === "documentVariable" ? { uri: document.uri.toString() } : {})
-    };
-    const opening = {
-      ...openRequest,
-      source,
-      backend: "r" as const,
-      rLibrary: "base" as const,
-      mode: "viewing" as const,
-      pageSize: 100,
-      columnLimit: 100
-    };
-    const copyRequest = { ...opening, rLibrary: "dplyr" as const, mode: "editing" as const };
-    const released = deferred<void>();
-    const entered = deferred<void>();
-    const contract = rKernelFrameContract();
-    if (kind === "documentVariable") setOpenTextDocuments(document);
-    const openFamily = async (waitForCopy: boolean) => {
+describe("SessionCoordinator live R library switch", () => {
+  it.each(["rInteractiveVariable", "documentVariable"] as const)(
+    "switches a viewing %s to another library in place from its captured frame",
+    async (kind) => {
+      const coordinator = new SessionCoordinator();
+      const document = {
+        uri: vscode.Uri.parse("untitled:library-switch.R"),
+        isClosed: false,
+        version: 1
+      } as vscode.TextDocument;
+      const source: SessionSource = {
+        kind,
+        label: "df",
+        variableName: "df",
+        ...(kind === "documentVariable" ? { uri: document.uri.toString() } : {})
+      };
+      const contract = rKernelFrameContract();
       const transport = fakeRKernelTransport(contract);
-      transport.open.mockImplementation(async (_name, page, options) => {
-        if (waitForCopy && options?.library === "dplyr") {
-          entered.resolve();
-          await released.promise;
-        }
-        return {
-          sessionId: options!.requestedSessionId!,
-          library: options!.library!,
-          exportFormats: ["csv"],
+      transport.open.mockImplementation(async (_name, page, options) => ({
+        sessionId: options!.requestedSessionId!,
+        library: options!.library!,
+        exportFormats: ["csv"],
+        page: {
+          ...contract,
           page: {
-            ...contract,
-            page: {
-              ...contract.page,
-              offset: page.rowOffset,
-              limit: page.rowLimit,
-              columnOffset: page.columnOffset,
-              columnLimit: page.columnLimit
-            }
+            ...contract.page,
+            offset: page.rowOffset,
+            limit: page.rowLimit,
+            columnOffset: page.columnOffset,
+            columnLimit: page.columnLimit
           }
-        };
-      });
+        }
+      }));
       transport.getPage.mockImplementation(async (_id, page) => ({
         ...contract,
         page: {
@@ -1790,58 +1767,147 @@ describe("SessionCoordinator R library copies", () => {
           columnLimit: page.columnLimit
         }
       }));
-      const delegate = new RKernelBridge({ subscriptions: [] } as unknown as vscode.ExtensionContext, transport);
-      const bridge = coordinator.createBridge(
-        delegate,
-        kind === "documentVariable" ? { kind: "textDocument", document, version: document.version } : undefined
-      );
-      const opened = await bridge.request(opening);
-      if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
-      const capture = bridge.captureRLibraryCopy!(opened.metadata.sessionId, opened.metadata.revision);
-      if ("kind" in capture) throw new Error(capture.message);
-      return { bridge, capture, transport };
-    };
-    let firstCopy: Promise<OpenWranglerResponse> | undefined;
-    try {
-      const first = await openFamily(state === "pending");
-      const second = await openFamily(false);
-      firstCopy = first.capture.createBridge("dplyr").request(copyRequest);
-      if (state === "pending") await entered.promise;
-      else await expect(firstCopy).resolves.toMatchObject({ kind: "sessionOpened" });
-      await expect(first.capture.createBridge("dplyr").request(copyRequest)).resolves.toMatchObject({
-        kind: "error",
-        code: "r_library_target_occupied"
-      });
-      const ordinary = await second.bridge.request(copyRequest);
-      expect(ordinary).toMatchObject({ kind: "sessionOpened", metadata: { rLibrary: "dplyr" } });
-      if (ordinary.kind !== "sessionOpened") throw new Error(JSON.stringify(ordinary));
-      await second.bridge.request({
-        kind: "closeSession",
-        sessionId: ordinary.metadata.sessionId,
-        revision: ordinary.metadata.revision
-      });
-      await expect(second.capture.createBridge("dplyr").request(copyRequest)).resolves.toMatchObject({
-        kind: "sessionOpened",
-        metadata: { rLibrary: "dplyr", mode: "editing" }
-      });
-      released.resolve();
-      await expect(firstCopy).resolves.toMatchObject({ kind: "sessionOpened", metadata: { rLibrary: "dplyr" } });
-      for (const family of [first, second]) {
-        const initialId = family.transport.open.mock.calls[0]?.[2]?.requestedSessionId;
-        const cloned = family.transport.open.mock.calls.find(([, , options]) => options?.cloneFrom);
-        expect(cloned?.[2]?.cloneFrom).toEqual({ sessionId: initialId, revision: 0 });
+      if (kind === "documentVariable") setOpenTextDocuments(document);
+      try {
+        const delegate = new RKernelBridge({ subscriptions: [] } as unknown as vscode.ExtensionContext, transport);
+        const bridge = coordinator.createBridge(
+          delegate,
+          kind === "documentVariable" ? { kind: "textDocument", document, version: document.version } : undefined
+        );
+        const opened = await bridge.request({
+          ...openRequest,
+          source,
+          backend: "r",
+          rLibrary: "base",
+          mode: "viewing",
+          pageSize: 100,
+          columnLimit: 100
+        });
+        if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+
+        const switched = await bridge.switchLiveRLibrary!(opened.metadata.sessionId, opened.metadata.revision, "dplyr");
+
+        expect(switched, switched.kind === "error" ? `${switched.code}: ${switched.message}` : undefined).toMatchObject(
+          {
+            kind: "sessionOpened",
+            metadata: { sessionId: opened.metadata.sessionId, rLibrary: "dplyr", mode: "viewing" }
+          }
+        );
+        const [original, replacement] = transport.open.mock.calls.map(([, , options]) => options);
+        expect(replacement).toMatchObject({
+          library: "dplyr",
+          cloneFrom: { sessionId: original?.requestedSessionId, revision: 0 }
+        });
+        await vi.waitFor(() =>
+          expect(transport.close).toHaveBeenCalledWith(original?.requestedSessionId, expect.anything())
+        );
+        expect(coordinator.diagnostics().sessionCount).toBe(1);
+      } finally {
+        await coordinator.shutdown();
+        if (kind === "documentVariable") setOpenTextDocuments();
       }
-      expect(coordinator.diagnostics().sessionCount).toBe(4);
+    }
+  );
+
+  it.each([
+    { plan: "current" as const, keepsWork: true },
+    { plan: { steps: 0 }, keepsWork: false }
+  ])("replays the chosen work ($plan) in the new library and retires the old runtime", async ({ plan, keepsWork }) => {
+    const fixture = await liveRFixture();
+    try {
+      const before = fixture.snapshot().metadata;
+      const switched = await fixture.bridge.switchLiveRLibrary!(before.sessionId, 0, "dplyr", { plan });
+
+      expect(switched).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId: before.sessionId,
+          revision: 1,
+          rLibrary: "dplyr",
+          steps: keepsWork ? before.steps : []
+        }
+      });
+      if (switched.kind !== "sessionOpened") throw new Error(JSON.stringify(switched));
+      expect(switched.metadata.draftStep).toEqual(keepsWork ? before.draftStep : undefined);
+      const [candidate, options] =
+        fixture.request.mock.calls.find(
+          ([request]) => request.kind === "openSession" && request.rLibrary === "dplyr"
+        ) ?? [];
+      expect(candidate).toMatchObject({
+        source: fixture.source,
+        cloneFrom: { sessionId: "original-runtime", revision: 0 }
+      });
+      expect(options).toMatchObject({ requiredKernelSessionId: "original-runtime" });
+      await vi.waitFor(() => expect(fixture.closed()).toEqual(["original-runtime"]));
+      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("refuses an unchanged or stale library switch without opening a runtime", async () => {
+    const fixture = await liveRFixture();
+    try {
+      const { sessionId } = fixture.original.metadata;
+      await expect(fixture.bridge.switchLiveRLibrary!(sessionId, 0, "base")).resolves.toMatchObject({
+        kind: "error",
+        code: "import_options_unchanged"
+      });
+      await expect(fixture.bridge.switchLiveRLibrary!(sessionId, 1, "dplyr")).resolves.toMatchObject({
+        kind: "error",
+        code: "stale_request"
+      });
+      expect(fixture.request.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("keeps the original runtime and closes only the candidate when replay fails", async () => {
+    const fixture = await liveRFixture();
+    try {
+      fixture.driftOnPreview = true;
+      const before = fixture.snapshot();
+      await expect(
+        fixture.bridge.switchLiveRLibrary!(fixture.original.metadata.sessionId, 0, "dplyr")
+      ).resolves.toMatchObject({ kind: "error" });
+      expect(fixture.snapshot()).toEqual(before);
+      expect(fixture.closed()).toEqual([fixture.candidateId()]);
+      expect(fixture.idle).not.toHaveBeenCalled();
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("keeps the original runtime and closes only the candidate when the switch is cancelled", async () => {
+    const fixture = await liveRFixture();
+    const entered = deferred<void>();
+    const released = deferred<void>();
+    const cancellation = new vscode.CancellationTokenSource();
+    try {
+      fixture.beforeCandidateOpen = async () => {
+        entered.resolve();
+        await released.promise;
+      };
+      const before = fixture.snapshot();
+      const switching = fixture.bridge.switchLiveRLibrary!(fixture.original.metadata.sessionId, 0, "dplyr", {
+        cancellation: cancellation.token
+      });
+      await entered.promise;
+      cancellation.cancel();
+      released.resolve();
+      await expect(switching).resolves.toMatchObject({ kind: "cancelled" });
+      expect(fixture.snapshot()).toEqual(before);
+      expect(fixture.closed()).toEqual([fixture.candidateId()]);
     } finally {
       released.resolve();
-      await firstCopy;
-      await coordinator.shutdown();
-      if (kind === "documentVariable") setOpenTextDocuments();
+      cancellation.dispose();
+      await fixture.close();
     }
   });
 
   it("rejects a valid ordinary page from another R library without changing confirmed state", async () => {
-    const fixture = await rLibraryCopyFixture("editing");
+    const fixture = await liveRFixture();
     try {
       const before = fixture.snapshot();
       fixture.driftOnPage = true;
@@ -1868,354 +1934,15 @@ describe("SessionCoordinator R library copies", () => {
       await fixture.close();
     }
   });
-  it("keeps an R library copy current while its original serves a read-only page", async () => {
-    const fixture = await rLibraryCopyFixture("editing");
-    const copyEntered = deferred<void>();
-    const copyReleased = deferred<void>();
-    const pageEntered = deferred<void>();
-    const pageReleased = deferred<void>();
-    let page: Promise<OpenWranglerResponse> | undefined;
-    let opening: Promise<OpenWranglerResponse> | undefined;
-    try {
-      fixture.beforeCopyOpen = async () => {
-        copyEntered.resolve();
-        await copyReleased.promise;
-      };
-      fixture.beforeOriginalPage = async () => {
-        pageEntered.resolve();
-        await pageReleased.promise;
-      };
-      const original = fixture.snapshot();
-      opening = fixture.capture().createBridge("dplyr").request(fixture.copyRequest);
-      await copyEntered.promise;
-      page = fixture.bridge.request({
-        kind: "getPage",
-        sessionId: fixture.original.metadata.sessionId,
-        revision: 0,
-        viewRequestId: "original-projection-during-copy",
-        filterModel: fixture.original.metadata.filterModel,
-        offset: 0,
-        limit: 2,
-        columnOffset: 0,
-        columnLimit: 16
-      });
-      await pageEntered.promise;
-      copyReleased.resolve();
-      const result = await opening;
-      expect(result, result.kind === "error" ? `${result.code}: ${result.message}` : undefined).toMatchObject({
-        kind: "sessionOpened",
-        metadata: { rLibrary: "dplyr", steps: original.metadata.steps }
-      });
-      expect(fixture.snapshot()).toEqual(original);
-      pageReleased.resolve();
-      await expect(page).resolves.toMatchObject({ kind: "page", revision: 0 });
-      expect(fixture.idle).not.toHaveBeenCalled();
-    } finally {
-      copyReleased.resolve();
-      pageReleased.resolve();
-      await opening;
-      await page;
-      await fixture.close();
-    }
-  });
-
-  it.each([
-    { state: "active", priority: "interactive" },
-    { state: "queued", priority: "interactive" },
-    { state: "active", priority: "background" },
-    { state: "queued", priority: "background" }
-  ] as const)("rejects an R library copy during an original $state $priority mutation", async ({ state, priority }) => {
-    const fixture = await rLibraryCopyFixture("editing");
-    const copyEntered = deferred<void>();
-    const copyReleased = deferred<void>();
-    const pageEntered = deferred<void>();
-    const pageReleased = deferred<void>();
-    const mutationEntered = deferred<void>();
-    const mutationReleased = deferred<void>();
-    let opening: Promise<OpenWranglerResponse> | undefined;
-    let page: Promise<OpenWranglerResponse> | undefined;
-    let mutation: Promise<OpenWranglerResponse> | undefined;
-    try {
-      fixture.beforeCopyOpen = async () => {
-        copyEntered.resolve();
-        await copyReleased.promise;
-      };
-      fixture.beforeOriginalPage = async () => {
-        pageEntered.resolve();
-        await pageReleased.promise;
-      };
-      fixture.beforeOriginalMutation = async () => {
-        mutationEntered.resolve();
-        await mutationReleased.promise;
-      };
-      const original = fixture.snapshot();
-      opening = fixture.capture().createBridge("dplyr").request(fixture.copyRequest);
-      await copyEntered.promise;
-      if (state === "queued") {
-        page = fixture.bridge.request({
-          kind: "getPage",
-          sessionId: fixture.original.metadata.sessionId,
-          revision: 0,
-          viewRequestId: "read-before-original-mutation",
-          filterModel: fixture.original.metadata.filterModel,
-          offset: 0,
-          limit: 2,
-          columnOffset: 0,
-          columnLimit: 16
-        });
-        await pageEntered.promise;
-      }
-      mutation = fixture.bridge.request(
-        {
-          kind: "applyDraft",
-          sessionId: fixture.original.metadata.sessionId,
-          revision: 0,
-          offset: 0,
-          limit: 2,
-          columnOffset: 0,
-          columnLimit: 16
-        },
-        { priority }
-      );
-      if (state === "active") await mutationEntered.promise;
-      else
-        expect(fixture.coordinator.testingSessionSchedulerState(fixture.original.metadata.sessionId)).toMatchObject({
-          [priority === "interactive" ? "interactiveQueueLength" : "backgroundQueueLength"]: 1
-        });
-      copyReleased.resolve();
-      await expect(opening).resolves.toMatchObject({ kind: "error", code: "file_plan_changed", recoverable: true });
-      expect(fixture.snapshot()).toEqual(original);
-      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
-      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
-      const candidateId = fixture.request.mock.calls
-        .map(([request]) => request)
-        .filter((request) => request.kind === "openSession")
-        .find((request) => request.rLibrary === "dplyr")?.requestedSessionId;
-      expect(candidateId).toEqual(expect.any(String));
-      expect(
-        fixture.request.mock.calls
-          .map(([request]) => request)
-          .filter((request) => request.kind === "closeSession")
-          .map((request) => request.sessionId)
-      ).toEqual([candidateId]);
-      expect(fixture.idle).not.toHaveBeenCalled();
-    } finally {
-      copyReleased.resolve();
-      pageReleased.resolve();
-      mutationReleased.resolve();
-      await Promise.all([opening, page, mutation]);
-      await fixture.close();
-    }
-  });
-
-  it.each(["editing", "viewing"] as const)(
-    "copies the captured %s source and applied plan without retiring its original work",
-    async (mode) => {
-      const fixture = await rLibraryCopyFixture(mode);
-      try {
-        const original = fixture.snapshot();
-        const copy = fixture.capture();
-        expect(copy.rerunsCustomCode).toBe(mode === "editing");
-        const result = await copy.createBridge("dplyr").request(fixture.copyRequest);
-        expect(result).toMatchObject({
-          kind: "sessionOpened",
-          metadata: { rLibrary: "dplyr", mode: "editing", steps: original?.metadata.steps }
-        });
-        if (result.kind !== "sessionOpened") throw new Error("Expected an editing copy");
-        expect(result.metadata.draftStep).toBeUndefined();
-        expect(result.metadata.canRedo).not.toBe(true);
-        expect(fixture.coordinator.sessionSnapshot(fixture.original.metadata.sessionId)).toEqual(original);
-        const opening = fixture.request.mock.calls
-          .map(([request]) => request)
-          .find((request) => request.kind === "openSession" && request.rLibrary === "dplyr");
-        expect(opening).toMatchObject({
-          source: fixture.source,
-          cloneFrom: { sessionId: "original-runtime", revision: 0 },
-          mode: "editing"
-        });
-        expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
-        const closing = mode === "editing" ? fixture.original : result;
-        const remaining = mode === "editing" ? result : fixture.original;
-        await fixture.bridge.request({
-          kind: "closeSession",
-          sessionId: closing.metadata.sessionId,
-          revision: closing.metadata.revision
-        });
-        expect(fixture.idle).not.toHaveBeenCalled();
-        await expect(
-          fixture.bridge.request({
-            kind: "getPage",
-            sessionId: remaining.metadata.sessionId,
-            revision: remaining.metadata.revision,
-            viewRequestId: "remaining-sibling",
-            filterModel: remaining.metadata.filterModel,
-            offset: 0,
-            limit: 2,
-            columnOffset: 0,
-            columnLimit: 16
-          })
-        ).resolves.toMatchObject({ kind: "page", metadata: { rLibrary: remaining.metadata.rLibrary } });
-      } finally {
-        await fixture.close();
-      }
-    }
-  );
-
-  it.each(["active", "pending", "origin retired"] as const)(
-    "refuses an occupied or stale copy target: %s",
-    async (conflict) => {
-      const fixture = await rLibraryCopyFixture("editing");
-      const released = deferred<void>();
-      const entered = deferred<void>();
-      try {
-        const capture = fixture.capture();
-        if (conflict === "active")
-          await fixture.coordinator.createBridge(fixture.delegate).request(fixture.copyRequest);
-        if (conflict === "origin retired")
-          await fixture.bridge.request({
-            kind: "closeSession",
-            sessionId: fixture.original.metadata.sessionId,
-            revision: 0
-          });
-        if (conflict === "origin retired") {
-          expect(() => capture.createBridge("dplyr")).toThrow(/original session changed/u);
-          return;
-        }
-        const before = structuredClone(fixture.stored);
-        if (conflict === "pending") {
-          fixture.beforeCopyOpen = async () => {
-            entered.resolve();
-            await released.promise;
-          };
-          const first = capture.createBridge("dplyr").request(fixture.copyRequest);
-          await entered.promise;
-          await expect(capture.createBridge("dplyr").request(fixture.copyRequest)).resolves.toMatchObject({
-            kind: "error",
-            code: "r_library_target_occupied"
-          });
-          released.resolve();
-          await expect(first).resolves.toMatchObject({ kind: "sessionOpened" });
-        } else {
-          await expect(capture.createBridge("dplyr").request(fixture.copyRequest)).resolves.toMatchObject({
-            kind: "error",
-            code: "r_library_target_occupied"
-          });
-          expect(fixture.stored).toEqual(before);
-        }
-      } finally {
-        released.resolve();
-        await fixture.close();
-      }
-    }
-  );
-
-  it.each(["explicit R", "Auto"] as const)(
-    "rejects an ordinary %s open started before a copy reserved the same target, then publishes only the copy",
-    async (choice) => {
-      const fixture = await rLibraryCopyFixture("editing");
-      const entered = deferred<void>();
-      const released = deferred<void>();
-      try {
-        fixture.beforeCopyOpen = async () => {
-          entered.resolve();
-          await released.promise;
-        };
-        fixture.autoLibrary = "dplyr";
-        const ordinaryRequest: Extract<OpenWranglerRequest, { kind: "openSession" }> = { ...fixture.copyRequest };
-        if (choice === "Auto") {
-          delete ordinaryRequest.backend;
-          delete ordinaryRequest.rLibrary;
-        }
-        const normal = fixture.coordinator.createBridge(fixture.delegate).request(ordinaryRequest);
-        await entered.promise;
-        const copy = fixture.capture().createBridge("dplyr").request(fixture.copyRequest);
-        released.resolve();
-        await expect(normal).resolves.toMatchObject({ kind: "error", code: "r_library_target_occupied" });
-        await expect(copy).resolves.toMatchObject({ kind: "sessionOpened", metadata: { rLibrary: "dplyr" } });
-        expect(fixture.coordinator.diagnostics().sessionCount).toBe(2);
-        expect(fixture.idle).not.toHaveBeenCalled();
-      } finally {
-        released.resolve();
-        await fixture.close();
-      }
-    }
-  );
-
-  it("closes only the failed copy when replay changes the confirmed R library", async () => {
-    const fixture = await rLibraryCopyFixture("editing");
-    try {
-      fixture.driftOnPreview = true;
-      const before = fixture.snapshot();
-      await expect(fixture.capture().createBridge("dplyr").request(fixture.copyRequest)).resolves.toMatchObject({
-        kind: "error",
-        code: "file_plan_replay_failed"
-      });
-      expect(fixture.coordinator.sessionSnapshot(fixture.original.metadata.sessionId)).toEqual(before);
-      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
-      expect(fixture.idle).not.toHaveBeenCalled();
-      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
-    } finally {
-      await fixture.close();
-    }
-  });
-
-  it.each(["cancel", "close original"] as const)(
-    "retires a pending candidate when its captured owner changes: %s",
-    async (action) => {
-      const fixture = await rLibraryCopyFixture("editing");
-      const entered = deferred<void>();
-      const released = deferred<void>();
-      const cancellation = new vscode.CancellationTokenSource();
-      try {
-        fixture.beforeCopyOpen = async () => {
-          entered.resolve();
-          await released.promise;
-        };
-        const opening = fixture
-          .capture()
-          .createBridge("dplyr")
-          .request(fixture.copyRequest, { cancellation: cancellation.token });
-        await entered.promise;
-        if (action === "cancel") cancellation.cancel();
-        else
-          await fixture.bridge.request({
-            kind: "closeSession",
-            sessionId: fixture.original.metadata.sessionId,
-            revision: 0
-          });
-        expect(fixture.idle).not.toHaveBeenCalled();
-        released.resolve();
-        await expect(opening).resolves.toMatchObject({ kind: action === "cancel" ? "cancelled" : "error" });
-        expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
-        expect(fixture.coordinator.diagnostics().sessionCount).toBe(action === "cancel" ? 1 : 0);
-        const closed = fixture.request.mock.calls
-          .map(([request]) => request)
-          .filter((request) => request.kind === "closeSession");
-        expect(closed).toHaveLength(action === "cancel" ? 1 : 2);
-      } finally {
-        released.resolve();
-        cancellation.dispose();
-        await fixture.close();
-      }
-    }
-  );
 });
 
-async function rLibraryCopyFixture(mode: "editing" | "viewing") {
-  const source: SessionSource = {
-    kind: "rInteractiveVariable",
-    label: "frame",
-    variableName: "frame",
-    uri: "file:///workspace/source.R"
-  };
+async function liveRFixture() {
+  const source: SessionSource = { kind: "rInteractiveVariable", label: "frame", variableName: "frame" };
   const controls = {
     stored: {} as Record<string, unknown>,
-    beforeCopyOpen: undefined as (() => Promise<void>) | undefined,
-    beforeOriginalPage: undefined as (() => Promise<void>) | undefined,
-    beforeOriginalMutation: undefined as (() => Promise<void>) | undefined,
+    beforeCandidateOpen: undefined as (() => Promise<void>) | undefined,
     driftOnPreview: false,
-    driftOnPage: false,
-    autoLibrary: undefined as SessionMetadata["rLibrary"]
+    driftOnPage: false
   };
   const coordinator = new SessionCoordinator({
     get: <T>() => controls.stored as T,
@@ -2227,79 +1954,68 @@ async function rLibraryCopyFixture(mode: "editing" | "viewing") {
   const sessions = new Map<string, SessionMetadata>();
   let ordinal = 0;
   const idle = vi.fn();
-  const request = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-    if (request.kind === "openSession") {
-      const library = request.rLibrary ?? (request.backend === undefined ? controls.autoLibrary : undefined) ?? "base";
-      if (library === "dplyr") await controls.beforeCopyOpen?.();
-      const id = request.requestedSessionId ?? (++ordinal === 1 ? "original-runtime" : `runtime-${ordinal}`);
-      const metadata = metadataFor({ runtimeId: id, source: request.source, backend: "r" });
-      metadata.rLibrary = library;
-      metadata.mode = request.mode ?? "editing";
-      metadata.capabilities.editable = metadata.mode === "editing";
-      if (id === "original-runtime" && mode === "editing") {
-        metadata.steps = [{ id: "custom", kind: "customCode", params: { code: "df" } }];
-        metadata.latestStepInputSchema = metadata.schema;
-        metadata.draftStep = {
-          id: "draft",
-          kind: "roundNumber",
-          params: { column: { id: "c:value", name: "value" }, decimals: 1 }
-        };
-        metadata.canRedo = true;
+  const request = vi.fn(
+    async (request: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        const library = request.rLibrary ?? "base";
+        if (library !== "base") await controls.beforeCandidateOpen?.();
+        const id = request.requestedSessionId ?? (++ordinal === 1 ? "original-runtime" : `runtime-${ordinal}`);
+        const metadata = metadataFor({ runtimeId: id, source: request.source, backend: "r" });
+        metadata.rLibrary = library;
+        metadata.mode = request.mode ?? "editing";
+        metadata.capabilities.editable = metadata.mode === "editing";
+        if (id === "original-runtime") {
+          metadata.steps = [{ id: "custom", kind: "customCode", params: { code: "df" } }];
+          metadata.latestStepInputSchema = metadata.schema;
+          metadata.draftStep = {
+            id: "draft",
+            kind: "roundNumber",
+            params: { column: { id: "c:value", name: "value" }, decimals: 1 }
+          };
+          metadata.canRedo = true;
+        }
+        sessions.set(id, metadata);
+        return openedFor(request, structuredClone(metadata));
       }
-      sessions.set(id, metadata);
-      return openedFor(request, structuredClone(metadata));
+      if (!("sessionId" in request)) throw new Error("Expected session request");
+      const metadata = sessions.get(request.sessionId)!;
+      if (request.kind === "closeSession") {
+        sessions.delete(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      if (request.kind === "getPage") {
+        return pageFor(request, {
+          ...structuredClone(metadata),
+          ...(controls.driftOnPage ? { rLibrary: "collapse" as const } : {})
+        });
+      }
+      if (request.kind === "previewStep") {
+        metadata.revision++;
+        metadata.draftStep = request.step;
+        const response = previewFor(request, structuredClone(metadata), "# selected library");
+        if (controls.driftOnPreview) response.metadata.rLibrary = "collapse";
+        return response;
+      }
+      if (request.kind === "applyDraft") {
+        metadata.revision++;
+        metadata.steps.push(metadata.draftStep!);
+        delete metadata.draftStep;
+        metadata.latestStepInputSchema = metadata.schema;
+        return appliedFor(request, structuredClone(metadata), "# selected library");
+      }
+      throw new Error(`Unexpected live R request: ${request.kind}`);
     }
-    if (!("sessionId" in request)) throw new Error("Expected session request");
-    const metadata = sessions.get(request.sessionId)!;
-    if (request.kind === "closeSession") {
-      sessions.delete(request.sessionId);
-      return { kind: "sessionClosed", sessionId: request.sessionId };
-    }
-    if (request.kind === "getPage") {
-      if (request.sessionId === "original-runtime") await controls.beforeOriginalPage?.();
-      return pageFor(request, {
-        ...structuredClone(metadata),
-        ...(controls.driftOnPage ? { rLibrary: "collapse" as const } : {})
-      });
-    }
-    if (request.kind === "previewStep") {
-      metadata.revision++;
-      metadata.draftStep = request.step;
-      const response = previewFor(request, structuredClone(metadata), "# selected library");
-      if (controls.driftOnPreview) response.metadata.rLibrary = "collapse";
-      return response;
-    }
-    if (request.kind === "applyDraft") {
-      if (request.sessionId === "original-runtime") await controls.beforeOriginalMutation?.();
-      metadata.revision++;
-      metadata.steps.push(metadata.draftStep!);
-      delete metadata.draftStep;
-      metadata.latestStepInputSchema = metadata.schema;
-      return appliedFor(request, structuredClone(metadata), "# selected library");
-    }
-    throw new Error(`Unexpected R copy request: ${request.kind}`);
-  });
-  const delegate: OpenWranglerBridge = {
-    request,
-    onIdle: idle,
-    captureSessionOwner: (id) => {
-      const owner = sessions.get(id);
-      return owner ? () => sessions.get(id) === owner : undefined;
-    }
-  };
-  const bridge = coordinator.createBridge(delegate);
-  const original = await bridge.request({ ...openRequest, source, backend: "r", rLibrary: "base", mode });
+  );
+  const bridge = coordinator.createBridge({ request, onIdle: idle });
+  const original = await bridge.request({ ...openRequest, source, backend: "r", rLibrary: "base", mode: "editing" });
   if (original.kind !== "sessionOpened") throw new Error(JSON.stringify(original));
   return Object.assign(controls, {
     source,
     coordinator,
-    delegate,
     bridge,
     request,
     idle,
     original,
-    targetKey: persistenceKey(source, "r", "dplyr"),
-    copyRequest: { ...openRequest, source, backend: "r" as const, rLibrary: "dplyr" as const },
     snapshot() {
       const snapshot = coordinator.sessionSnapshot(original.metadata.sessionId)!;
       return {
@@ -2308,10 +2024,17 @@ async function rLibraryCopyFixture(mode: "editing" | "viewing") {
         viewState: structuredClone(snapshot.viewState)
       };
     },
-    capture() {
-      const captured = bridge.captureRLibraryCopy!(original.metadata.sessionId, 0);
-      if ("kind" in captured) throw new Error(captured.message);
-      return captured;
+    candidateId() {
+      const candidate = request.mock.calls
+        .map(([sent]) => sent)
+        .find((sent) => sent.kind === "openSession" && sent.rLibrary === "dplyr");
+      return candidate?.kind === "openSession" ? candidate.requestedSessionId : undefined;
+    },
+    closed() {
+      return request.mock.calls
+        .map(([sent]) => sent)
+        .filter((sent) => sent.kind === "closeSession")
+        .map((sent) => sent.sessionId);
     },
     async close() {
       await coordinator.shutdown();
