@@ -3044,16 +3044,48 @@ openwrangler_r_frame_contract <- local({
     profile_value_keys(column, semantics, indices, integer64_bindings)
   }
 
+  # Groups ordered by first occurrence, as match() would find them, for values spanning at most a quarter as many slots as rows.
+  counted_integer_groups <- function(identities) {
+    if (length(identities) == 0L || anyNA(identities)) return(NULL)
+    minimum <- min(identities)
+    slot_count <- as.double(max(identities)) - minimum + 1
+    if (slot_count * 4 > length(identities)) return(NULL)
+    slots <- identities - minimum + 1L
+    counts <- tabulate(slots, nbins = slot_count)
+    reversed <- length(slots):1
+    first <- integer(slot_count)
+    # Assigning in reverse leaves each slot holding its earliest row.
+    first[slots[reversed]] <- reversed
+    used <- which(counts != 0L)
+    first <- first[used]
+    ordered <- order(first, method = "radix")
+    list(first = first[ordered], counts = counts[used][ordered])
+  }
+
   profile_population_counts <- function(column, semantics, present_indices, integer64_bindings = NULL,
                                         numeric_values = NULL) {
     text <- semantics$kind == "character"
     identities <- if (text) column[present_indices] else {
       profile_value_identities(column, semantics, present_indices, integer64_bindings, numeric_values)
     }
-    # One hash pass maps every row to its first equal row, which marks first occurrences and counts together.
-    position <- match(identities, identities)
-    first <- which(position == seq_along(position))
-    counts <- tabulate(position, nbins = length(position))[first]
+    if (is.double(identities) && length(identities) != 0L) {
+      # Whole doubles in the integer range group alike as integers, which hash and count faster.
+      if (suppressWarnings(min(identities, na.rm = TRUE)) >= -2147483647 &&
+          suppressWarnings(max(identities, na.rm = TRUE)) <= 2147483647 &&
+          (semantics$kind == "integer64" || all(identities == trunc(identities), na.rm = TRUE))) {
+        identities <- as.integer(identities)
+      }
+    }
+    grouped <- if (is.integer(identities)) counted_integer_groups(identities)
+    if (is.null(grouped)) {
+      # One hash pass maps every row to its first equal row, which marks first occurrences and counts together.
+      position <- match(identities, identities)
+      first <- which(position == seq_along(position))
+      counts <- tabulate(position, nbins = length(position))[first]
+    } else {
+      first <- grouped$first
+      counts <- grouped$counts
+    }
     if (text) {
       # match() equates encodings that translate alike; normalized keys can still merge unmarked UTF-8.
       keys <- profile_text_values(identities[first], present_indices[first])
@@ -3063,7 +3095,7 @@ openwrangler_r_frame_contract <- local({
         first <- first[group == seq_along(group)]
       }
     }
-    list(first = present_indices[first], counts = counts)
+    list(first = present_indices[first], counts = counts, local = first)
   }
 
   # Finite binary64 values are integer multiples of 2^-1074. With fewer than 2^31
@@ -3240,12 +3272,14 @@ openwrangler_r_frame_contract <- local({
     if (length(value) != 1L || is.na(value) || !is.finite(value)) NULL else as.double(value)
   }
 
+  # NULL indices select every row without copying the column first.
   numeric_profile_values <- function(column, semantics, present_indices, integer64_bindings = NULL) {
     if (semantics$kind == "integer64") {
       bindings <- integer64_bindings %||% ensure_integer64_bindings()
-      return(suppressWarnings(integer64_as_double(integer64_subset(column, present_indices), bindings)))
+      values <- if (is.null(present_indices)) column else integer64_subset(column, present_indices)
+      return(suppressWarnings(integer64_as_double(values, bindings)))
     }
-    values <- column[present_indices]
+    values <- if (is.null(present_indices)) column else column[present_indices]
     if (semantics$kind == "difftime") return(as.double(values, units = semantics$units))
     as.double(values)
   }
@@ -3332,6 +3366,28 @@ openwrangler_r_frame_contract <- local({
     positions <- if (count %% 2L == 0L) middle + 0L:1L else middle
     selected <- sort(values, partial = positions)[positions]
     if (length(selected) == 1L) selected[[1L]] else base::mean.default(selected)
+  }
+
+  # The same order statistics as numeric_profile_median, read from distinct values and their row counts.
+  grouped_numeric_median <- function(values, counts) {
+    count <- sum(as.double(counts))
+    if (count == 0) return(NA_real_)
+    middle <- (count + 1) %/% 2
+    positions <- if (count %% 2 == 0) middle + 0:1 else middle
+    ordered <- order(values, method = "radix")
+    selected <- values[ordered][findInterval(positions - 1, cumsum(as.double(counts[ordered]))) + 1L]
+    if (length(selected) == 1L) selected[[1L]] else base::mean.default(selected)
+  }
+
+  grouped_histogram_counts <- function(edges, values, counts) {
+    finite <- is.finite(values)
+    bins <- findInterval(values[finite], edges, rightmost.closed = TRUE, all.inside = TRUE)
+    totals <- numeric(length(edges) - 1L)
+    if (length(bins) != 0L) {
+      sums <- base::rowsum.default(as.double(counts[finite]), bins, reorder = TRUE)
+      totals[as.integer(rownames(sums))] <- sums[, 1L]
+    }
+    totals
   }
 
   numeric_profile <- function(column, semantics, present_indices, value_keys, budget, label) {
@@ -3577,14 +3633,19 @@ openwrangler_r_frame_contract <- local({
         missing <- profile_missing_masks(chunk, state$semantics, integer64_bindings)
         state$null_count <- state$null_count + sum(missing$null)
         state$nan_count <- state$nan_count + sum(missing$nan)
-        present_indices <- which(!missing$null & !missing$nan)
+        complete <- !any(missing$null) && !any(missing$nan)
+        present_indices <- if (complete) seq_len(count) else which(!missing$null & !missing$nan)
         chunk_present_count <- length(present_indices)
         state$present_count <- state$present_count + chunk_present_count
 
         if (chunk_present_count != 0L) {
-          present <- if (state$kind == "integer64") integer64_subset(chunk, present_indices) else chunk[present_indices]
-          visible_positions <- seq.int(as.integer(state$start), length.out = as.integer(count))[present_indices]
-          present_sources <- source_positions[present_indices]
+          present <- if (complete) chunk else if (state$kind == "integer64") {
+            integer64_subset(chunk, present_indices)
+          } else chunk[present_indices]
+          if (!state$kind %in% c("integer", "integer64", "double", "difftime")) {
+            visible_positions <- seq.int(as.integer(state$start), length.out = as.integer(count))[present_indices]
+            present_sources <- source_positions[present_indices]
+          }
 
           if (state$kind == "logical") {
             chunk_true <- sum(present)
@@ -3629,7 +3690,7 @@ openwrangler_r_frame_contract <- local({
               state$datetime_maximum_source <- present_sources[[chunk_maximum]]
             }
           } else if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
-            values <- numeric_profile_values(chunk, state$semantics, present_indices, integer64_bindings)
+            values <- numeric_profile_values(chunk, state$semantics, if (!complete) present_indices, integer64_bindings)
             # Doubles below 2^53 represent these integers exactly.
             exact_doubles <- state$kind %in% c("integer", "integer64") && max(abs(values)) < 9007199254740992
             if (state$kind == "integer64" && !exact_doubles && !state$integer64_text_keys) {
@@ -3705,39 +3766,33 @@ openwrangler_r_frame_contract <- local({
       state$histogram_edges <- if (state$numeric_finite_count > 0) {
         numeric_histogram_edges(state$numeric_finite_minimum, state$numeric_finite_maximum, length(state$numeric_bin_values))
       } else NULL
-      state$histogram_counts <- numeric(max(0L, length(state$histogram_edges) - 1L))
-      state$start <- 1
-      state$phase <- "distribution"
-    }
-    while (state$start <= state$row_count && !is.null(state$histogram_edges)) {
-      count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
-      source_positions <- profile_chunk_source_positions(state$row_positions, state$start, count)
-      chunk <- if (state$kind == "integer64") integer64_subset(state$column, source_positions) else state$column[source_positions]
-      missing <- profile_missing_masks(chunk, state$semantics, integer64_bindings)
-      values <- numeric_profile_values(chunk, state$semantics, which(!missing$null & !missing$nan), integer64_bindings)
-      bin_indices <- findInterval(values[is.finite(values)], state$histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
-      state$histogram_counts <- state$histogram_counts + tabulate(bin_indices, nbins = length(state$histogram_counts))
-      state$start <- state$start + count
-      processed <- processed + 1L
-      if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
+      state$phase <- "population"
     }
     if (state$kind != "logical" && state$present_count != 0) {
-      # One whole-view pass keeps distinct counts, top values and the median exact at every size.
+      # One whole-view pass keeps distinct counts, top values, the median and the histogram exact at every size.
       sources <- state$row_positions %||% seq_len(state$row_count)
       population <- if (is.null(state$row_positions)) state$column else if (state$kind == "integer64") {
         integer64_subset(state$column, sources)
       } else state$column[sources]
-      present <- if (state$present_count == length(sources)) seq_along(sources) else {
+      complete <- state$present_count == length(sources)
+      present <- if (complete) seq_along(sources) else {
         missing <- profile_missing_masks(population, state$semantics, integer64_bindings)
         which(!missing$null & !missing$nan)
       }
       numeric_values <- if (state$kind %in% c("integer", "integer64", "double", "date", "datetime", "difftime")) {
-        numeric_profile_values(population, state$semantics, present, integer64_bindings)
+        numeric_profile_values(population, state$semantics, if (!complete) present, integer64_bindings)
       }
       exact <- profile_population_counts(population, state$semantics, present, integer64_bindings, numeric_values)
       counts <- profile_count_summary(state$column, state$semantics, sources[exact$first], exact$counts, state$budget, state$label)
       if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
-        median_value <- numeric_profile_median(numeric_values)
+        group_values <- numeric_values[exact$local]
+        # Sorting few distinct values is cheaper than selecting among every row.
+        median_value <- if (length(group_values) * 4 <= length(numeric_values)) {
+          grouped_numeric_median(group_values, exact$counts)
+        } else numeric_profile_median(numeric_values)
+        if (!is.null(state$histogram_edges)) {
+          state$histogram_counts <- grouped_histogram_counts(state$histogram_edges, group_values, exact$counts)
+        }
       }
     } else if (state$kind != "logical") {
       counts <- list(distinctCount = 0L, topValues = json_array(list()))

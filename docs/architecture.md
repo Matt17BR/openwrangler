@@ -1854,9 +1854,12 @@ text for comparisons, including Latin-1 and unmarked valid UTF-8 under the C loc
 Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
 oversized values retain ordered scalar refusal and the original row labels.
 After the chunked scan, one whole-view pass counts every present value by native identity, so distinct counts, top
-values, categorical charts and numeric medians are exact at every size. Identities group exactly as displayed values:
-signed zeros merge except in date-time and duration columns, missing values stay apart from NaN, and integer64 values
-compare as exact doubles below 2^53 and as decimal text above it. Only the reported values are formatted. Dataset
+values, categorical charts, numeric medians and histogram bins are exact at every size. Identities group exactly as
+displayed values: signed zeros merge except in date-time and duration columns, missing values stay apart from NaN,
+and integer64 values compare as exact doubles below 2^53 and as decimal text above it. Whole numbers within the 32-bit
+range group as integers, and a range spanning at most a quarter as many values as rows is counted directly instead of
+hashed; both keep first-occurrence order. Histogram bins come from the distinct values and their counts. Only the
+reported values are formatted. Dataset
 duplicate counts are exact too: each column refines the candidate row groups in its own time-sliced advance and drops
 rows that are already unique. Value discovery counts the whole view the same way and formats only candidates that can
 reach the requested limit; a search formats each distinct value once. These passes allocate native hash tables
@@ -2005,8 +2008,9 @@ integer64 means keep their separate arithmetic and conversion rules. The fixed a
 temporary allocations or eliminate the added scan and per-group work.
 Built-in R means and profile medians bypass registered S3 mean methods. Live operations and their generated programs
 agree; Custom Code retains the caller's ordinary R dispatch.
-Profile medians select their middle value or pair with partial sorting and the same midpoint owner. Exact zero totals
-return positive zero; negative results rounded to zero retain their sign. Duration profiles keep their declared-unit
+Profile medians select their middle value or pair with the same midpoint owner: from the sorted distinct values and
+their counts when there are at most a quarter as many distinct values as rows, and by partial sorting otherwise.
+Exact zero totals return positive zero; negative results rounded to zero retain their sign. Duration profiles keep their declared-unit
 conversion; integer64 conversion, text-length means and variance retain their separate arithmetic.
 
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
