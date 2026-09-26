@@ -277,7 +277,7 @@ export function createReleasedRWorkbenchMediaCapture({
       target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
       app = await exactSessionApp(target.frame, sessionId);
       assert.ok(app, "The arranged R screenshot must retain its exact renderer.");
-      assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "BASE R");
+      assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R · base");
       assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
       assert.equal(await app.getByRole("button", { name: "Add step", exact: true }).count(), 0);
       assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
