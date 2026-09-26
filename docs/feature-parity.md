@@ -13,7 +13,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Surface                                                     | Pandas | Polars | Status | Required evidence                                                                                                                                                                              |
 | ----------------------------------------------------------- | -----: | -----: | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | File entry points; Windows Polars JSONL excludes glob paths |    Yes |    Yes | Done   | Native readers and file-launch surfaces within the path limits below; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py; record:docs/testing.md                 |
-| Notebook variable viewer and toolbar                        |    Yes |    Yes | Done   | Exact-notebook and Interactive opens; [Variables limitation](#sessions-and-generated-code); test:src/test/notebookPreviewCoordinator.unit.test.ts; record:docs/testing.md                      |
+| Notebook variable viewer and toolbar                        |    Yes |    Yes | Done   | Exact-notebook and Interactive opens; test:src/test/notebookPreviewCoordinator.unit.test.ts; record:docs/testing.md                                                                            |
 | Inline notebook renderer and full-view expansion            |    Yes |    Yes | Done   | Bounded MIME rendering and exact live-value expansion; test:src/test/notebookRenderer.unit.test.ts; record:docs/testing.md                                                                     |
 | Virtual grid, column sizing, navigation                     |    Yes |    Yes | Done   | Projected virtualization, keyboard navigation, range copy, and column copy; test:src/test/webview.component.test.tsx; record:docs/testing.md                                                   |
 | Dataset summary and quick insights                          |    Yes |    Yes | Done   | Native profiles, exact sums, typed extrema and accessible charts; test:src/test/numericSummary.component.test.tsx; test:python/tests/test_polars_engine.py                                     |
@@ -129,12 +129,6 @@ output; live reopening follows the [notebook recovery order](architecture.md#not
 so the host loads the verified bundle before `show` is imported. Windows notebook patch-version and temporary-directory
 limits are in the
 [compatibility notes](../README.md#compatibility-and-limits).
-
-Jupyter's Variables view can intermittently remain blank before Open Wrangler receives an open request.
-This [unresolved limitation](https://github.com/Matt17BR/openwrangler/issues/1498) was observed with Jupyter 2025.9.1
-in Linux VS Code 1.137.0. Open values from the Open Wrangler notebook toolbar or an available inline output action.
-These entry points do not use the Variables view. Installed checks cover specific toolbar and inline opens in normal
-operation; recovery after the blank view failure remains unverified.
 
 Polars live notebook LazyFrames are evaluated once at opening and retain their complete native result. Lazy Custom Code
 results are retained in the same way, including in generated code. Subsequent pages and column projections keep row
