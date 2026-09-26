@@ -374,9 +374,11 @@ persistence and in-tab switches of live R variables from their captured frame, i
 cancellation and failed replay. Installed evidence must exercise the visible library choice; source mocks alone do not
 prove that the selected package executes.
 The existing local Linux VS Code Clone lifecycle switches the live tab to dplyr through the library picker, checks its
-applied plan and package code, switches back to base and continues Undo. It runs in the
-default/core profile; other editors, platforms and focused operation profiles retain their existing journeys. The
-native catalog owns the complete per-library operation matrix.
+applied plan and package code, switches back to base and continues Undo. Before Undo it opens a small CSV with
+Python · Polars and switches that tab to R · base and back, so the installed editor covers each engine-switch
+direction. It runs in the default/core profile, whose Python preflight therefore also requires the Python file engines;
+other editors, platforms and focused operation profiles retain their existing journeys. The native catalog owns the
+complete per-library operation matrix.
 The existing frame profiling owner checks complete numeric bin membership and exact categorical counts, medians,
 duplicate counts and value choices above the direct-profile threshold, including filtered populations, high
 cardinalities, periodic data and sparse columns. It also checks integer64 identity and duration signed zero. Text

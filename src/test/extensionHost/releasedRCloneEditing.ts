@@ -1,6 +1,10 @@
 import * as assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Locator, Page } from "playwright-core";
-import type { RLibrary } from "../../shared/protocol";
+import * as vscode from "vscode";
+import type { DataBackend, RLibrary } from "../../shared/protocol";
 import { assertReleasedRCloneGeneratedCode } from "./releasedRGeneratedCode";
 import type { createReleasedRCloneState } from "./releasedRCloneState";
 import type { TestApi } from "./extensionHostTestApi";
@@ -9,6 +13,7 @@ type ReleasedRCloneState = ReturnType<typeof createReleasedRCloneState>;
 
 interface ReleasedRCloneEditingDependencies {
   readonly arrangePackagedProductSidebar: (workbench: Page, scene: "inspection") => Promise<Locator>;
+  readonly disposePackagedSessionPanel: (testing: TestApi, sessionId: string, description: string) => Promise<void>;
   readonly previewReleasedRClone: (
     testing: TestApi,
     workbench: Page,
@@ -39,6 +44,7 @@ interface ReleasedRCloneEditingDependencies {
 
 export function createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
+  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,
@@ -47,6 +53,80 @@ export function createReleasedRCloneEditingJourney({
   waitFor,
   waitForReleasedRCloneState
 }: ReleasedRCloneEditingDependencies) {
+  async function switchFileEngine(
+    testing: TestApi,
+    workbench: Page,
+    sessionId: string,
+    from: string,
+    to: string,
+    backend: DataBackend
+  ): Promise<void> {
+    const before = testing.activeSession();
+    assert.equal(before?.sessionId, sessionId);
+    const app = await releasedRSessionApp(workbench, testing, sessionId, `the file session before choosing ${to}`);
+    await app.getByRole("button", { name: `Change dataframe engine. Current engine: ${from}`, exact: true }).click();
+    const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
+    await picker.waitFor({ state: "visible", timeout: 10_000 });
+    const option = picker
+      .locator(".quick-input-list [role='option'] .label-name:visible")
+      .filter({ hasText: new RegExp(`^${to}$`, "u") });
+    assert.equal(await option.count(), 1, `The engine picker must offer ${to} once.`);
+    await option.first().click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.backend === backend &&
+          active.metadata.revision > before!.metadata.revision
+        );
+      },
+      30_000,
+      `switching the file tab from ${from} to ${to} without a dialog`
+    );
+    assert.deepEqual(
+      testing.activeSession()?.metadata.schema.map((column) => column.name),
+      ["city", "count"]
+    );
+  }
+
+  async function exerciseFileEngineSwitch(testing: TestApi, workbench: Page): Promise<void> {
+    const directory = mkdtempSync(join(tmpdir(), "ow-file-engine-switch-"));
+    const csv = vscode.Uri.file(join(directory, "engines.csv"));
+    writeFileSync(csv.fsPath, "city,count\nParis,3\nRome,5\n");
+    const configuration = vscode.workspace.getConfiguration("openWrangler", csv);
+    const originalBackend = configuration.inspect<string>("defaultBackend")?.workspaceValue;
+    const originalRscriptPath = configuration.inspect<string>("rscriptPath")?.workspaceValue;
+    let fileSessionId: string | undefined;
+    try {
+      await configuration.update(
+        "rscriptPath",
+        process.env.OPEN_WRANGLER_TEST_RSCRIPT,
+        vscode.ConfigurationTarget.Workspace
+      );
+      await configuration.update("defaultBackend", "polars", vscode.ConfigurationTarget.Workspace);
+      await vscode.commands.executeCommand("openWrangler.openFile", csv);
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.uri === csv.toString(),
+        30_000,
+        "the Polars file session to open"
+      );
+      const opened = testing.activeSession();
+      assert.ok(opened);
+      assert.equal(opened.metadata.backend, "polars");
+      fileSessionId = opened.sessionId;
+      const sessions = testing.diagnostics().sessionCount;
+      await switchFileEngine(testing, workbench, fileSessionId, "Python · Polars", "R · base", "r");
+      await switchFileEngine(testing, workbench, fileSessionId, "R · base", "Python · Polars", "polars");
+      assert.equal(testing.diagnostics().sessionCount, sessions, "Engine switches must stay in the same tab.");
+    } finally {
+      if (fileSessionId) await disposePackagedSessionPanel(testing, fileSessionId, "the engine-switch file session");
+      await configuration.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Workspace);
+      await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
   return async function exerciseReleasedRCloneEditingLifecycle(
     testing: TestApi,
     workbench: Page,
@@ -252,6 +332,14 @@ export function createReleasedRCloneEditingJourney({
       assert.ok(dplyr.code?.includes("dplyr::"), "The switched plan must provide generated package code.");
       await switchLibrary("dplyr", "base", 0);
       recordAcceptanceProgress(`${phase}:editing:library-switch:complete`);
+      recordAcceptanceProgress(`${phase}:editing:file-engine-switch:start`);
+      await exerciseFileEngineSwitch(testing, workbench);
+      await waitFor(
+        () => testing.activeSession()?.sessionId === sessionId,
+        10_000,
+        "the live R editor after the file session closes"
+      );
+      recordAcceptanceProgress(`${phase}:editing:file-engine-switch:complete`);
     }
     app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
     const undoBefore = releasedRCloneFailureSnapshot(testing, sessionId);

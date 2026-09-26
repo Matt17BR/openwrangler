@@ -91,6 +91,21 @@ test("focused Python notebooks retains both real journeys and needs only a boots
   assert.deepEqual(acceptancePythonProfileModulesForTesting(host), ["venv", "ensurepip"]);
 });
 
+test("only the Linux VS Code core R journey requires the Python file engines", () => {
+  const r = { acceptanceMode: "r-jupyter", jupyterExtensionEnabled: true, remoteOnly: false, literateDocuments: false };
+  assert.equal(packagedEditorPythonPreflightProfile(r), "jupyter-host");
+  const files = packagedEditorPythonPreflightProfile({ ...r, fileEngineSwitch: true });
+  assert.equal(files, "jupyter-host-files");
+  assert.deepEqual(acceptancePythonProfileModulesForTesting(files), [
+    "jupyter_client",
+    "pandas",
+    "polars",
+    "duckdb",
+    "fsspec",
+    "pyarrow"
+  ]);
+});
+
 test("Python preflight distinguishes prerequisites from probe failures without exposing private details", () => {
   const privateDetail = "PRIVATE_PREFLIGHT_PATH_OUTPUT_AND_CAUSE";
   const failures = [

@@ -1814,6 +1814,7 @@ const previewReleasedRClone = createReleasedRClonePreview({
 
 const exerciseReleasedRCloneEditingLifecycle = createReleasedRCloneEditingJourney({
   arrangePackagedProductSidebar,
+  disposePackagedSessionPanel,
   previewReleasedRClone,
   recordAcceptanceProgress,
   releasedRCloneFailureSnapshot,

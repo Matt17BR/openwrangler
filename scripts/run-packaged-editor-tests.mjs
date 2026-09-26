@@ -227,6 +227,11 @@ try {
             );
           }
           const rJourneySelector = process.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY;
+          const coreLinuxRJourney =
+            acceptanceMode === "r-jupyter" &&
+            process.platform === "linux" &&
+            requested?.includes("vscode") === true &&
+            (rJourneySelector === undefined || rJourneySelector === CORE_R_JUPYTER_SELECTOR);
           if (
             acceptanceMode !== "full" &&
             acceptanceMode !== "platform-smoke" &&
@@ -354,7 +359,8 @@ try {
               jupyterExtensionEnabled: Boolean(jupyterExtensionInstallTarget),
               pythonJupyterProfile,
               remoteOnly: remoteRJourneyOnly,
-              literateDocuments: rJupyterSelection.literateDocuments
+              literateDocuments: rJupyterSelection.literateDocuments,
+              fileEngineSwitch: coreLinuxRJourney
             });
             writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
             testPython = resolveAndPreflightAcceptancePython({
@@ -457,18 +463,15 @@ try {
             );
             rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(resolve(temporaryRoot, "rv"), rscript, {
               containedBy: temporaryRoot,
-              purpose:
-                process.platform === "linux" &&
-                requested.includes("vscode") &&
-                (rJourneySelector === undefined || rJourneySelector === CORE_R_JUPYTER_SELECTOR)
-                  ? CORE_R_JUPYTER_SELECTOR
-                  : rJourneySelector === "interactive-terminal" ||
-                      rJourneySelector === "literate-documents" ||
-                      rJourneySelector === CATEGORICAL_R_JUPYTER_SELECTOR ||
-                      rJourneySelector === VALUE_R_JUPYTER_SELECTOR ||
-                      rJourneySelector === PIVOT_WIDER_R_JUPYTER_SELECTOR
-                    ? rJourneySelector
-                    : "notebook"
+              purpose: coreLinuxRJourney
+                ? CORE_R_JUPYTER_SELECTOR
+                : rJourneySelector === "interactive-terminal" ||
+                    rJourneySelector === "literate-documents" ||
+                    rJourneySelector === CATEGORICAL_R_JUPYTER_SELECTOR ||
+                    rJourneySelector === VALUE_R_JUPYTER_SELECTOR ||
+                    rJourneySelector === PIVOT_WIDER_R_JUPYTER_SELECTOR
+                  ? rJourneySelector
+                  : "notebook"
             });
             if (acceptanceMode === "r-jupyter") {
               console.log(
