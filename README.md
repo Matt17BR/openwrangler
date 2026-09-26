@@ -20,45 +20,36 @@ make changes visually, and keep the generated Python or R code.
 _Inspect missing values and distributions beside the rows you are exploring._
 
 Select a column to see its profile, then click a category or histogram bin to filter the view. Search for columns,
-combine filters, choose the order of sort keys, or copy a selection. Column profiles and the dataset summary help you
-spot empty fields, unusual values and repeated records before deciding what to change.
+combine filters, order sort keys, and copy selections. The dataset summary shows empty fields, unusual values and
+repeated records before you decide what to change.
 
 ## Install
 
 - **Stable:** [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler),
-  the newest non-preview version in [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler), or the
+  the newest non-preview version on [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler), or the
   [latest GitHub release](https://github.com/Matt17BR/openwrangler/releases/latest).
 - **Preview:** choose **Install Pre-Release Version** in your editor, or download a
   [GitHub prerelease](https://github.com/Matt17BR/openwrangler/releases).
 - **From source:** [build and install the current main branch](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source).
 
-For a downloaded VSIX, use **Views and More Actions > Install from VSIX...** in the Extensions view.
-See the [latest release notes](https://github.com/Matt17BR/openwrangler/releases/latest) or
-[full changelog](https://github.com/Matt17BR/openwrangler/blob/main/CHANGELOG.md) for changes.
-
-Features marked **2.6** require version 2.6.0 or newer, or a current
-[source build](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md#build-and-install-from-source).
+To install a downloaded VSIX, use **Views and More Actions > Install from VSIX...** in the Extensions view. The
+[changelog](https://github.com/Matt17BR/openwrangler/blob/main/CHANGELOG.md) lists the changes in each release.
 
 ## What you can do
 
-- **Clean rows:** remove missing rows, remove duplicates, or flag repeated records with **Mark duplicates**.
-- **Fill gaps:** use a fixed value, a statistic for the whole column or each group, a fallback column, ordered
-  forward/backward fill, or interpolation.
+- **Clean rows:** drop missing rows or duplicates, or flag repeated records with **Mark duplicates**.
+- **Fill gaps:** use a fixed value, a column or group statistic, a fallback column, forward or backward fill, or
+  interpolation.
 - **Organize columns:** select, drop, rename, duplicate, and convert column types.
-- **Clean text and categories:** trim spaces, replace text, change case, split into columns, extract with regular
-  expressions, and encode categories.
-- **Calculate values:** write numeric formulas, rank with ties, scale and round numbers, and format dates.
-- **Create labels and flags:** use **Conditional column** for Text or Boolean results, including a separate result
-  for missing inputs.
+- **Clean text and categories:** trim spaces, replace text, change case, split, extract with regular expressions, and
+  encode categories.
+- **Calculate values:** write formulas, rank with ties, scale and round numbers, and format dates.
+- **Create labels and flags:** build Text or Boolean results with **Conditional column**.
 - **Reshape and summarize:** pivot between long and wide tables, or group rows and aggregate values.
 
-Transform by Example infers a rule from your input/output examples. Preview it on other rows before applying it.
-For work outside the catalog, a Custom Code step can use your dataframe engine directly. Available operations and
-fill methods depend on the engine and column type; see the
-[operation support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#cleaning-operations).
-
-In **2.6**, opening a specific operation gives its settings the full dialog width. **Choose operation** shows or hides
-the catalog without clearing unfinished fields. **Add step** starts with the catalog open.
+**Transform by Example** learns a rule from your input and output examples and previews it on other rows. **Custom
+Code** runs your own code in the dataframe's engine. Operations and fill methods vary by engine and column type; see
+the [operation support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#cleaning-operations).
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/operation-catalog.png"><img alt="The searchable cleaning-operation picker in Open Wrangler" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/operation-catalog.png" width="960"></a>
 
@@ -66,136 +57,94 @@ _Search or browse cleaning operations, then configure the selected step._
 
 ## From data to code
 
-**1. Open a source.** Save the [four-row sample CSV](https://raw.githubusercontent.com/Matt17BR/openwrangler/main/fixtures/sample.csv)
-in your workspace, then choose **Open in Open Wrangler** from Explorer, an editor tab, or the toolbar. You can also
-open TSV, Parquet, JSONL/NDJSON, and Excel files, or a supported live dataframe from a notebook output or toolbar.
+1. **Open a source.** Save the [four-row sample CSV](https://raw.githubusercontent.com/Matt17BR/openwrangler/main/fixtures/sample.csv)
+   in your workspace and choose **Open in Open Wrangler** from Explorer, an editor tab, or the editor toolbar. TSV,
+   Parquet, JSONL/NDJSON, and Excel files open the same way.
+2. **Preview a change.** Choose **Add step**, then **Drop missing rows** on **sales**, then **Preview changes**. Paris
+   disappears from the draft, leaving Milan, Rome, and Berlin. Review the changed values and generated code, then
+   choose **Apply step** or **Discard**.
+3. **Keep the result and code.** Copy the code, save it with **Open Wrangler: Export Generated Script**, or insert it
+   into the notebook or R document that opened the data. Cleaned data exports to a separate CSV or Parquet file, so
+   the source is never overwritten.
 
-**2. Preview a change.** Files open in Editing by default. If the sample opens in Viewing, set
-`openWrangler.fileStartMode` to `editing` in Settings, close its Open Wrangler tab, and reopen the file.
-Choose **Add step**, then **Drop missing rows** on **sales**.
-Choose **Preview changes**: Paris disappears from the sample draft, leaving Milan, Rome, and Berlin. Review the
-changed values and generated code before choosing **Apply step** or **Discard**.
-
-**3. Keep the result and code.** Copy the generated code or use **Open Wrangler: Export Generated Script**.
-Supported notebook and R-document sessions can insert code into the originating document. Export cleaned data to a
-separate CSV or Parquet file; Open Wrangler never overwrites the source.
+Files open in Editing unless `openWrangler.fileStartMode` is set to `viewing`.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/workflow.png"><img alt="A Polars formula draft with an added column, Apply and Discard actions, and generated Python code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/workflow.png" width="960"></a>
 
-_A larger orders example: preview a new Polars formula column and its generated code before applying it._
+_Preview a new Polars formula column and its generated code before applying it._
 
-Viewing filters and sorts change only the view. Add **Filter rows** or **Sort rows** steps to include them in the
-cleaning plan.
+Viewing filters and sorts change only what you see. Add a **Filter rows** or **Sort rows** step to make them part of
+the cleaning plan.
 
 ## Review and revise your steps
 
-Choose an applied step in **Cleaning Steps** to inspect its changes, then choose **Current view** to return. You can edit
-or delete earlier steps, or use **Undo** and **Redo**. Changing an earlier step replays the later steps so the result
-and generated code follow the updated plan.
+Choose an applied step in **Cleaning Steps** to inspect its changes, then choose **Current view** to return. You can
+edit or delete earlier steps, or use **Undo** and **Redo**. Later steps replay, so the result and code follow the
+updated plan.
 
-In **2.6**, use **Open Wrangler: Open Another File with This Plan** to repeat confirmed steps on a file matching the
-plan's original column names and types, even when their order changes. If a column was renamed, Open Wrangler asks
-which column in the new file replaces it and shows the complete match before copying the plan. It opens a separate
-Editing session using the same engine and import options. This supports Pandas, Polars, DuckDB and native R file plans without Custom Code or an
-unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
-options. The new tab opens as a read-only preview, and nothing is saved for that file until you choose **Keep plan**.
-Keeping the plan lets you change its steps; **Discard** closes the preview. Both source files remain unchanged.
+**Open Wrangler: Open Another File with This Plan** repeats the confirmed steps on another file with the same columns,
+in any order. If a column was renamed, Open Wrangler asks which column replaces it. The new tab stays a preview until
+you choose **Keep plan**, and neither file changes. Plans with Custom Code or an unfinished draft can't be copied.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection.png"><img alt="Applied Formula-step inspection with projected_revenue highlighted, Edit and Delete controls, and Code Preview labeled Inspecting step 2 of 2" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 
-_Inspect an applied step alongside its scoped code without changing the confirmed data or viewing filters._
+_Inspect an applied step and its code without changing the confirmed data or viewing filters._
 
-## Use notebook data and keep the code
+## Use notebook data
 
-Run the cell that creates your dataframe, choose **Open in Open Wrangler** from the notebook toolbar, and select
-its variable. Supported dataframe outputs also offer an inline preview with an action to open the full workbench.
-The sidebar's **Data sources** view lists discovered Python and R dataframes; **Operations** holds the cleaning catalog.
-Pandas and Polars notebook sessions support the same viewing and cleaning workflow as files.
+Run the cell that creates your dataframe, choose **Open in Open Wrangler** from the notebook toolbar, and pick the
+variable. Dataframe outputs also show an inline preview with an **Open in Open Wrangler** button, and the side bar's
+**Data Sources** view lists the Python and R dataframes it finds.
 
-Copy the generated code, save a Python script, or insert it into the notebook that opened the dataframe. The code
-uses the selected engine: Pandas stays Pandas and Polars stays Polars. You can review and reuse the cleaning function
-in the rest of your analysis.
+<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/notebook-pandas.png"><img alt="A Pandas dataframe previewed inline below a notebook cell, with Rows, Previous and Next controls and an Open in Open Wrangler button" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/notebook-pandas.png" width="960"></a>
 
-Generated Python defines a cleaning function; it does not load or export data automatically. To reuse it, load the
-next input with the same engine and import settings, preserve the expected column names and order, then call the
-generated function, for example `result = clean_data(next_frame)`.
-In **2.6**, DuckDB plans containing Custom Code require the input's exact connection:
-`result = clean_data(next_frame, connection=con)`. Return Custom results derived from `df`, rather than a separate
-connection. Regenerate exported scripts to receive the new capture behavior. See the
-[capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code).
+_A notebook output previews the dataframe inline and opens it in the full workbench._
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/editor-acceptance/vscode-notebook-code-insertion-dark.png"><img alt="Generated Pandas cleaning code inserted into an orders-analysis notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-code-insertion.png" width="960"></a>
+Pandas and Polars dataframes support the same viewing and cleaning workflow as files, and the generated code uses the
+same library. The code defines a cleaning function: load the next input with the same engine and columns, then call
+`result = clean_data(next_frame)`. DuckDB plans with Custom Code also take the input's connection,
+`clean_data(next_frame, connection=con)`, and their Custom Code must return a result derived from `df`.
 
-_Bring the cleaning function back into the notebook that opened the dataframe._
+- **DuckDB relations** support native cleaning, generated code and export, except Custom Code. Opening one captures
+  its full result and asks for its connection; keep that connection open, and commit or roll back any open
+  transaction before cleaning or exporting.
+- **Polars LazyFrames** and lazy Custom Code results are collected in full to keep row identities stable, so they must
+  fit in memory.
+- **PySpark** DataFrames from an existing local batch session support viewing, filters, sorts and profiles. Open
+  Wrangler does not install or configure Spark; streaming dataframes and remote clusters are unsupported.
 
-Local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits in the table below. Their
-notebook sessions do not offer cleaning or export. DuckDB notebook relations support native cleaning, generated code
-and export, except Custom Code. Commit or roll back an open transaction on the relation's connection before cleaning
-or exporting.
-In **2.6**, Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep
-row identities stable across pages. These results must fit memory, including old and new results retained during a
-cleaning preview.
-DuckDB notebook opening also captures the full result and asks you to select its originating connection. Keep that
-connection open while viewing. File Custom results use private native snapshots. These captures increase memory,
-execution time and temporary storage; the [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code)
-describe the limits. Automatic inline previews remain bounded.
+The [capture requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#sessions-and-generated-code)
+list the memory and storage cost of each capture.
 
-## Work with R directly
+## Work with R
 
-Ordinary base `data.frame`, tibble and `data.table` objects in IRkernel notebooks have stable support in desktop
-VS Code on Linux, macOS and Windows since [2.5.0](https://github.com/Matt17BR/openwrangler/releases/tag/v2.5.0).
-Open Wrangler works directly in R, with no conversion through Python.
+Open Wrangler works in R directly, with no conversion through Python. Base `data.frame`, tibble and `data.table`
+objects in IRkernel notebooks are supported in desktop VS Code on Linux, macOS and Windows. Preview steps, inspect the
+history, and copy, save or insert the generated R.
 
-Preview cleaning steps, inspect history, copy or save generated R, and insert it back into the originating notebook.
-CSV export is available; Parquet export requires `arrow` and has type and precision limits.
-
-In **2.6**, choose base R, dplyr, data.table or collapse for built-in cleaning and generated R. Set
-`openWrangler.defaultRLibrary` before opening a new dataframe, or use the engine picker for a file. The toolbar
-and editor title show the confirmed library. Choosing another library from an open R editor creates an editing
-copy with its applied steps; the original keeps its draft and redo history. Applied Custom Code runs again after confirmation.
-The selected package must be installed in the R environment that owns the dataframe. Imports, profiles and exports
-use the shared native R implementations. See the [library requirements](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#r-cleaning-libraries).
+Choose base R, dplyr, data.table or collapse for cleaning and generated code, either in the engine picker or with
+`openWrangler.defaultRLibrary`. The package must be installed in the R environment that owns the dataframe. Custom
+Code can call any installed package and return a base `data.frame`, tibble or `data.table`.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft with regional totals, cleaning history and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/notebook-r-editing.png" width="960"></a>
 
 _Preview grouped R results alongside the cleaning history and generated R code._
 
-In **2.6**, local R file support is **Preview**. On Linux, macOS and Windows, choose R from the dataframe engine picker to open CSV, TSV,
-Parquet, JSONL/NDJSON or an Excel worksheet, or set `openWrangler.defaultBackend` to `r` before opening a file.
-Auto also tries R when no compatible Python interpreter or file engine is available. An explicit Python engine choice
-or a file-read error does not switch to R. CSV/TSV import options include UTF-16 and single-byte encodings,
-ASCII delimiter/quote choices and headerless input. Quoted text retains its embedded line endings.
-Parquet needs `arrow` and `nanoparquet`; exact timestamps also need `clock`. Excel needs `readxl`.
-If required packages are missing, the file view offers **Install required packages**. Review the Rscript environment
-and target package library, then choose **Install**; after installation, Open Wrangler automatically retries the file.
-R loads the complete file into memory and requires an installed
-Rscript; it does not need Python. The **Open Wrangler R** output channel records the selected
-Rscript path. Choosing R from a Python session opens a separate tab and
-preserves the existing steps. Changing an R file's import options also opens a separate session.
+**R files (Preview).** Choose R in the engine picker, or set `openWrangler.defaultBackend` to `r`, to open CSV, TSV,
+Parquet, JSONL/NDJSON or Excel files with Rscript alone. Auto also uses R when no compatible Python engine is
+available. R loads the whole file into memory. Parquet needs `arrow` and `nanoparquet` (and `clock` for exact
+timestamps), and Excel needs `readxl`. If a package is missing, the file view offers **Install required packages**.
 
-All four R choices open and display timezone-free and nanosecond Parquet timestamps exactly. Base R and dplyr also
-support the documented row and column operations while preserving these timestamps. With data.table or collapse
-selected, viewing and export remain available; choose base R or dplyr in the engine picker to create a cleaning copy.
-Some temporal operations remain unsupported.
-See the [timestamp limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#frames-cleaning-and-export-limits).
+R shows nanosecond and time-zone-free Parquet timestamps exactly, and displays homogeneous list columns and flat
+records. Use **Explode List** or **Extract Struct Fields** to turn nested values into exportable columns. The
+[native R support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
+lists the operations each library supports, including
+[timestamp limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#frames-cleaning-and-export-limits).
 
-Custom Code can call installed R packages such as `dplyr`, `data.table` and `collapse`, and return a supported
-base `data.frame`, tibble or `data.table`. In **2.6**, the result can change between these frame classes.
-
-In **2.6**, R also displays homogeneous atomic list columns and flat scalar records. Use Explode List, or Extract Struct Fields
-followed by dropping the parent column, to produce scalar columns for CSV or Parquet export. Recursive containers
-remain unsupported.
-
-R terminal sessions on Linux and managed `.R`, `.Rmd` and `.qmd` documents on Linux/macOS are **Preview**.
-Cursor support is **experimental**. The [native R support guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#native-r-support)
-describes supported frame classes, operations and export limits.
+R terminal sessions on Linux and `.R`, `.Rmd` and `.qmd` documents on Linux and macOS are Preview. Cursor support is
+experimental.
 
 ## Supported dataframes
-
-Use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its tables and views with the grid,
-filters and profiles. A view runs once when opened, and the viewer shows a fixed copy of its rows. Multiple tables and
-views can stay open. Close all its viewers before writing to the database. SQL editing, cleaning and exports are
-unavailable for this entry point. Computed table columns can change between queries.
 
 | Dataframe or source                               | View    | Cleaning and generated code         | Data export                |
 | ------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
@@ -207,42 +156,40 @@ unavailable for this entry point. Computed table columns can change between quer
 | Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
 | R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
-PySpark uses an existing local batch session. Open Wrangler does not install or configure Spark; streaming dataframes
-and remote or authenticated clusters are unsupported.
+**Open Wrangler: Open DuckDB Table** browses the tables and views of a local database. A view runs once when opened,
+and its viewer shows a fixed copy of the rows. Close the viewers before writing to the database.
 
-In our [local performance comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-19-release-preparation/review.md),
-Open Wrangler with Polars had the shortest median times for opening the tested CSV files and showing three column profiles.
-The report includes separate native R measurements, setup failures and limits. These six-column synthetic fixtures
-do not establish performance on wide tables or cold storage.
+In the [latest local performance comparison](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/2026-09-19-release-preparation/review.md),
+Polars had the shortest median times for opening the tested CSV files and showing column profiles. The report also
+covers native R and the limits of its six-column synthetic fixtures.
 
 ## Compatibility and limits
 
-Opening data, running code, and exporting require Workspace Trust. Open Wrangler stays inactive in Restricted Mode.
-
-Use VS Code 1.106 or newer. Python workflows require Python 3.10 through 3.14. Missing packages are named before
-Open Wrangler asks to install them. Other VS Code-based desktop editors have limited compatibility coverage;
-browser-hosted editors are unsupported, and Remote SSH is outside current coverage.
-
-For Windows Python notebooks, minimum CPython patches are 3.10.15, 3.11.10, and 3.12.4; supported 3.13 and 3.14
-releases also qualify. Use the default local per-user temporary directory with its standard profile protections.
-Custom or redirected temporary paths are unsupported.
+- Use VS Code 1.106 or newer. Opening data, running code and exporting require Workspace Trust, so Open Wrangler stays
+  inactive in Restricted Mode.
+- Python workflows need Python 3.10 to 3.14. Open Wrangler names any missing packages before offering to install
+  them.
+- Windows Python notebooks need CPython 3.10.15, 3.11.10, 3.12.4 or a later patch, or any supported 3.13 or 3.14
+  release, and the default per-user temporary directory.
+- Other VS Code-based desktop editors have limited coverage. Browser-hosted editors are unsupported, and Remote SSH is
+  not yet covered.
 
 See [supported environments](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#supported-environments),
 [file-reader and export limits](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md#files-and-exports),
 and [notebook runtime recovery](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md#notebook-kernel-terminal-and-document-provenance).
-The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists commands, settings, and operation parameters.
+The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists commands, settings, and
+operation parameters.
 
 ## Support and project
 
-Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) and
-[accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md).
-The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) tracks unscheduled
-proposals such as two-input workflows.
-For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
-Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
+Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md), the
+[accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md), or the
+[product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md). To contribute, see
+[CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md). Report bugs in
+[GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), and follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.
 
 Open Wrangler grew out of an appreciation for [Microsoft Data Wrangler](https://github.com/microsoft/vscode-data-wrangler)
-and a desire to extend the idea as an open-source project. It is independently built, supports more dataframe engines
-natively, and is not affiliated with Microsoft. Licensed under the
+and a desire to extend the idea as an open-source project. It was built independently, supports more dataframe
+engines natively, and is not affiliated with Microsoft. Licensed under the
 [MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).

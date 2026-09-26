@@ -44,12 +44,6 @@ const assets = [
     width: 1_040,
     height: 590
   }),
-  nativeCrop("gallery/notebook-code-insertion.png", "vscode-notebook-code-insertion-dark.png", 1_440, 900, {
-    x: 155,
-    y: 754,
-    width: 1_220,
-    height: 100
-  }),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -213,19 +207,7 @@ const editorDetailCrops = [
     y: 0,
     width: 1_040,
     height: 380
-  }),
-  nativeCrop(
-    "vscode-notebook-r-code-insertion-detail-dark.png",
-    "vscode-notebook-r-code-insertion-dark.png",
-    1_440,
-    900,
-    {
-      x: 140,
-      y: 532,
-      width: 1_210,
-      height: 82
-    }
-  )
+  })
 ];
 
 assertUniqueDestinations(assets);
