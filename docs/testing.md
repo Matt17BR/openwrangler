@@ -757,7 +757,8 @@ library at its reviewed version and load successfully before editor launch. Note
 require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.
 All editor purposes retain the exact native R executable and private library environment. Notebook setup, restart
 and replacement checks compare the reported collapse version with the version selected by preparation. The remote
-container retains its separate pinned package version.
+container retains its separate pinned package version. Its image build sends the same R version and platform user
+agent, so the Noble snapshots supply binaries instead of compiling every package within the five-minute build limit.
 Editor libraries include Arrow 23.0.1.1 and clock 0.7.4 from the existing primary snapshot. Windows notebook and core
 preparation also include nanoparquet 0.5.1 from the existing supplemental snapshot for Parquet file inputs. Linux source locks use Arrow 25.0.0
 and clock 0.7.4 from their existing snapshot. These packages are installed in the selected private R library, not bundled
