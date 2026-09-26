@@ -8100,21 +8100,25 @@ openwrangler_r_kernel_agent <- local({
           remainder = arrow::call_function("if_else", negative, arrow::call_function("add", remainder, divisor), remainder)
         )
       }
-      days <- floor_divide(ticks, 86400 * per_second)
-      seconds <- floor_divide(days$remainder, per_second)
-      day_values <- days$quotient$cast(arrow::float64(), safe = FALSE)$as_vector()
+      seconds <- floor_divide(ticks, per_second)
+      second_values <- seconds$quotient$cast(arrow::float64(), safe = FALSE)$as_vector()
       calendar <- base::as.integer(clock::as_duration(clock::as_naive_time(
         clock::year_month_day(c(0L, 9999L), c(1L, 12L), c(1L, 31L))
       )))
-      if (base::any(day_values < calendar[[1L]] | day_values > calendar[[2L]], na.rm = TRUE)) {
+      if (base::any(second_values < 86400 * calendar[[1L]] | second_values >= 86400 * (calendar[[2L]] + 1), na.rm = TRUE)) {
         refuse("timestamps exceed the supported native calendar range")
       }
-      whole <- function(array) array$cast(arrow::int32())$as_vector()
-      subsecond <- whole(seconds$remainder)
+      subsecond <- seconds$remainder$cast(arrow::int32())$as_vector()
       subsecond <- base::switch(unit, ms = clock::duration_milliseconds(subsecond),
         us = clock::duration_microseconds(subsecond), ns = clock::duration_nanoseconds(subsecond))
-      clock::as_naive_time(clock::duration_days(base::as.integer(day_values))) +
-        clock::duration_seconds(whole(seconds$quotient)) + subsecond
+      # Clock durations take 32-bit counts, so only 1901-2038 seconds fit in one.
+      whole_seconds <- if (base::all(base::is.na(second_values) | base::abs(second_values) <= .Machine$integer.max)) {
+        clock::duration_seconds(base::as.integer(second_values))
+      } else {
+        days <- base::floor(second_values / 86400)
+        clock::duration_days(base::as.integer(days)) + clock::duration_seconds(base::as.integer(second_values - 86400 * days))
+      }
+      clock::as_naive_time(whole_seconds + subsecond)
     }
     metadata <- nanoparquet::read_parquet_metadata(path)
     schema <- metadata$schema
@@ -8226,8 +8230,9 @@ openwrangler_r_kernel_agent <- local({
         base::structure(seconds, class = "difftime", units = "secs")
       } else if (kind %in% c("int64", "uint64")) {
         require_package("bit64", message = "R Parquet integer64 input requires bit64. Run install.packages('bit64') in the selected R runtime, then reopen the file.")
+        downcast <- base::options(arrow.int64_downcast = FALSE)
         native <- base::tryCatch(column$cast(arrow::int64())$as_vector(),
-          error = function(error) refuse("unsigned values exceed the native signed integer range"))
+          error = function(error) refuse("unsigned values exceed the native signed integer range"), finally = base::options(downcast))
         if (!base::inherits(native, "integer64")) native <- bit64::as.integer64(native)
         if (!base::identical(base::is.na(native), nulls)) refuse("native integer missing sentinels are present source values")
         native

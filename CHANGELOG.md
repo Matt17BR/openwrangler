@@ -18,6 +18,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R text filters and profiles evaluate each distinct value once.
 - Value search on large Pandas columns, and on DuckDB single-precision and datetime columns, labels each distinct value once instead of every row.
 - R profiles of large numeric columns take about half as long, with the same exact means, sums and distinct counts.
+- R opens Parquet files with nanosecond or timezone-free timestamps and 64-bit integers faster; an 11.7-million-row file now opens in about 5.5 seconds instead of 6.5.
 
 ### Fixed
 
