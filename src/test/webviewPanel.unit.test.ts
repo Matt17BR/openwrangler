@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscode from "vscode";
 import { commands, Uri, window, workspace } from "vscode";
-import type { BridgeRequestOptions, OpenWranglerBridge, SessionRuntimeReplacement } from "../extension/dataBridge";
+import type {
+  BridgeRequestOptions,
+  OpenWranglerBridge,
+  FileReconfigurationOptions,
+  SavedFileWork,
+  SessionRuntimeReplacement
+} from "../extension/dataBridge";
+import type { FileEngine } from "../shared/operations";
 import type { SessionRecoveryMessage } from "../shared/sessionRecovery";
 import type { GridViewState } from "../shared/viewState";
 import {
@@ -25,7 +32,8 @@ import type {
   SessionMode,
   RLibrary,
   SessionOpenedResponse,
-  SessionSource
+  SessionSource,
+  TransformStep
 } from "../shared/protocol";
 
 vi.mock("../extension/files/importOptions", async (importOriginal) => {
@@ -83,6 +91,15 @@ const summary: ColumnSummary = {
 
 const openedResponse: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
 const liveHarnesses: Array<{ dispose(): void }> = [];
+const fileEngineRegistrations: vscode.Disposable[] = [];
+
+function registerFileEngineBridges(
+  select: (source: SessionSource, engine: FileEngine) => OpenWranglerBridge
+): ReturnType<typeof vi.fn<(source: SessionSource, engine: FileEngine) => Promise<OpenWranglerBridge>>> {
+  const selector = vi.fn(async (source: SessionSource, engine: FileEngine) => select(source, engine));
+  fileEngineRegistrations.push(OpenWranglerPanel.registerFileEngineBridges(selector));
+  return selector;
+}
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -98,7 +115,7 @@ const panelPromptMocks = {
 };
 
 describe("OpenWranglerPanel retained view state", () => {
-  it("offers the existing file reopen path for a selected library's saved work", async () => {
+  it("restores a selected R library's saved work in this tab when the tab has no work", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "frame.csv",
@@ -109,39 +126,59 @@ describe("OpenWranglerPanel retained view state", () => {
       ...openedResponse,
       metadata: { ...metadata, source, backend: "r", rLibrary: "base", rDataframeFlavor: "r.data.frame" }
     };
-    const createBridge = vi.fn();
-    const captureRLibraryCopy = vi.fn(() => ({
-      source,
-      rLibrary: "base" as const,
-      appliedStepCount: 0,
-      rerunsCustomCode: false,
-      isCurrent: () => true,
-      createBridge
-    }));
+    const restored: SessionOpenedResponse = {
+      ...response,
+      metadata: {
+        ...response.metadata,
+        revision: 1,
+        rLibrary: "collapse",
+        rDataframeFlavor: "r.data.table",
+        steps: [{ id: "lower-city", kind: "lowerText", params: { column: { id: "r:c:0", name: "city" } } }]
+      }
+    };
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => restored);
+    const savedFileWork = vi.fn((_source: SessionSource, engine: FileEngine) =>
+      engine.rLibrary === "collapse" ? { steps: restored.metadata.steps, draftStep: undefined } : undefined
+    );
+    const selector = registerFileEngineBridges(() => {
+      throw new Error("R libraries share one runtime for the same import options.");
+    });
     const harness = createPanelHarness(
-      { request: vi.fn(), captureRLibraryCopy },
+      { request: vi.fn(), reconfigureFileSession, savedFileWork },
       { source, backend: "r", openResponse: response }
     );
     await harness.open();
-    panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "r", rLibrary: "collapse" });
-    panelPromptMocks.showWarningMessage.mockResolvedValue("Open file separately");
-    const execute = vi.spyOn(commands, "executeCommand");
-    await harness.receive({ kind: "changeBackend" });
-    expect(execute).toHaveBeenCalledWith(
-      "openWrangler.internal.openFileWithEngine",
-      source,
-      "r",
-      expect.any(Function),
-      "collapse"
+    panelPromptMocks.showQuickPick.mockImplementation(async (items) =>
+      (items as FileEngine[]).find((item) => item.rLibrary === "collapse")
     );
-    expect(createBridge).not.toHaveBeenCalled();
-    const current = execute.mock.calls.find(
-      ([command]) => command === "openWrangler.internal.openFileWithEngine"
-    )?.[3] as () => boolean;
-    expect(current()).toBe(true);
-    harness.dispose();
-    expect(current()).toBe(false);
+
+    await harness.receive({ kind: "changeBackend" });
+
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "R · base", description: "Current" }),
+        expect.objectContaining({ label: "R · collapse", description: "Restores 1 applied step" }),
+        expect.objectContaining({ label: "Python · Polars", description: undefined })
+      ]),
+      expect.objectContaining({ title: "Dataframe engine", placeHolder: "Current: R · base" }),
+      expect.anything()
+    );
+    expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(selector).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).toHaveBeenCalledExactlyOnceWith("session", 0, source, {
+      cancellation: expect.anything(),
+      backendPreference: "r",
+      rLibrary: "collapse",
+      plan: "saved"
+    });
+    expect(harness.posted).toContainEqual({
+      kind: "importOptionsState",
+      busy: true,
+      activity: "Switching to R · collapse…"
+    });
+    expect(harness.title).toContain("R · collapse");
   });
+
   it("opens an explicitly selected R library directly and displays only its confirmed identity", async () => {
     const source: SessionSource = {
       kind: "rInteractiveVariable",
@@ -1916,6 +1953,7 @@ describe("OpenWranglerPanel retained view state", () => {
   );
   afterEach(() => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
+    while (fileEngineRegistrations.length) fileEngineRegistrations.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
     delete (window as unknown as { showWarningMessage?: unknown }).showWarningMessage;
   });
@@ -2298,15 +2336,17 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ label: "Python · Polars", description: "Current", backend: "polars" }),
-        expect.objectContaining({ label: "Python · DuckDB", description: "Switch in this tab", backend: "duckdb" }),
-        expect.objectContaining({ label: "Python · Pandas", description: "Switch in this tab", backend: "pandas" })
+        expect.objectContaining({ label: "Python · DuckDB", description: undefined, backend: "duckdb" }),
+        expect.objectContaining({ label: "Python · Pandas", description: undefined, backend: "pandas" }),
+        expect.objectContaining({ label: "R · dplyr", description: undefined, backend: "r", rLibrary: "dplyr" })
       ]),
       expect.objectContaining({ title: "Dataframe engine", placeHolder: "Current: Python · Polars" }),
       expect.anything()
     );
     expect(reconfigureFileSession).toHaveBeenCalledWith("session", 0, source, {
       cancellation: expect.anything(),
-      backendPreference: "pandas"
+      backendPreference: "pandas",
+      plan: "current"
     });
     expect(workspaceState.update).toHaveBeenCalledWith(
       CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY,
@@ -2315,6 +2355,11 @@ describe("OpenWranglerPanel retained view state", () => {
       })
     );
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
+    expect(harness.posted).toContainEqual({
+      kind: "importOptionsState",
+      busy: true,
+      activity: "Switching to Python · Pandas…"
+    });
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
   });
 
@@ -2323,10 +2368,9 @@ describe("OpenWranglerPanel retained view state", () => {
     ["r", "pandas", "csv", "win32"],
     ["polars", "r", "parquet", "darwin"],
     ["polars", "r", "jsonl", "linux"],
-    ["pandas", "r", "xlsx", "win32"],
-    ["polars", "r", "csv", "win32"]
+    ["pandas", "r", "xlsx", "win32"]
   ] as const)(
-    "opens %s files in a separate %s session (%s, %s) without replaying the original plan",
+    "switches %s files to %s in this tab and replays the plan there (%s, %s)",
     async (backend, target, extension, platform) => {
       const supportsDocument = rscriptPath.supportsRscriptExecution(platform);
       const supportsFile = rscriptPath.supportsRFileExecution(platform);
@@ -2338,86 +2382,97 @@ describe("OpenWranglerPanel retained view state", () => {
         path: `/workspace/records.${extension}`,
         uri: `file:///workspace/records.${extension}`
       };
-      const opened: SessionOpenedResponse = {
-        ...responseForSource(source),
-        metadata: {
-          ...metadata,
-          source,
-          backend,
-          ...(backend === "r" ? { rLibrary: "base" as const } : {}),
-          steps: [{ id: "lower-city", kind: "lowerText", params: { column: { id: "c:0", name: "city" } } }],
-          latestStepInputSchema: metadata.schema
-        }
+      const step: TransformStep = {
+        id: "lower-city",
+        kind: "lowerText",
+        params: { column: { id: "c:0", name: "city" } }
       };
-      const executeCommand = vi.spyOn(commands, "executeCommand");
-      const reconfigureFileSession = vi.fn();
+      const engineMetadata = (engine: typeof backend | typeof target, revision: number): SessionMetadata => ({
+        ...metadata,
+        source,
+        revision,
+        backend: engine,
+        ...(engine === "r" ? { rLibrary: "base" as const } : {}),
+        steps: [step],
+        latestStepInputSchema: metadata.schema
+      });
+      const opened: SessionOpenedResponse = { ...responseForSource(source), metadata: engineMetadata(backend, 0) };
+      const switched: SessionOpenedResponse = { ...opened, metadata: engineMetadata(target, 1) };
+      const closed = async (): Promise<OpenWranglerResponse> => ({ kind: "sessionClosed", sessionId: "session" });
+      const originalRequest = vi.fn(closed);
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => switched);
+      const targetBridge: OpenWranglerBridge = { request: vi.fn(closed), setActiveSession: vi.fn() };
+      const selector = registerFileEngineBridges(() => targetBridge);
       const harness = createPanelHarness(
-        { request: vi.fn(), reconfigureFileSession },
+        { request: originalRequest, reconfigureFileSession },
         { source, backend, backendPreference: backend, openResponse: opened }
       );
       await harness.open();
+      const targetEngine: FileEngine = target === "r" ? { backend: "r", rLibrary: "base" } : { backend: target };
       panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
-        const choice = (items as Array<{ backend: DataBackend; description?: string; detail?: string }>).find(
-          (item) => item.backend === target
+        const choice = (items as Array<FileEngine & { label: string }>).find(
+          (item) => item.backend === targetEngine.backend && item.rLibrary === targetEngine.rLibrary
         );
         expect(choice).toMatchObject({
           label: target === "r" ? "R · base" : "Python · Pandas",
-          description: "Reopen file in new tab"
+          description: "Replays 1 applied step"
         });
         return choice;
       });
 
       await harness.receive({ kind: "changeBackend" });
 
-      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ title: "Dataframe engine" }),
-        expect.anything()
-      );
-      const handoff = executeCommand.mock.calls.find(
-        ([command]) => command === "openWrangler.internal.openFileWithEngine"
-      );
-      expect(handoff).toEqual([
-        "openWrangler.internal.openFileWithEngine",
-        source,
-        target,
-        expect.any(Function),
-        ...(target === "r" ? ["base"] : [])
-      ]);
-      expect(reconfigureFileSession).not.toHaveBeenCalled();
+      expect(selector).toHaveBeenCalledExactlyOnceWith(source, targetEngine);
       expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
-      const isCurrent = handoff?.[3] as () => boolean;
-      expect(isCurrent()).toBe(true);
+      expect(reconfigureFileSession).toHaveBeenCalledExactlyOnceWith("session", 0, source, {
+        cancellation: expect.anything(),
+        backendPreference: target,
+        ...(target === "r" ? { rLibrary: "base" } : {}),
+        plan: "current",
+        targetBridge
+      });
+      expect(harness.title).toContain(target === "r" ? "R · base" : "Python · Pandas");
+      expect(targetBridge.setActiveSession).toHaveBeenCalledWith("session");
       harness.posted.length = 0;
       await harness.receive({ kind: "ready" });
-      expect(harness.posted).toContainEqual(hostSnapshot(opened));
+      expect(harness.posted).toContainEqual(hostSnapshot(switched));
       harness.dispose();
-      expect(isCurrent()).toBe(false);
+      expect(targetBridge.request).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "closeSession", sessionId: "session" }),
+        expect.anything()
+      );
+      expect(originalRequest).not.toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "closeSession" }),
+        expect.anything()
+      );
     }
   );
 
-  it("does not hand a late engine selection from a closed panel to a new file owner", async () => {
+  it("does not start a late engine selection from a closed panel", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "records.csv",
       path: "/workspace/records.csv",
       uri: "file:///workspace/records.csv"
     };
-    const picker = deferred<{ backend: "r" }>();
-    const executeCommand = vi.spyOn(commands, "executeCommand");
-    const harness = createPanelHarness({ request: vi.fn() }, { source, openResponse: responseForSource(source) });
+    const picker = deferred<FileEngine>();
+    const reconfigureFileSession = vi.fn();
+    const selector = registerFileEngineBridges(() => ({ request: vi.fn() }));
+    const harness = createPanelHarness(
+      { request: vi.fn(), reconfigureFileSession },
+      { source, openResponse: responseForSource(source) }
+    );
     await harness.open();
     panelPromptMocks.showQuickPick.mockReturnValueOnce(picker.promise);
 
     const changing = harness.receive({ kind: "changeBackend" });
     await vi.waitFor(() => expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce());
     harness.dispose();
-    picker.resolve({ backend: "r" });
+    picker.resolve({ backend: "r", rLibrary: "base" });
     await changing;
 
-    expect(executeCommand.mock.calls.some(([command]) => command === "openWrangler.internal.openFileWithEngine")).toBe(
-      false
-    );
+    expect(selector).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2434,7 +2489,7 @@ describe("OpenWranglerPanel retained view state", () => {
       sheets: ["Overview", " Sales ", "销售"]
     }
   ])(
-    "opens changed R import options in a separate session and keeps $filename pinned",
+    "reopens changed R import options for $filename in this tab on an R runtime for those options",
     async ({ filename, original, selected, sheets }) => {
       const source: SessionSource = {
         kind: "file",
@@ -2443,13 +2498,21 @@ describe("OpenWranglerPanel retained view state", () => {
         uri: `file:///workspace/${filename}`,
         importOptions: original
       };
+      const nextSource: SessionSource = { ...source, importOptions: selected };
       const opened: SessionOpenedResponse = {
         ...responseForSource(source),
         metadata: { ...metadata, backend: "r", rLibrary: "base", source }
       };
-      const executeCommand = vi.spyOn(commands, "executeCommand");
-      const reconfigureFileSession = vi.fn();
+      const reopened: SessionOpenedResponse = {
+        ...responseForSource(nextSource, 1),
+        metadata: { ...opened.metadata, revision: 1, source: nextSource }
+      };
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => reopened);
       const listExcelSheets = vi.fn(async () => sheets);
+      const nextBridge: OpenWranglerBridge = {
+        request: vi.fn(async (): Promise<OpenWranglerResponse> => ({ kind: "sessionClosed", sessionId: "session" }))
+      };
+      const selector = registerFileEngineBridges(() => nextBridge);
       const harness = createPanelHarness(
         { request: vi.fn(), reconfigureFileSession, listExcelSheets },
         { source, backend: "r", backendPreference: "r", openResponse: opened }
@@ -2470,17 +2533,19 @@ describe("OpenWranglerPanel retained view state", () => {
           sheets
         );
       } else expect(listExcelSheets).not.toHaveBeenCalled();
-      expect(executeCommand).toHaveBeenCalledWith(
-        "openWrangler.internal.openFileWithEngine",
-        { ...source, importOptions: selected },
-        "r",
-        expect.any(Function),
-        "base"
-      );
-      expect(reconfigureFileSession).not.toHaveBeenCalled();
+      expect(selector).toHaveBeenCalledExactlyOnceWith(nextSource, { backend: "r", rLibrary: "base" });
+      expect(reconfigureFileSession).toHaveBeenCalledExactlyOnceWith("session", 0, nextSource, {
+        cancellation: expect.anything(),
+        targetBridge: nextBridge
+      });
       harness.posted.length = 0;
       await harness.receive({ kind: "ready" });
-      expect(harness.posted).toContainEqual(hostSnapshot(opened));
+      expect(harness.posted).toContainEqual(hostSnapshot(reopened));
+      harness.dispose();
+      expect(nextBridge.request).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "closeSession", sessionId: "session" }),
+        expect.anything()
+      );
     }
   );
 
@@ -2519,7 +2584,8 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(reconfigureFileSession).toHaveBeenCalledTimes(2);
       expect(reconfigureFileSession).toHaveBeenLastCalledWith("session", 0, source, {
         cancellation: expect.anything(),
-        backendPreference: backend
+        backendPreference: backend,
+        plan: "current"
       });
       expect(harness.posted).toContainEqual(hostSnapshot(configured));
       expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: true });
@@ -2643,7 +2709,6 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     await harness.open();
     panelPromptMocks.showQuickPick.mockResolvedValue({ backend: "polars" });
-    panelPromptMocks.showWarningMessage.mockResolvedValue("Replay and switch");
     await harness.receive({ kind: "changeBackend" });
     const rewriting = harness.receive({
       kind: "rewriteCleaningPlan",
@@ -2703,54 +2768,181 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
-  it("requires explicit replay confirmation before switching a session with cleaning state", async () => {
-    const source: SessionSource = {
-      kind: "file",
-      label: "records.csv",
-      path: "/workspace/records.csv",
-      uri: "file:///workspace/records.csv",
-      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
-    };
-    const appliedStep = {
-      id: "lower-city",
-      kind: "lowerText" as const,
-      params: { column: { id: "c:0", name: "city" } }
-    };
-    const opened: SessionOpenedResponse = {
-      ...responseForSource(source),
-      metadata: { ...metadata, source, steps: [appliedStep], latestStepInputSchema: metadata.schema }
-    };
-    const configured: SessionOpenedResponse = {
-      ...opened,
-      metadata: { ...opened.metadata, revision: 1, backend: "pandas" }
-    };
-    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
-    const harness = createPanelHarness(
-      { request: vi.fn(async () => opened), reconfigureFileSession },
-      { source, openResponse: opened, backendPreference: "auto" }
-    );
-    await harness.open();
-    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
-      if (options?.title !== "Dataframe engine") return undefined;
-      return (items as Array<{ backend: DataBackend }>).find((item) => item.backend === "pandas");
-    });
+  it.each([
+    {
+      name: "portable steps and a draft",
+      steps: [lowerStep],
+      draftStep: upperStep,
+      description: "Replays 1 applied step and a draft"
+    },
+    {
+      name: "saved work this tab already contains",
+      steps: [lowerStep, upperStep],
+      saved: { steps: [lowerStep], draftStep: undefined },
+      description: "Replays 2 applied steps"
+    },
+    {
+      name: "a saved draft this tab has applied",
+      steps: [lowerStep, upperStep],
+      saved: { steps: [lowerStep], draftStep: upperStep },
+      description: "Replays 2 applied steps"
+    },
+    {
+      name: "Custom code between R libraries",
+      from: { backend: "r", rLibrary: "base" },
+      to: { backend: "r", rLibrary: "dplyr" },
+      steps: [customStep],
+      description: "Replays 1 applied step"
+    }
+  ] satisfies CarriedEngineSwitch[])("carries $name to the selected engine without asking", async (scenario) => {
+    const { quickPickItem, reconfigureFileSession } = await switchFileEngine(scenario, [undefined]);
 
-    await harness.receive({ kind: "changeBackend" });
+    expect(quickPickItem).toMatchObject({ description: scenario.description });
+    expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(reconfigureFileSession.mock.calls.map((call) => call[3]?.plan)).toEqual(["current"]);
+  });
 
-    expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledWith(
-      "Switch to Python · Pandas?",
-      expect.objectContaining({
-        modal: true,
-        detail: expect.stringContaining("replay 1 applied step with Python · Pandas")
-      }),
-      "Replay and switch"
-    );
-    expect(reconfigureFileSession).not.toHaveBeenCalled();
+  it.each([
+    {
+      name: "saved work that continues this tab's steps",
+      to: { backend: "r", rLibrary: "dplyr" },
+      steps: [lowerStep],
+      saved: {
+        steps: [
+          { params: { column: { name: "city", id: "r:c:0" } }, kind: "lowerText", id: "lower-city" },
+          { id: "upper-city", kind: "upperText", params: { column: { id: "r:c:0", name: "city" } } }
+        ],
+        draftStep: undefined
+      },
+      description: "Restores 2 applied steps"
+    },
+    {
+      name: "saved work that applied this tab's draft",
+      steps: [lowerStep],
+      draftStep: upperStep,
+      saved: { steps: [lowerStep, upperStep], draftStep: undefined },
+      description: "Restores 2 applied steps"
+    },
+    {
+      name: "a saved draft after this tab's steps",
+      steps: [lowerStep],
+      saved: { steps: [lowerStep], draftStep: elsewhereStep },
+      description: "Restores 1 applied step and a draft"
+    }
+  ] satisfies CarriedEngineSwitch[])("restores $name without asking", async (scenario) => {
+    const { quickPickItem, reconfigureFileSession } = await switchFileEngine(scenario, [undefined]);
 
-    panelPromptMocks.showWarningMessage.mockResolvedValueOnce("Replay and switch");
-    await harness.receive({ kind: "changeBackend" });
+    expect(quickPickItem).toMatchObject({ description: scenario.description });
+    expect(panelPromptMocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(reconfigureFileSession.mock.calls.map((call) => call[3]?.plan)).toEqual(["saved"]);
+  });
 
-    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+  it.each([
+    {
+      name: "other saved work",
+      steps: [lowerStep],
+      saved: { steps: [elsewhereStep], draftStep: undefined },
+      description: "Has other saved work",
+      message: "Python · Pandas has other saved work for this file",
+      detail:
+        "It has 1 applied step. This tab has 1 applied step. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Restore saved work", "Use this tab's work"],
+      plans: ["saved", "current"]
+    },
+    {
+      name: "a saved draft where this tab has another step",
+      steps: [lowerStep, upperStep],
+      saved: { steps: [lowerStep], draftStep: elsewhereStep },
+      description: "Has other saved work",
+      message: "Python · Pandas has other saved work for this file",
+      detail:
+        "It has 1 applied step and a draft. This tab has 2 applied steps. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Restore saved work", "Use this tab's work"],
+      plans: ["saved", "current"]
+    },
+    {
+      name: "saved work that has an edited version of this tab's step",
+      steps: [lowerStep],
+      saved: {
+        steps: [
+          { id: lowerStep.id, kind: "lowerText", params: { column: { id: "c:source:1", name: "state" } } },
+          upperStep
+        ],
+        draftStep: undefined
+      },
+      description: "Has other saved work",
+      message: "Python · Pandas has other saved work for this file",
+      detail:
+        "It has 2 applied steps. This tab has 1 applied step. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Restore saved work", "Use this tab's work"],
+      plans: ["saved", "current"]
+    },
+    {
+      name: "a step the engine cannot run",
+      steps: [lowerStep, customStep, upperStep],
+      description: "Custom code can't move",
+      message: "Custom code can't run with Python · Pandas",
+      detail:
+        "Custom code is written for Python · Polars dataframes. You can replay the step before it or start without steps. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Replay the first step", "Start without steps"],
+      plans: [{ steps: 1 }, { steps: 0 }]
+    },
+    {
+      name: "steps before one the engine cannot run",
+      steps: [lowerStep, upperStep, customStep],
+      description: "Custom code can't move",
+      message: "Custom code can't run with Python · Pandas",
+      detail:
+        "Custom code is written for Python · Polars dataframes. You can replay the 2 steps before it or start without steps. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Replay the first 2 steps", "Start without steps"],
+      plans: [{ steps: 2 }, { steps: 0 }]
+    },
+    {
+      name: "a first step the engine cannot run",
+      from: { backend: "r", rLibrary: "base" },
+      steps: [customStep],
+      description: "Custom code can't move",
+      message: "Custom code can't run with Python · Pandas",
+      detail:
+        "Custom code is written for R dataframes. Python · Pandas can start without steps. Switching back to R · base restores this tab's work.",
+      buttons: ["Start without steps"],
+      plans: [{ steps: 0 }]
+    },
+    {
+      name: "a draft the engine cannot run",
+      to: { backend: "duckdb" },
+      steps: [lowerStep],
+      draftStep: explodeStep,
+      description: "Explode List can't move",
+      message: "Explode List can't run with Python · DuckDB",
+      detail:
+        "Explode List needs Python · Polars or R. The applied steps can move without the draft. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Switch without the draft"],
+      plans: [{ steps: 1 }]
+    },
+    {
+      name: "other saved work and a step the engine cannot run",
+      steps: [lowerStep, customStep],
+      saved: { steps: [elsewhereStep], draftStep: undefined },
+      description: "Custom code can't move",
+      message: "Python · Pandas has other saved work for this file",
+      detail:
+        "It has 1 applied step. This tab has 2 applied steps. Custom code is written for Python · Polars dataframes. Switching back to Python · Polars restores this tab's work.",
+      buttons: ["Restore saved work", "Replay the first step"],
+      plans: ["saved", { steps: 1 }]
+    }
+  ] satisfies AskedEngineSwitch[])("asks how to switch with $name", async (scenario) => {
+    const { quickPickItem, reconfigureFileSession } = await switchFileEngine(scenario, [
+      ...scenario.buttons,
+      undefined
+    ]);
+
+    expect(quickPickItem).toMatchObject({ description: scenario.description });
+    expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledTimes(scenario.buttons.length + 1);
+    for (const call of panelPromptMocks.showWarningMessage.mock.calls) {
+      expect(call).toEqual([scenario.message, { modal: true, detail: scenario.detail }, ...scenario.buttons]);
+    }
+    expect(reconfigureFileSession.mock.calls.map((call) => call[3]?.plan)).toEqual(scenario.plans);
   });
 
   it("coalesces native import commands and keeps them pending through the renderer-prepared transaction", async () => {
@@ -4774,6 +4966,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual(configured.metadata.source.importOptions);
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(configured),
       { kind: "importOptionsState", busy: false }
     ]);
@@ -4829,6 +5022,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       failure,
       { kind: "importOptionsState", busy: false }
     ]);
@@ -5412,7 +5606,10 @@ describe("OpenWranglerPanel retained view state", () => {
     });
 
     expect(updateViewState).not.toHaveBeenCalled();
-    expect(harness.posted).toEqual([{ kind: "importOptionsState", busy: true }]);
+    expect(harness.posted).toEqual([
+      { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" }
+    ]);
 
     replacement.resolve(
       responseForSource(
@@ -5458,7 +5655,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
 
     expect(harness.posted).toContainEqual(hostSnapshot(initial));
-    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
+    expect(harness.posted).toContainEqual({
+      kind: "importOptionsState",
+      busy: true,
+      activity: "Reopening with the new import options…"
+    });
     expect(latestRendererSynchronization(harness.posted)).toMatchObject({
       sessionId: initial.metadata.sessionId,
       revision: initial.metadata.revision
@@ -6102,6 +6303,7 @@ describe("OpenWranglerPanel retained view state", () => {
     if (!committed) throw new Error("Expected the confirmed replacement snapshot.");
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       {
         ...hostSnapshot(committed),
         presentation: {
@@ -6751,6 +6953,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       failure,
       hostSnapshot(initial),
       failure,
@@ -6799,6 +7002,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       cancellation,
       { kind: "importOptionsState", busy: false }
     ]);
@@ -7047,6 +7251,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(maximumActiveCandidates).toBe(1);
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(responseForSource({ ...source, importOptions: attempts[1] }, 8)),
       { kind: "importOptionsState", busy: false }
     ]);
@@ -7161,6 +7367,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession).toHaveBeenCalledOnce();
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(firstOpened),
       { kind: "cancelled", targetRequestId: "change-import-options" },
       { kind: "importOptionsState", busy: false }
@@ -7231,6 +7438,8 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(firstOpened),
       failure,
       { kind: "importOptionsState", busy: false }
@@ -7288,6 +7497,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(harness.posted).toEqual([
       { kind: "importOptionsState", busy: true },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(
         responseForSource(
           {
@@ -7360,6 +7570,7 @@ describe("OpenWranglerPanel retained view state", () => {
         recoverable: true,
         sessionId: metadata.sessionId
       },
+      { kind: "importOptionsState", busy: true, activity: "Reopening with the new import options…" },
       hostSnapshot(
         responseForSource(
           {
@@ -8416,6 +8627,103 @@ describe("OpenWranglerPanel retained view state", () => {
     });
   });
 });
+
+const lowerStep: TransformStep = {
+  id: "lower-city",
+  kind: "lowerText",
+  params: { column: { id: "c:source:0", name: "city" } }
+};
+const upperStep: TransformStep = {
+  id: "upper-city",
+  kind: "upperText",
+  params: { column: { id: "c:source:0", name: "city" } }
+};
+const customStep: TransformStep = { id: "custom", kind: "customCode", params: { code: "result = df" } };
+const elsewhereStep: TransformStep = {
+  id: "elsewhere",
+  kind: "stripText",
+  params: { column: { id: "c:source:0", name: "city" } }
+};
+const explodeStep: TransformStep = {
+  id: "explode",
+  kind: "explodeList",
+  params: { column: { id: "c:source:0", name: "city" } }
+};
+
+interface EngineSwitchCase {
+  readonly from?: FileEngine;
+  readonly to?: FileEngine;
+  readonly steps: readonly TransformStep[];
+  readonly draftStep?: TransformStep;
+  readonly saved?: SavedFileWork;
+}
+
+interface CarriedEngineSwitch extends EngineSwitchCase {
+  readonly name: string;
+  readonly description: string;
+}
+
+interface AskedEngineSwitch extends CarriedEngineSwitch {
+  readonly message: string;
+  readonly detail: string;
+  readonly buttons: readonly string[];
+  readonly plans: ReadonlyArray<FileReconfigurationOptions["plan"]>;
+}
+
+/** Picks `to` once per answer; every reconfiguration fails so each attempt starts from the same tab state. */
+async function switchFileEngine(scenario: EngineSwitchCase, answers: ReadonlyArray<string | undefined>) {
+  const from = scenario.from ?? { backend: "polars" };
+  const to = scenario.to ?? { backend: "pandas" };
+  const source: SessionSource = {
+    kind: "file",
+    label: "records.csv",
+    path: "/workspace/records.csv",
+    uri: "file:///workspace/records.csv"
+  };
+  const opened: SessionOpenedResponse = {
+    ...responseForSource(source),
+    metadata: {
+      ...metadata,
+      source,
+      backend: from.backend,
+      ...(from.rLibrary ? { rLibrary: from.rLibrary } : {}),
+      steps: [...scenario.steps],
+      ...(scenario.steps.length > 0 ? { latestStepInputSchema: metadata.schema } : {}),
+      ...(scenario.draftStep ? { draftStep: scenario.draftStep } : {})
+    }
+  };
+  const reconfigureFileSession = vi.fn<NonNullable<OpenWranglerBridge["reconfigureFileSession"]>>(async () => ({
+    kind: "error",
+    code: "cancelled",
+    message: "The switch was cancelled.",
+    recoverable: true,
+    sessionId: "session"
+  }));
+  const targetBridge: OpenWranglerBridge = { request: vi.fn() };
+  registerFileEngineBridges(() => targetBridge);
+  const harness = createPanelHarness(
+    {
+      request: vi.fn(),
+      reconfigureFileSession,
+      savedFileWork: (_source, engine) =>
+        engine.backend === to.backend && engine.rLibrary === to.rLibrary ? scenario.saved : undefined
+    },
+    { source, backend: from.backend, openResponse: opened }
+  );
+  await harness.open();
+  let quickPickItem: unknown;
+  panelPromptMocks.showQuickPick.mockImplementation(async (items) => {
+    quickPickItem = (items as FileEngine[]).find(
+      (item) => item.backend === to.backend && item.rLibrary === to.rLibrary
+    );
+    return quickPickItem;
+  });
+  for (const answer of answers) {
+    panelPromptMocks.showWarningMessage.mockResolvedValueOnce(answer);
+    await harness.receive({ kind: "changeBackend" });
+  }
+  return { quickPickItem, reconfigureFileSession };
+}
 
 function configureImportOptions(result: ImportOptions): void {
   vi.mocked(promptImportOptions).mockResolvedValue(result);

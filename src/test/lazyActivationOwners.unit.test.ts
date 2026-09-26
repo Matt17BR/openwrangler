@@ -218,8 +218,7 @@ vi.mock("../extension/files/fileOpen", () => ({
       "openWrangler.openFile",
       "openWrangler.openPath",
       "openWrangler.openDuckDBTable",
-      "openWrangler.openFileWithPlan",
-      "openWrangler.internal.openFileWithEngine"
+      "openWrangler.openFileWithPlan"
     ]);
   })
 }));

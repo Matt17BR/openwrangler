@@ -2033,10 +2033,7 @@ describe("SessionCoordinator R library copies", () => {
           cloneFrom: { sessionId: "original-runtime", revision: 0 },
           mode: "editing"
         });
-        expect(fixture.stored[fixture.targetKey]).toMatchObject({
-          rLibrary: "dplyr",
-          cleaning: { steps: original?.metadata.steps }
-        });
+        expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
         const closing = mode === "editing" ? fixture.original : result;
         const remaining = mode === "editing" ? result : fixture.original;
         await fixture.bridge.request({
@@ -2064,7 +2061,7 @@ describe("SessionCoordinator R library copies", () => {
     }
   );
 
-  it.each(["saved", "active", "pending", "origin retired"] as const)(
+  it.each(["active", "pending", "origin retired"] as const)(
     "refuses an occupied or stale copy target: %s",
     async (conflict) => {
       const fixture = await rLibraryCopyFixture("editing");
@@ -2072,9 +2069,8 @@ describe("SessionCoordinator R library copies", () => {
       const entered = deferred<void>();
       try {
         const capture = fixture.capture();
-        if (conflict === "saved") fixture.stored[fixture.targetKey] = { malformed: "still user-owned" };
         if (conflict === "active")
-          await fixture.coordinator.createBridge({ request: fixture.request }).request(fixture.copyRequest);
+          await fixture.coordinator.createBridge(fixture.delegate).request(fixture.copyRequest);
         if (conflict === "origin retired")
           await fixture.bridge.request({
             kind: "closeSession",
@@ -2130,7 +2126,7 @@ describe("SessionCoordinator R library copies", () => {
           delete ordinaryRequest.backend;
           delete ordinaryRequest.rLibrary;
         }
-        const normal = fixture.coordinator.createBridge({ request: fixture.request }).request(ordinaryRequest);
+        const normal = fixture.coordinator.createBridge(fixture.delegate).request(ordinaryRequest);
         await entered.promise;
         const copy = fixture.capture().createBridge("dplyr").request(fixture.copyRequest);
         released.resolve();
@@ -2206,14 +2202,11 @@ describe("SessionCoordinator R library copies", () => {
 });
 
 async function rLibraryCopyFixture(mode: "editing" | "viewing") {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-r-library-copy-"));
-  const sourcePath = join(directory, "source.csv");
-  await writeFile(sourcePath, "value\n1\n2\n");
   const source: SessionSource = {
-    kind: "file",
-    label: "source.csv",
-    path: sourcePath,
-    uri: vscode.Uri.file(sourcePath).toString()
+    kind: "rInteractiveVariable",
+    label: "frame",
+    variableName: "frame",
+    uri: "file:///workspace/source.R"
   };
   const controls = {
     stored: {} as Record<string, unknown>,
@@ -2286,19 +2279,21 @@ async function rLibraryCopyFixture(mode: "editing" | "viewing") {
     }
     throw new Error(`Unexpected R copy request: ${request.kind}`);
   });
-  const bridge = coordinator.createBridge({
+  const delegate: OpenWranglerBridge = {
     request,
     onIdle: idle,
     captureSessionOwner: (id) => {
       const owner = sessions.get(id);
       return owner ? () => sessions.get(id) === owner : undefined;
     }
-  });
+  };
+  const bridge = coordinator.createBridge(delegate);
   const original = await bridge.request({ ...openRequest, source, backend: "r", rLibrary: "base", mode });
   if (original.kind !== "sessionOpened") throw new Error(JSON.stringify(original));
   return Object.assign(controls, {
     source,
     coordinator,
+    delegate,
     bridge,
     request,
     idle,
@@ -2320,7 +2315,6 @@ async function rLibraryCopyFixture(mode: "editing" | "viewing") {
     },
     async close() {
       await coordinator.shutdown();
-      await rm(directory, { recursive: true, force: true });
     }
   });
 }

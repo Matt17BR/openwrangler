@@ -70,6 +70,12 @@
   padding: 6px 12px;
 }
 
+.importActivityStatus {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -361,4 +367,10 @@
 .inspectionPanel > [role="status"] {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .importActivityStatus .codicon-modifier-spin {
+    animation: none;
+  }
 }

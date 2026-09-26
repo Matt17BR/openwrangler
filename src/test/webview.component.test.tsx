@@ -3200,7 +3200,7 @@ describe("App toolbar", () => {
     ({ App } = await import("../webviews/App"));
   });
 
-  it.each(["file", "notebookVariable"] as const)("offers R library copies for a %s source", (kind) => {
+  it.each(["file", "notebookVariable"] as const)("offers the engine picker for an R %s source", (kind) => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
@@ -3229,8 +3229,24 @@ describe("App toolbar", () => {
     if (kind === "file")
       expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute(
         "title",
-        "Open a separate R session with new import options"
+        "Change file import options"
       );
+  });
+
+  it("shows what an engine switch or import change is doing and lets the user cancel it", () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", page, summaries: [], metadata });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true, activity: "Switching to Python · Pandas…" });
+    expect(screen.getByText("Switching to Python · Pandas…")).toHaveAttribute("role", "status");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "cancelImportChange" });
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(screen.queryByText("Switching to Python · Pandas…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
   it("keeps the visible dataframe shape compact while exposing its full meaning", async () => {

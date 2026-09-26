@@ -136,6 +136,7 @@ export function App() {
   const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
   const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [importActivity, setImportActivity] = useState<string>();
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
@@ -970,6 +971,7 @@ export function App() {
       }
       if (response.kind === "importOptionsState") {
         updateImportOptionsPending(response.busy);
+        setImportActivity(response.busy ? response.activity : undefined);
         return;
       }
       if (response.kind === "runtimeDependencyInstallState") {
@@ -2253,11 +2255,7 @@ export function App() {
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
                   data-import-options-action
-                  title={
-                    metadata.backend === "r"
-                      ? "Open a separate R session with new import options"
-                      : "Change file import options"
-                  }
+                  title="Change file import options"
                   onClick={(event) => requestImportOptionsChange(undefined, event.currentTarget)}
                 >
                   <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
@@ -2846,6 +2844,21 @@ export function App() {
         <span className="sessionModeChangeStatus" role="status" aria-live="polite" aria-atomic="true">
           Opening {sessionModeChangeTarget === "viewing" ? "Viewing" : "Editing"} mode…
         </span>
+      )}
+      {importActivity && !sessionModeChangePending && (
+        <div className="sessionModeChangeStatus importActivityStatus">
+          <span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />
+          <span role="status" aria-live="polite" aria-atomic="true">
+            {importActivity}
+          </span>
+          <button
+            type="button"
+            className="toolbarButton"
+            onClick={() => vscode.postMessage({ kind: "cancelImportChange" })}
+          >
+            Cancel
+          </button>
+        </div>
       )}
       {metadata && operationDialog && (
         <OperationBuilder

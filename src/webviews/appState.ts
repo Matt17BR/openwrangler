@@ -194,6 +194,10 @@ export function decodeAppHostMessage(value: unknown) {
     case "requestImportOptionsChange":
       return typeof value.actionId === "string" ? { kind: value.kind, actionId: value.actionId } : undefined;
     case "importOptionsState":
+      return typeof value.busy === "boolean" &&
+        (value.activity === undefined || (typeof value.activity === "string" && value.activity.length <= 200))
+        ? { kind: value.kind, busy: value.busy, ...(value.activity === undefined ? {} : { activity: value.activity }) }
+        : undefined;
     case "runtimeDependencyInstallState":
       return typeof value.busy === "boolean" ? { kind: value.kind, busy: value.busy } : undefined;
     case "sessionModeChangeState":

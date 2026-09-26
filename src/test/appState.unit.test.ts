@@ -63,6 +63,19 @@ describe("App view-state model", () => {
     }
   });
 
+  it("accepts a bounded import activity only as text", () => {
+    const busy = { kind: "importOptionsState", busy: true };
+    expect(decodeAppHostMessage(busy)).toEqual(busy);
+    expect(decodeAppHostMessage({ ...busy, activity: "Switching to R · dplyr…" })).toEqual({
+      ...busy,
+      activity: "Switching to R · dplyr…"
+    });
+    expect(decodeAppHostMessage({ ...busy, activity: "x".repeat(200) })).toBeDefined();
+    for (const activity of ["x".repeat(201), 1, null]) {
+      expect(decodeAppHostMessage({ ...busy, activity })).toBeUndefined();
+    }
+  });
+
   it("requires bound native filter removal fields", () => {
     const action = {
       kind: "editorAction",

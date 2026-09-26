@@ -197,6 +197,9 @@ Use the existing owners to choose a focused source check:
 - **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
   [import options](../src/test/importOptions.unit.test.ts) own bounded samples, dialects and native prompts.
   The installed file-reconfiguration journey supplies actual keyboard-focus evidence.
+  [Engine switching](../src/test/sessionCoordinator.engineSwitch.unit.test.ts) owns in-place replacement across
+  Python and R runtimes, column translation, restored saved work and kept step prefixes; the panel owner covers the
+  engine picker, its dialogs and the progress bar.
   [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners check native rows,
   types and source preservation. [Pinned exports](../python/tests/test_configurable_export.py),
   [safe file export](../src/test/safeFileExport.unit.test.ts) and

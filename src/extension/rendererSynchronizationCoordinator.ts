@@ -35,6 +35,8 @@ export interface RendererSynchronizationCallbacks {
   /** Recovery has a session, but its replacement is not yet accepted by the renderer. */
   readonly isSnapshotPending?: () => boolean;
   readonly isImportBusy: () => boolean;
+  /** What a busy import or engine change is doing, shown beside the grid. */
+  readonly importActivity?: () => string | undefined;
   readonly ensureSessionOpen: () => Promise<void>;
   readonly clearStepInspection: () => void;
   readonly layoutTransitionPending: () => boolean;
@@ -499,7 +501,9 @@ export class RendererSynchronizationCoordinator {
     if (this.pendingPreReadyImportResponse) {
       if (!(await this.postMessage(this.pendingPreReadyImportResponse))) return;
     }
-    if (!(await this.postMessage({ kind: "importOptionsState", busy: this.callbacks.isImportBusy() }))) return;
+    const busy = this.callbacks.isImportBusy();
+    const activity = busy ? this.callbacks.importActivity?.() : undefined;
+    if (!(await this.postMessage({ kind: "importOptionsState", busy, ...(activity ? { activity } : {}) }))) return;
     if (!isCurrent()) {
       this.synchronizationRequested = true;
       return;
