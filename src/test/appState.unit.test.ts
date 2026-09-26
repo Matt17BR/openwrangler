@@ -74,6 +74,16 @@ describe("App view-state model", () => {
     for (const activity of ["x".repeat(201), 1, null]) {
       expect(decodeAppHostMessage({ ...busy, activity })).toBeUndefined();
     }
+    const switching = { ...busy, activity: "Switching to R · dplyr…" };
+    expect(decodeAppHostMessage({ ...switching, pendingEngine: "R · dplyr" })).toEqual({
+      ...switching,
+      pendingEngine: "R · dplyr"
+    });
+    expect(decodeAppHostMessage({ ...switching, pendingEngine: "x".repeat(64) })).toBeDefined();
+    for (const pendingEngine of ["", "x".repeat(65), 1, null]) {
+      expect(decodeAppHostMessage({ ...switching, pendingEngine })).toBeUndefined();
+    }
+    expect(decodeAppHostMessage({ ...busy, pendingEngine: "R · dplyr" })).toBeUndefined();
   });
 
   it("requires bound native filter removal fields", () => {

@@ -15,7 +15,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Changed
 
 - Switching engines for a file happens in the same tab, including between Python and R and between R libraries, and replays the cleaning steps and draft. The engine picker says when a step can't move or the new engine has other saved work for the file, and a dialog offers the choices. Switching back restores the previous engine's work. Changing R import options also stays in the same tab.
-- Engine switches and import-option changes show their progress with a Cancel button.
+- Engine switches and import-option changes show their progress with a Cancel button. The previous data stays dimmed until the new engine is ready, and the engine badge shows the engine being opened.
 - Engines are named the same way everywhere: **Python · Pandas**, **Python · Polars**, **Python · DuckDB**, **R · base**, **R · dplyr**, **R · data.table** and **R · collapse**, in the engine picker, engine badge, panel title and Data Sources view.
 - DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.
 - Local R files reuse unchanged filtered sort order across grid pages.

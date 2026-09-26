@@ -49,6 +49,7 @@ import { automaticBackends } from "./pythonEnvironmentModel";
 import { supportsRFileExecution } from "./r/rscriptPath";
 import {
   RendererSynchronizationCoordinator,
+  type ImportActivity,
   type RendererImportPreparation,
   type RendererSynchronizationIdentity
 } from "./rendererSynchronizationCoordinator";
@@ -130,7 +131,7 @@ export class OpenWranglerPanel {
   >();
   private pendingRuntimeReplacement: PendingRuntimeReplacement | undefined;
   private changingImportOptions = false;
-  private importActivity: string | undefined;
+  private importActivity: ImportActivity | undefined;
   private replacementSubscription: { dispose(): void } | undefined;
   private readonly rendererSync: RendererSynchronizationCoordinator;
   private codePreviewReveal: { sessionId: string; pending: boolean } | undefined;
@@ -1294,8 +1295,8 @@ export class OpenWranglerPanel {
       const metadata = this.snapshot?.metadata;
       const engine = metadata && fileEngine(metadata);
       if (!engine) return;
-      this.importActivity = "Reopening with the new import options…";
-      await this.postRendererMessage({ kind: "importOptionsState", busy: true, activity: this.importActivity });
+      this.importActivity = { activity: "Reopening with the new import options…" };
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true, ...this.importActivity });
       targetBridge = await this.fileEngineBridge(nextSource, engine);
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       const response = await this.reconfigureOnBridge(targetBridge, this.sessionId, this.sessionRevision, nextSource, {
@@ -1415,8 +1416,9 @@ export class OpenWranglerPanel {
         revision,
         generation
       };
-      this.importActivity = `Switching to ${engineLabel(attempt.engine.backend, attempt.engine.rLibrary)}…`;
-      await this.postRendererMessage({ kind: "importOptionsState", busy: true, activity: this.importActivity });
+      const pendingEngine = engineLabel(attempt.engine.backend, attempt.engine.rLibrary);
+      this.importActivity = { activity: `Switching to ${pendingEngine}…`, pendingEngine };
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true, ...this.importActivity });
       targetBridge = await this.fileEngineBridge(attempt.source, attempt.engine);
       if (!this.isCurrentBackendChange(attempt) || cancellation.token.isCancellationRequested) return;
       if (retry) {

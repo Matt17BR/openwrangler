@@ -193,11 +193,23 @@ export function decodeAppHostMessage(value: unknown) {
         : undefined;
     case "requestImportOptionsChange":
       return typeof value.actionId === "string" ? { kind: value.kind, actionId: value.actionId } : undefined;
-    case "importOptionsState":
+    case "importOptionsState": {
+      const { activity, pendingEngine } = value;
       return typeof value.busy === "boolean" &&
-        (value.activity === undefined || (typeof value.activity === "string" && value.activity.length <= 200))
-        ? { kind: value.kind, busy: value.busy, ...(value.activity === undefined ? {} : { activity: value.activity }) }
+        (activity === undefined || (typeof activity === "string" && activity.length <= 200)) &&
+        (pendingEngine === undefined ||
+          (activity !== undefined &&
+            typeof pendingEngine === "string" &&
+            pendingEngine.length > 0 &&
+            pendingEngine.length <= 64))
+        ? {
+            kind: value.kind,
+            busy: value.busy,
+            ...(activity === undefined ? {} : { activity }),
+            ...(pendingEngine === undefined ? {} : { pendingEngine })
+          }
         : undefined;
+    }
     case "runtimeDependencyInstallState":
       return typeof value.busy === "boolean" ? { kind: value.kind, busy: value.busy } : undefined;
     case "sessionModeChangeState":

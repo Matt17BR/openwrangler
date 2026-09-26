@@ -174,7 +174,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toContainEqual({
       kind: "importOptionsState",
       busy: true,
-      activity: "Switching to R · collapse…"
+      activity: "Switching to R · collapse…",
+      pendingEngine: "R · collapse"
     });
     expect(harness.title).toContain("R · collapse");
   });
@@ -2358,9 +2359,112 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toContainEqual({
       kind: "importOptionsState",
       busy: true,
-      activity: "Switching to Python · Pandas…"
+      activity: "Switching to Python · Pandas…",
+      pendingEngine: "Python · Pandas"
     });
     expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+  });
+
+  it.each([
+    {
+      name: "cancelled from the webview",
+      cancel: true,
+      response: { kind: "error", code: "cancelled", message: "The switch was cancelled.", recoverable: true },
+      error: undefined
+    },
+    {
+      name: "that fails",
+      cancel: false,
+      response: {
+        kind: "error",
+        code: "import_state_replay_failed",
+        message: "Python · Pandas could not replay Lowercase.",
+        recoverable: true
+      },
+      error: "Python · Pandas could not replay Lowercase."
+    }
+  ] as const)("keeps the previous engine after a switch $name", async ({ cancel, response, error }) => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv"
+    };
+    const opened = responseForSource(source);
+    const reconfiguration = deferred<OpenWranglerResponse>();
+    const reconfigureFileSession = vi.fn<NonNullable<OpenWranglerBridge["reconfigureFileSession"]>>(
+      async () => reconfiguration.promise
+    );
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reconfigureFileSession },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    panelPromptMocks.showQuickPick.mockImplementation(async (items) =>
+      (items as FileEngine[]).find((item) => item.backend === "pandas")
+    );
+    const switching = harness.receive({ kind: "changeBackend" });
+    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+    const cancellation = reconfigureFileSession.mock.calls[0]?.[3]?.cancellation;
+    if (cancel) await harness.receive({ kind: "cancelImportChange" });
+    expect(cancellation?.isCancellationRequested).toBe(cancel);
+
+    reconfiguration.resolve({ ...response, sessionId: "session" });
+    await switching;
+
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+    const errors = harness.posted.filter(
+      (message): message is ErrorResponse => (message as { kind?: unknown }).kind === "error"
+    );
+    expect([...new Set(errors.map(({ message }) => message))]).toEqual(error ? [error] : []);
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    expect(harness.posted).toContainEqual(
+      expect.objectContaining({
+        kind: "sessionOpened",
+        metadata: expect.objectContaining({ sessionId: "session", backend: "polars" })
+      })
+    );
+  });
+
+  it("shows a reloaded webview the engine switch still in progress", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv"
+    };
+    const opened = responseForSource(source);
+    const reconfiguration = deferred<OpenWranglerResponse>();
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => reconfiguration.promise);
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reconfigureFileSession },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    panelPromptMocks.showQuickPick.mockImplementation(async (items) =>
+      (items as FileEngine[]).find((item) => item.backend === "pandas")
+    );
+    const switching = harness.receive({ kind: "changeBackend" });
+    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+    harness.posted.length = 0;
+
+    await harness.receive({ kind: "ready" });
+
+    expect(harness.posted).toContainEqual({
+      kind: "importOptionsState",
+      busy: true,
+      activity: "Switching to Python · Pandas…",
+      pendingEngine: "Python · Pandas"
+    });
+    reconfiguration.resolve({
+      ...opened,
+      metadata: { ...opened.metadata, revision: 1, backend: "pandas" }
+    });
+    await switching;
+    expect(harness.posted.at(-1)).not.toMatchObject({ kind: "importOptionsState", busy: true });
   });
 
   it.each([

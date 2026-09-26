@@ -369,8 +369,13 @@
   font-size: 11px;
 }
 
+.layout[aria-busy="true"] {
+  opacity: 0.55;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .importActivityStatus .codicon-modifier-spin {
+  .importActivityStatus .codicon-modifier-spin,
+  .backendBadge .codicon-modifier-spin {
     animation: none;
   }
 }
