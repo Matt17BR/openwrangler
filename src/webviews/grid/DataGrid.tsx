@@ -870,27 +870,32 @@ export function DataGrid({
       pendingWheelRows -= rows;
       if (rows !== 0) moveCompressedViewport(model, rows);
     };
+    // Listens on the window so grid cell and header handlers have already
+    // claimed the keys they use; only native scrolling remains to replace.
     const scrollKeys = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      const element = event.target instanceof Element ? event.target : undefined;
+      const scrollsGrid =
+        element === document.body ||
+        element === document.documentElement ||
+        (element !== undefined &&
+          scroller.contains(element) &&
+          !element.closest(
+            "input, textarea, select, [contenteditable='true'], [popover], [role='menu'], [role='listbox']"
+          ));
+      if (!scrollsGrid) return;
       const model = createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight);
       if (!model.compressed) return;
-      const element = event.target instanceof Element ? event.target : undefined;
-      const onScroller = element === scroller;
-      // Grid cells navigate rows themselves; editable fields and menus keep their keys.
-      if (
-        !onScroller &&
-        element?.closest("[data-grid-row], input, textarea, select, [contenteditable='true'], [role='menu']")
-      )
-        return;
+      const space = event.key === " " && !element?.closest("button, summary");
       const pageRows = Math.max(1, Math.floor(scroller.clientHeight / gridRowHeight) - 1);
       const rows =
-        event.key === "PageDown" || (onScroller && event.key === " " && !event.shiftKey)
+        event.key === "PageDown" || (space && !event.shiftKey)
           ? pageRows
-          : event.key === "PageUp" || (onScroller && event.key === " " && event.shiftKey)
+          : event.key === "PageUp" || (space && event.shiftKey)
             ? -pageRows
-            : onScroller && event.key === "ArrowDown"
+            : event.key === "ArrowDown"
               ? 1
-              : onScroller && event.key === "ArrowUp"
+              : event.key === "ArrowUp"
                 ? -1
                 : 0;
       if (rows === 0) return;
@@ -902,7 +907,7 @@ export function DataGrid({
     resizeObserver?.observe(scroller);
     scroller.addEventListener("scroll", update, { passive: true });
     scroller.addEventListener("wheel", scrollWheel, { passive: false });
-    scroller.addEventListener("keydown", scrollKeys);
+    window.addEventListener("keydown", scrollKeys);
     scroller.addEventListener("pointerdown", interruptColumnReveal, { passive: true });
     scroller.addEventListener("touchstart", interruptColumnReveal, { passive: true });
     window.addEventListener("blur", suspendViewportUpdates);
@@ -912,7 +917,7 @@ export function DataGrid({
       resizeObserver?.disconnect();
       scroller.removeEventListener("scroll", update);
       scroller.removeEventListener("wheel", scrollWheel);
-      scroller.removeEventListener("keydown", scrollKeys);
+      window.removeEventListener("keydown", scrollKeys);
       scroller.removeEventListener("pointerdown", interruptColumnReveal);
       scroller.removeEventListener("touchstart", interruptColumnReveal);
       window.removeEventListener("blur", suspendViewportUpdates);
@@ -1523,9 +1528,9 @@ export function DataGrid({
     nextRow = Math.max(0, Math.min(nextRow, rowCount - 1));
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
     const block = Math.floor(nextRow / pageSize) * pageSize;
+    event.preventDefault();
     if (busy && block !== page.offset) return;
     interruptColumnReveal();
-    event.preventDefault();
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
     setFocusedCell({ row: nextRow, column: nextColumn });

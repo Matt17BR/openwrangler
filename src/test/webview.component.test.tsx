@@ -2241,6 +2241,9 @@ describe("DataGrid", () => {
     expect(firstVisibleRow()).toBe(7 + 19);
     fireEvent.keyDown(scroller, { key: "ArrowUp" });
     expect(firstVisibleRow()).toBe(25);
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
+    expect(firstVisibleRow()).toBe(26);
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
     fireEvent.wheel(scroller, { deltaY: -29 * 30 });
     expect(firstVisibleRow()).toBe(0);
     expect(fireEvent.wheel(scroller, { deltaX: 80, deltaY: 10 })).toBe(true);
@@ -2248,6 +2251,36 @@ describe("DataGrid", () => {
 
     render(<DataGrid {...props} metadata={metadata} page={page} />);
     expect(fireEvent.wheel(screen.getByTestId("data-grid-scroller"), { deltaY: 100 })).toBe(true);
+  });
+
+  it("consumes grid navigation keys while another block is loading", () => {
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const onPage = vi.fn();
+    render(
+      <DataGrid
+        metadata={largeMetadata}
+        summaries={[]}
+        page={pageAt(0)}
+        pageSize={largeGridPageSize}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        busy
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const cell = document.querySelector('[data-grid-row="0"][data-grid-column="0"]');
+    if (!(cell instanceof HTMLElement)) throw new Error("Expected the first grid cell.");
+
+    expect(fireEvent.keyDown(cell, { key: "End", ctrlKey: true })).toBe(false);
+    expect(onPage).not.toHaveBeenCalled();
+    expect(cell).toHaveAttribute("tabindex", "0");
   });
 
   it("keeps a terminal partial block visible when native scrolling starts before its offset", async () => {
