@@ -10658,6 +10658,108 @@ openwrangler_r_kernel_agent <- local({
     }
   }
 
+  ascii_json_strings <- function(values, spend) {
+    fragments <- character(length(values))
+    missing <- is.na(values)
+    fragments[missing] <- "null"
+    plain <- !missing & grepl("^[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]*$", values, perl = TRUE, useBytes = TRUE)
+    spend(4 * sum(missing) + sum(nchar(values[plain], type = "bytes")) + 2 * sum(plain))
+    fragments[plain] <- paste0("\"", values[plain], "\"")
+    for (index in which(!missing & !plain)) {
+      fragments[[index]] <- ascii_json_scalar(base::.subset2(values, index), spend)
+    }
+    fragments
+  }
+
+  # "null", "array", a bare scalar's type, or "" for values encoded one at a time.
+  ascii_json_field_kinds <- function(values) {
+    types <- vapply(values, typeof, character(1L), USE.NAMES = FALSE)
+    value_attributes <- lapply(values, attributes)
+    bare <- vapply(value_attributes, is.null, logical(1L), USE.NAMES = FALSE)
+    kinds <- character(length(values))
+    scalar <- bare & types %in% c("character", "logical", "integer", "double")
+    # Only attribute-free values are measured, so no caller length() method can run.
+    scalar[scalar] <- lengths(values[scalar], use.names = FALSE) == 1L
+    kinds[scalar] <- types[scalar]
+    lists <- types %in% c("list", "pairlist")
+    marked <- lists & !bare
+    lists[marked] <- vapply(value_attributes[marked], identical, logical(1L), list(class = "AsIs"), USE.NAMES = FALSE)
+    kinds[lists] <- "array"
+    kinds[types == "NULL"] <- "null"
+    kinds
+  }
+
+  # One record field across many records, encoded by value kind.
+  ascii_json_fields <- function(values, spend) {
+    fragments <- character(length(values))
+    kinds <- ascii_json_field_kinds(values)
+    for (kind in unique(kinds)) {
+      selected <- which(kinds == kind)
+      if (kind == "null") {
+        spend(4 * length(selected))
+        fragments[selected] <- "null"
+      } else if (kind == "character") {
+        fragments[selected] <- ascii_json_strings(unlist(values[selected], use.names = FALSE), spend)
+      } else if (kind == "logical") {
+        plain <- unlist(values[selected], use.names = FALSE)
+        encoded <- ifelse(is.na(plain), "null", ifelse(plain, "true", "false"))
+        spend(sum(nchar(encoded, type = "bytes")))
+        fragments[selected] <- encoded
+      } else if (kind %in% c("integer", "double")) {
+        array <- jsonlite::toJSON(unlist(values[selected], use.names = FALSE), digits = 17L, na = "null", pretty = FALSE)
+        array <- base::.subset2(base::unclass(array), 1L)
+        encoded <- strsplit(substr(array, 2L, nchar(array) - 1L), ",", fixed = TRUE)[[1L]]
+        spend(sum(nchar(encoded, type = "bytes")))
+        fragments[selected] <- encoded
+      } else if (kind == "array") {
+        arrays <- lapply(values[selected], base::unclass)
+        lengths <- lengths(arrays, use.names = FALSE)
+        items <- ascii_json_items(do.call(c, arrays), spend)
+        spend(sum(2L + pmax(0L, lengths - 1L)))
+        owners <- rep.int(seq_along(selected), lengths)
+        fragments[selected] <- "[]"
+        joined <- vapply(split(items, owners), paste0, character(1L), collapse = ",", USE.NAMES = FALSE)
+        fragments[selected[lengths > 0L]] <- paste0("[", joined, "]")
+      } else {
+        fragments[selected] <- ascii_json_items(values[selected], spend)
+      }
+    }
+    fragments
+  }
+
+  # Grid pages hold thousands of small records. Records that share keys are
+  # encoded field by field so the page costs vector passes, not per-cell calls.
+  ascii_json_items <- function(items, spend) {
+    count <- length(items)
+    fragments <- character(count)
+    item_attributes <- lapply(items, attributes)
+    item_keys <- lapply(item_attributes, .subset2, "names")
+    records <- vapply(items, typeof, character(1L), USE.NAMES = FALSE) %in% c("list", "pairlist") &
+      lengths(item_attributes, use.names = FALSE) == 1L & lengths(item_keys, use.names = FALSE) > 0L
+    signatures <- character(count)
+    signatures[records] <- vapply(item_keys[records], paste0, character(1L), collapse = "\n", USE.NAMES = FALSE)
+    for (signature in unique(signatures)) {
+      selected <- which(signatures == signature)
+      keys <- base::.subset2(item_keys, selected[[1L]])
+      if (
+        !nzchar(signature) ||
+          !all(vapply(item_keys[selected], identical, logical(1L), keys, USE.NAMES = FALSE)) ||
+          anyNA(keys) || any(keys == "") || anyDuplicated(keys) ||
+          any(grepl("[^\\x20-\\x7E]|[\"\\\\]", keys, perl = TRUE, useBytes = TRUE))
+      ) {
+        fragments[selected] <- vapply(items[selected], ascii_json_response, character(1L), spend = spend, USE.NAMES = FALSE)
+        next
+      }
+      spend(length(selected) * (sum(nchar(keys, type = "bytes")) + 3L * length(keys) + 2L + length(keys) - 1L))
+      members <- lapply(seq_along(keys), function(position) {
+        values <- lapply(items[selected], base::.subset2, position)
+        paste0("\"", keys[[position]], "\":", ascii_json_fields(values, spend))
+      })
+      fragments[selected] <- paste0("{", do.call(paste, c(members, sep = ",")), "}")
+    }
+    fragments
+  }
+
   ascii_json_response <- function(value, spend) {
     value_attributes <- attributes(value)
     if (
@@ -10708,10 +10810,10 @@ openwrangler_r_kernel_agent <- local({
     }
     spend(2L + max(0L, count - 1L))
     if (count == 0L) return(if (is.null(keys)) "[]" else "{}")
+    if (is.null(keys)) return(paste0("[", paste0(ascii_json_items(base::unclass(value), spend), collapse = ","), "]"))
     fragments <- vapply(seq_len(count), function(index) {
       ascii_json_response(base::.subset2(value, index), spend)
     }, character(1L), USE.NAMES = FALSE)
-    if (is.null(keys)) return(paste0("[", paste0(fragments, collapse = ","), "]"))
     paste0("{", paste0(paste0("\"", keys, "\":", fragments), collapse = ","), "}")
   }
 

@@ -507,6 +507,13 @@ openwrangler_r_frame_contract <- local({
     spend_payload_budget(budget, json_string_bytes(value) * copies, label)
   }
 
+  json_string_bytes_values <- function(values) {
+    bytes <- as.double(nchar(values, type = "bytes")) + 2
+    escaped <- is.na(values) | grepl("[\\x00-\\x1F\"\\\\]|</", values, perl = TRUE, useBytes = TRUE)
+    bytes[escaped] <- vapply(values[escaped], json_string_bytes, double(1L), USE.NAMES = FALSE)
+    bytes
+  }
+
   bounded_utf8 <- function(value, label, maximum_bytes = maximum_text_bytes) {
     if (typeof(value) != "character" || storage_length(value) != 1L) {
       abort("invalid-text", sprintf("%s must be one non-missing string", label))
@@ -527,6 +534,19 @@ openwrangler_r_frame_contract <- local({
     if (nchar(converted, type = "bytes") > maximum_bytes) {
       abort("text-too-large", sprintf("%s exceeds %d UTF-8 bytes", label, maximum_bytes))
     }
+    converted
+  }
+
+  # NULL when bounded_utf8 would reject any value.
+  bounded_utf8_values <- function(values, maximum_bytes = maximum_text_bytes) {
+    if (typeof(values) != "character" || anyNA(values)) return(NULL)
+    encodings <- Encoding(values)
+    if (any(encodings == "bytes")) return(NULL)
+    latin1 <- encodings == "latin1"
+    converted <- character(length(values))
+    converted[latin1] <- iconv(values[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
+    converted[!latin1] <- iconv(values[!latin1], from = "UTF-8", to = "UTF-8", sub = NA_character_)
+    if (anyNA(converted) || any(nchar(converted, type = "bytes") > maximum_bytes)) return(NULL)
     converted
   }
 
@@ -1300,11 +1320,11 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  column_has_missing <- function(column, semantics) {
+  column_has_missing <- function(column, semantics, integer64_bindings = NULL) {
     if (nested_kind(semantics)) return(any(vapply(plain_metadata_storage(column), is.null, logical(1L))))
     kind <- semantics$kind
     if (kind == "integer64") {
-      return(any(integer64_missing_mask(column, ensure_integer64_bindings())))
+      return(any(integer64_missing_mask(column, integer64_bindings %||% ensure_integer64_bindings())))
     }
     if (kind %in% c("factor", "date", "datetime", "difftime")) {
       return(anyNA(unclass(column)))
@@ -1423,6 +1443,87 @@ openwrangler_r_frame_contract <- local({
       return(ordinary_cell("duration", exact, display))
     }
     abort("internal-error", "unknown R column kind")
+  }
+
+  # The cells and payload bytes encode_value produces for these rows, computed a column at a time.
+  # NULL when a cell would be rejected or the kind is nested, so the caller can take the per-cell
+  # path and report the same first failure.
+  prepare_page_column <- function(column, semantics, rows, integer64_bindings) {
+    kind <- semantics$kind
+    count <- length(rows)
+    cells <- vector("list", count)
+    bytes <- rep.int(as.double(cell_fixed_bytes), count)
+    cells[] <- list(cell_missing())
+    fill <- function(present, cell_kind, exact, display = exact) {
+      cells[present] <<- .mapply(function(raw, shown) ordinary_cell(cell_kind, raw, shown), list(exact, display), NULL)
+      bytes[present] <<- bytes[present] + json_string_bytes_values(exact) + json_string_bytes_values(display)
+    }
+    prepared <- tryCatch({
+      if (kind == "clock_datetime") {
+        values <- column[rows]
+        clock_validate(values, "page column")
+        exact <- clock_ticks(values)
+        display <- clock_display_values(values)
+        present <- !is.na(exact)
+        if (anyNA(display[present])) return(NULL)
+        fill(present, "datetime", exact[present], display[present])
+      } else if (kind == "integer64") {
+        values <- integer64_subset(column, rows)
+        present <- !integer64_missing_mask(values, integer64_bindings)
+        fill(present, "integer", integer64_as_character(values, integer64_bindings)[present])
+      } else if (kind %in% c("date", "datetime", "difftime")) {
+        numeric_values <- unclass(column)[rows]
+        present <- !is.na(numeric_values)
+        finite <- numeric_values[present]
+        if (any(is.nan(numeric_values)) || !all(is.finite(finite))) return(NULL)
+        if (kind == "date") {
+          if (any(finite != floor(finite))) return(NULL)
+          fill(present, "date", display_date_values(structure(finite, class = "Date"), "page column"))
+        } else if (kind == "datetime") {
+          attributes(finite) <- if (is.null(semantics$timezone)) {
+            list(class = c("POSIXct", "POSIXt"))
+          } else {
+            list(class = c("POSIXct", "POSIXt"), tzone = semantics$timezone)
+          }
+          fill(present, "datetime", exact_double(unclass(finite)),
+            display_datetime_values(finite, semantics$timezone, "page column"))
+        } else {
+          fill(present, "duration", exact_double(finite), display_difftime_values(finite, semantics$units))
+        }
+      } else if (kind == "factor") {
+        codes <- unclass(column)[rows]
+        present <- !is.na(codes)
+        factor_levels <- plain_metadata_storage(semantics$levels)
+        if (any(codes[present] < 1L | codes[present] > length(factor_levels))) return(NULL)
+        texts <- bounded_utf8_values(factor_levels[codes[present]])
+        if (is.null(texts)) return(NULL)
+        fill(present, "string", texts)
+      } else if (kind %in% c("logical", "integer", "double", "character")) {
+        values <- unname(column[rows])
+        present <- !is.na(values)
+        if (kind == "logical") {
+          cells[present] <- list(ordinary_cell("boolean", FALSE, "FALSE"), ordinary_cell("boolean", TRUE, "TRUE"))[values[present] + 1L]
+        } else if (kind == "integer") {
+          fill(present, "integer", as.character(values[present]))
+        } else if (kind == "character") {
+          texts <- bounded_utf8_values(values[present])
+          if (is.null(texts)) return(NULL)
+          fill(present, "string", texts)
+        } else {
+          nan <- is.nan(values)
+          infinite <- is.infinite(values)
+          cells[nan] <- list(cell_nan())
+          cells[infinite] <- lapply(values[infinite], cell_infinity)
+          finite <- present & !infinite
+          fill(finite, "number", exact_double(values[finite]), display_double_values(values[finite]))
+        }
+      } else {
+        return(NULL)
+      }
+      TRUE
+    }, error = function(error) NULL)
+    if (is.null(prepared)) return(NULL)
+    list(cells = cells, bytes = bytes)
   }
 
   frame_flavor <- function(value) {
@@ -3798,6 +3899,7 @@ openwrangler_r_frame_contract <- local({
       )
     }
 
+    integer64_bindings <- NULL
     schema <- lapply(seq_len(column_count), function(index) {
       spend_payload_budget(metadata_budget, column_fixed_bytes, sprintf("column %d metadata", index))
       semantics <- column_semantics(
@@ -3805,13 +3907,17 @@ openwrangler_r_frame_contract <- local({
         sprintf("column %d", index),
         metadata_budget,
         validate_values = validate_values,
-        expected = if (!is.null(expected_schema) && index <= length(expected_schema) && !is.null(.subset2(expected_schema, index)) && nested_kind(.subset2(expected_schema, index)$semantics)) .subset2(expected_schema, index)$semantics else NULL
+        expected = if (!is.null(expected_schema) && index <= length(expected_schema) && !is.null(.subset2(expected_schema, index)) && nested_kind(.subset2(expected_schema, index)$semantics)) .subset2(expected_schema, index)$semantics else NULL,
+        integer64_bindings = integer64_bindings
       )
+      if (identical(semantics$kind, "integer64") && is.null(integer64_bindings)) {
+        integer64_bindings <<- ensure_integer64_bindings()
+      }
       nullable <- if (isTRUE(conservative_nullable)) {
         TRUE
       } else {
         add_metric(metrics, "nullableScans")
-        column_has_missing(.subset2(value, index), semantics)
+        column_has_missing(.subset2(value, index), semantics, integer64_bindings)
       }
       list(
         id = sprintf("r:c:%d", index - 1L),
@@ -11516,13 +11622,84 @@ openwrangler_r_frame_contract <- local({
       NULL
     }
 
+    rows <- prepared_page_rows(
+      capture, frame, plain_schema, row_positions, column_positions, window,
+      explicit_row_names, page_budget, page_integer64_bindings
+    )
+    if (is.null(rows)) rows <- per_cell_page_rows(
+      capture, frame, plain_schema, row_positions, column_positions, window,
+      explicit_row_names, page_budget, page_integer64_bindings
+    )
+
+    published_descriptor <- descriptor
+    published_descriptor$shape$rows <- capture$rowIdentityDomain
+    c(
+      published_descriptor,
+      list(page = list(
+        offset = window$rowOffset,
+        limit = window$rowLimit,
+        totalRows = total_rows,
+        columnOffset = window$columnOffset,
+        columnLimit = window$columnLimit,
+        columnIds = json_array(column_ids),
+        rows = json_array(rows)
+      ))
+    )
+  }
+
+  # A page whose cells all prepare cleanly and whose total fits the budget cannot fail
+  # part-way, so its rows are assembled from whole-column results.
+  prepared_page_rows <- function(
+    capture, frame, plain_schema, row_positions, column_positions, window,
+    explicit_row_names, page_budget, page_integer64_bindings
+  ) {
+    prepared <- vector("list", length(column_positions))
+    for (column_index in seq_along(column_positions)) {
+      source_column <- column_positions[[column_index]]
+      column <- prepare_page_column(
+        .subset2(frame, source_column),
+        .subset2(.subset2(plain_schema, source_column), "semantics"),
+        row_positions,
+        page_integer64_bindings
+      )
+      if (is.null(column)) return(NULL)
+      prepared[[column_index]] <- column
+    }
+    row_labels <- NULL
+    total <- as.double(row_fixed_bytes) * length(row_positions) +
+      sum(vapply(prepared, function(column) sum(column$bytes), double(1L)))
+    if (!is.null(explicit_row_names)) {
+      row_labels <- bounded_utf8_values(as.character(explicit_row_names[row_positions]), maximum_name_bytes)
+      if (is.null(row_labels)) return(NULL)
+      total <- total + sum(json_string_bytes_values(row_labels))
+    }
+    next_used <- page_budget$used + total
+    if (!is.finite(next_used) || next_used > maximum_payload_bytes) return(NULL)
+    page_budget$used <- next_used
+
+    row_ids <- sprintf("r:r:%.0f", capture_row_origins_at(capture, row_positions) - 1)
+    lapply(seq_along(row_positions), function(row_index) {
+      row <- list(
+        id = row_ids[[row_index]],
+        rowNumber = as.integer(window$rowOffset) + row_index - 1L,
+        values = json_array(lapply(prepared, function(column) .subset2(column$cells, row_index)))
+      )
+      if (!is.null(row_labels)) row$rowLabel <- row_labels[[row_index]]
+      row
+    })
+  }
+
+  per_cell_page_rows <- function(
+    capture, frame, plain_schema, row_positions, column_positions, window,
+    explicit_row_names, page_budget, page_integer64_bindings
+  ) {
     # Formatting each double column once keeps shortest-repr displays off the per-cell path.
     double_displays <- lapply(column_positions, function(source_column) {
       if (identical(.subset2(.subset2(plain_schema, source_column), "semantics")$kind, "double")) {
         display_double_values(.subset2(frame, source_column)[row_positions])
       }
     })
-    rows <- lapply(seq_along(row_positions), function(row_index) {
+    lapply(seq_along(row_positions), function(row_index) {
       source_row <- row_positions[[row_index]]
       spend_payload_budget(page_budget, row_fixed_bytes, sprintf("row %d", source_row))
       values <- lapply(seq_along(column_positions), function(column_index) {
@@ -11553,21 +11730,6 @@ openwrangler_r_frame_contract <- local({
       }
       row
     })
-
-    published_descriptor <- descriptor
-    published_descriptor$shape$rows <- capture$rowIdentityDomain
-    c(
-      published_descriptor,
-      list(page = list(
-        offset = window$rowOffset,
-        limit = window$rowLimit,
-        totalRows = total_rows,
-        columnOffset = window$columnOffset,
-        columnLimit = window$columnLimit,
-        columnIds = json_array(column_ids),
-        rows = json_array(rows)
-      ))
-    )
   }
 
   count_missing_at <- function(capture, position, expected_name) {
