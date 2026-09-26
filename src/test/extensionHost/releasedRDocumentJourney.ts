@@ -470,12 +470,14 @@ export function createReleasedRDocumentJourney({
         names
       );
       assert.deepEqual(active.metadata.shape, { rows: rows.length, columns: names.length });
+      // The test API can observe replacement metadata while the coordinator is still persisting it. The renderer
+      // commits the new revision only after the replacement settles, so page requests wait for it.
+      const app = await releasedRSessionApp(workbench, testing, active.sessionId, "the exact native file grid");
       const page = await assertReleasedSessionPage(testing, active, rows[0]![0]!, "jupyter-r-file-input-page");
       assert.deepEqual(
         page.page.rows.map((row) => row.values.map((cell) => cell.display)),
         rows
       );
-      const app = await releasedRSessionApp(workbench, testing, active.sessionId, "the exact native file grid");
       assert.equal(await app.locator('[data-session-badge="backend"]').innerText(), "R · base");
       for (let column = 0; column < Math.min(2, names.length); column += 1) {
         const cell = app.locator(`td[data-grid-row="0"][data-grid-column="${column}"] .gridCellText`);
