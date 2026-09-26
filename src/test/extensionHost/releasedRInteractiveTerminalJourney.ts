@@ -143,9 +143,14 @@ export function createReleasedRInteractiveTerminalJourney({
         true,
         "Closing the terminal must invalidate its cached Data sources rows."
       );
-      await sources
-        .getByRole("treeitem", { name: /^Start R and show dataframes\b/u })
-        .waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(
+        await pollAcceptanceCondition(
+          async () => (await sources.getByRole("treeitem", { name: /R dataframes/u }).count()) === 0,
+          { timeoutMs: 10_000, intervalMs: 50 }
+        ),
+        true,
+        "Data sources must not offer R actions while no R terminal is open."
+      );
       assert.deepEqual(releasedRInteractiveMailboxRoots(), initialMailboxes);
       if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
       sourceTerminal = undefined;
