@@ -660,8 +660,8 @@ Windows CI also selects the two Windows-only cases in `python/tests/test_trusted
 source identity agreement and actual helper Job Object containment of a spawned pickle descendant. Qualification
 requires both cases to pass without skips.
 
-The smoke catches production-bundle, VSIX-installation, public CSV action, grid rendering, sort, and terminal cleanup
-failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
+The smoke catches production-bundle, VSIX-installation, public CSV action, side bar reveal, grid rendering, sort, and
+terminal cleanup failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
 
 For Linux public file-gallery captures, use the same verified VSIX and compiled harness with
 `OPEN_WRANGLER_PACKAGED_MODE=platform-smoke`, `OPEN_WRANGLER_TEST_SELECTOR=public-media` and

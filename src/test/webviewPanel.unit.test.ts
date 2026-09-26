@@ -20,6 +20,7 @@ import { DependencyGuardCommandError } from "../extension/dependencyGuardProtoco
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import * as rscriptPath from "../extension/r/rscriptPath";
 import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import { trackSideBarViews } from "../extension/sideBarReveal";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
@@ -1969,6 +1970,61 @@ describe("OpenWranglerPanel retained view state", () => {
     while (fileEngineRegistrations.length) fileEngineRegistrations.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
     delete (window as unknown as { showWarningMessage?: unknown }).showWarningMessage;
+  });
+
+  describe("side bar reveal", () => {
+    const sideBarView = { visible: false, onDidChangeVisibility: () => ({ dispose: () => undefined }) };
+    let sideBarTracking: vscode.Disposable | undefined;
+    const reveals = (executeCommand: { mock: { calls: readonly (readonly unknown[])[] } }) =>
+      executeCommand.mock.calls.filter(([command]) => command === "openWrangler.operations.open");
+
+    beforeEach(() => {
+      sideBarView.visible = false;
+      sideBarTracking = trackSideBarViews([["openWrangler.operations", sideBarView]]);
+    });
+    afterEach(() => sideBarTracking?.dispose());
+
+    it("reveals the side bar without moving focus when a panel first becomes active and on each panel switch", () => {
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      const first = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      expect(reveals(executeCommand)).toEqual([["openWrangler.operations.open", { preserveFocus: true }]]);
+
+      const second = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
+      expect(reveals(executeCommand)).toHaveLength(1);
+      second.activate();
+      expect(reveals(executeCommand)).toHaveLength(2);
+      first.activate();
+      expect(reveals(executeCommand)).toHaveLength(3);
+    });
+
+    it("does not reveal again while the same panel keeps focus or returns from another editor group", () => {
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      executeCommand.mockClear();
+
+      harness.deactivate();
+      harness.activate();
+      harness.activate();
+      expect(reveals(executeCommand)).toHaveLength(0);
+
+      harness.hide();
+      harness.activate();
+      expect(reveals(executeCommand)).toHaveLength(1);
+    });
+
+    it("leaves the side bar alone while an Open Wrangler view is showing or when the setting is off", () => {
+      const executeCommand = vi.spyOn(commands, "executeCommand");
+      sideBarView.visible = true;
+      createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      expect(reveals(executeCommand)).toHaveLength(0);
+
+      sideBarView.visible = false;
+      vi.spyOn(workspace, "getConfiguration").mockReturnValue({
+        get: (key: string, fallback?: unknown) => (key === "revealSideBar" ? false : fallback)
+      } as unknown as vscode.WorkspaceConfiguration);
+      createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false }).activate();
+      expect(reveals(executeCommand)).toHaveLength(0);
+    });
   });
 
   it("keeps native actions on the visible session after sidebar focus and clears them when hidden", async () => {

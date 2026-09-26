@@ -6952,6 +6952,7 @@ async function exercisePackagedPlatformSmoke(
     await menu.waitFor({ state: "hidden", timeout: 3_000 });
     await titleAction.waitFor({ state: "visible", timeout: 3_000 });
   }
+  await vscode.commands.executeCommand("workbench.view.explorer");
   await titleAction.click();
   await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:import");
   await waitFor(
@@ -6982,6 +6983,21 @@ async function exercisePackagedPlatformSmoke(
   const firstCell = gridTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
   await firstCell.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal((await firstCell.innerText()).trim(), "2400001");
+  recordAcceptanceProgress("platform-smoke:side-bar-reveal");
+  const revealedSidebar = page.locator(".part.sidebar:visible");
+  for (const label of ["Data sources", "Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
+    await revealedSidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+  }
+  assert.equal(
+    await page.evaluate(() => {
+      const pageDocument = (
+        globalThis as unknown as { document: { activeElement: { closest(selector: string): unknown } | null } }
+      ).document;
+      return Boolean(pageDocument.activeElement?.closest(".part.sidebar"));
+    }),
+    false,
+    `${editorName} must reveal the Open Wrangler side bar without moving keyboard focus into it.`
+  );
   await firstCell.focus();
   await firstCell.press("ArrowRight");
   await gridTarget.frame

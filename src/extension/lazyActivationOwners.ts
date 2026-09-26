@@ -3,6 +3,7 @@ import type { GridViewState } from "../shared/viewState";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
 import type { PythonBridge } from "./pythonBridge";
 import type { SessionCoordinator } from "./sessionCoordinator";
+import { trackSideBarViews } from "./sideBarReveal";
 import type { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import type { NotebookCellResultTracker, NotebookCellResultTrackerDiagnostics } from "./notebooks/notebookCellResult";
 import type { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
@@ -456,13 +457,16 @@ export class LazyActivationOwners implements vscode.Disposable {
 
   private installNativeViewGates(): void {
     this.nativeViewRegistrations = this.registerDisposablesTransactional("lazy native view providers", (retain) => {
-      for (const id of NATIVE_TREE_VIEW_IDS) {
+      const treeViews = NATIVE_TREE_VIEW_IDS.map((id) => {
         const provider = new LazyTreeProvider(() =>
           this.ensureNativeOwner().then(({ owner }) => owner.treeProvider(id as NativeTreeViewId))
         );
         retain(provider);
-        retain(vscode.window.registerTreeDataProvider(id, provider));
-      }
+        const view = vscode.window.createTreeView(id, { treeDataProvider: provider });
+        retain(view);
+        return [id, view] as const;
+      });
+      retain(trackSideBarViews(treeViews));
       retain(
         vscode.window.registerWebviewViewProvider(
           "openWrangler.codePreview",

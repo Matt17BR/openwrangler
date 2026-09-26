@@ -54,11 +54,15 @@ const host = vi.hoisted(() => {
         if (index >= 0) customEditorProviders.splice(index, 1);
       });
     }),
-    registerTreeDataProvider: vi.fn((id: string, provider: unknown) => {
-      treeProviders.set(id, provider);
-      return disposable(() => {
-        if (treeProviders.get(id) === provider) treeProviders.delete(id);
-      });
+    createTreeView: vi.fn((id: string, { treeDataProvider }: { treeDataProvider: unknown }) => {
+      treeProviders.set(id, treeDataProvider);
+      return {
+        visible: false,
+        onDidChangeVisibility: () => disposable(() => undefined),
+        ...disposable(() => {
+          if (treeProviders.get(id) === treeDataProvider) treeProviders.delete(id);
+        })
+      };
     }),
     registerWebviewViewProvider: vi.fn((id: string, provider: unknown) => {
       webviewProviders.set(id, provider);
@@ -80,7 +84,7 @@ const host = vi.hoisted(() => {
       registerCommand.mockClear();
       this.executeCommand.mockClear();
       this.registerCustomEditorProvider.mockClear();
-      this.registerTreeDataProvider.mockClear();
+      this.createTreeView.mockClear();
       this.registerWebviewViewProvider.mockClear();
       this.showErrorMessage.mockClear();
     }
@@ -110,7 +114,7 @@ vi.mock("vscode", () => ({
       return host.visibleNotebookEditors;
     },
     registerCustomEditorProvider: host.registerCustomEditorProvider,
-    registerTreeDataProvider: host.registerTreeDataProvider,
+    createTreeView: host.createTreeView,
     registerWebviewViewProvider: host.registerWebviewViewProvider,
     onDidChangeVisibleNotebookEditors: (listener: () => void) => eventDisposable(host.listeners.visible, listener),
     onDidChangeActiveNotebookEditor: (listener: () => void) => eventDisposable(host.listeners.active, listener),
