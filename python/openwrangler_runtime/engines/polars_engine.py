@@ -1094,12 +1094,13 @@ class PolarsEngine(DataFrameEngine):
                     )
                     .item()
                 )
+                statistics_series = _polars_widened_float(numeric_series, numeric_series.dtype)
                 numeric_summary: dict[str, Any] = {
                     "min": _maybe_float(minimum),
                     "max": _maybe_float(maximum),
-                    "mean": _maybe_float(numeric_series.mean()),
-                    "median": _maybe_float(numeric_series.median()),
-                    "std": _maybe_float(numeric_series.std()),
+                    "mean": _maybe_float(statistics_series.mean()),
+                    "median": _maybe_float(statistics_series.median()),
+                    "std": _maybe_float(statistics_series.std()),
                 }
                 numeric_summary.update(normalized_numeric_sum(numeric_sum, semantic_type))
                 if semantic_type in {"integer", "decimal"} and numeric_series.len() > 0:
@@ -1164,13 +1165,14 @@ class PolarsEngine(DataFrameEngine):
                 finite_expression = (
                     expression.filter(expression.is_finite()) if semantic_type == "float" else expression.drop_nulls()
                 )
+                statistics_expression = _polars_widened_float(valid_expression, schema[column])
                 metric_expressions.extend(
                     [
                         valid_expression.min().alias(f"{prefix}min"),
                         valid_expression.max().alias(f"{prefix}max"),
-                        valid_expression.mean().alias(f"{prefix}mean"),
-                        valid_expression.median().alias(f"{prefix}median"),
-                        valid_expression.std().alias(f"{prefix}std"),
+                        statistics_expression.mean().alias(f"{prefix}mean"),
+                        statistics_expression.median().alias(f"{prefix}median"),
+                        statistics_expression.std().alias(f"{prefix}std"),
                         _polars_profile_sum_expression(valid_expression, schema[column], semantic_type).alias(
                             f"{prefix}sum"
                         ),
@@ -4596,7 +4598,14 @@ def _polars_checked_integer_sum(expression: Any, dtype: Any) -> Any:
 def _polars_profile_sum_expression(expression: Any, dtype: Any, semantic_type: str) -> Any:
     if semantic_type == "integer":
         return _polars_checked_integer_sum(expression, dtype)
-    return expression.sum()
+    return _polars_widened_float(expression, dtype).sum()
+
+
+def _polars_widened_float(values: Any, dtype: Any) -> Any:
+    import polars as pl
+
+    # Narrow floats are profiled in Float64, as DuckDB and R do, so statistics cannot overflow.
+    return values.cast(pl.Float64) if dtype.is_float() and dtype != pl.Float64 else values
 
 
 def _polars_checked_integer_value(left: Any, right: Any, operator: str) -> int | None:

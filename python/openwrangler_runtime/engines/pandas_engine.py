@@ -1472,6 +1472,10 @@ class PandasEngine(DataFrameEngine):
                 numeric = series.dropna()
                 if isinstance(numeric.dtype, pd.SparseDtype):
                     numeric = numeric.sparse.to_dense()
+                storage = getattr(numeric.dtype, "numpy_dtype", numeric.dtype)
+                if semantic_type == "float" and getattr(storage, "kind", "") == "f" and storage.itemsize < 8:
+                    # Narrow floats are profiled in float64, as DuckDB and R do, so statistics cannot overflow.
+                    numeric = numeric.astype("float64")
                 minimum = numeric.min()
                 maximum = numeric.max()
                 statistics = _pandas_decimal_profile_statistics(numeric) if semantic_type == "decimal" else None
