@@ -103,6 +103,8 @@ class _DuckDBDatabaseReservation:
     fingerprint: SourceFingerprint
     temporary: TemporaryDirectory[str]
     users: int = 1
+    # Viewers share one native instance, so its thread setting is shared too.
+    single_threaded_queries: int = 0
 
 
 _database_reservations: dict[str, _DuckDBDatabaseReservation] = {}
@@ -642,7 +644,11 @@ class DuckDBEngine(DataFrameEngine):
                     relation = f"temp.main.{_VIEW_SNAPSHOT}"
                 elif matches != [("table",)]:
                     raise EngineError("The selected DuckDB table or view is no longer available. Choose it again.")
-            return self._relation_from_sql(f"SELECT * FROM {relation}")
+            plan = self._relation_from_sql(f"SELECT * FROM {relation}")
+            if any(name.casefold() == "rowid" for name in plan.column_names):
+                return plan
+            # A window row number serializes every later scan of the table.
+            return replace(plan, ordinal_sql=f"SELECT *, rowid FROM {relation}", ordinal="rowid")
         except Exception:
             self.close()
             raise
@@ -1231,17 +1237,16 @@ class DuckDBEngine(DataFrameEngine):
         with self._terminal_connection(frame) as (connection, source_sql):
             if isinstance(frame, DuckDBSqlPlan):
                 # The fused group can otherwise reserve one wide hash-table
-                # partition per DuckDB worker. Transient file connections close
-                # below; shared database readers retain it until the last reader closes.
-                connection.execute("SET threads = 1")
-                counts = _execute_rows(
-                    connection,
-                    source_sql,
-                    f"SELECT {projections}, "
-                    f"coalesce(system.main.sum({group_count_column}) FILTER (WHERE {missing_row_expression}), 0), "
-                    f'coalesce(system.main.sum(system.main."-"({group_count_column}, 1)), 0) '
-                    f"FROM ({grouped_source}) AS groups",
-                )[0]
+                # partition per DuckDB worker.
+                with self._single_threaded(connection):
+                    counts = _execute_rows(
+                        connection,
+                        source_sql,
+                        f"SELECT {projections}, "
+                        f"coalesce(system.main.sum({group_count_column}) FILTER (WHERE {missing_row_expression}), 0), "
+                        f'coalesce(system.main.sum(system.main."-"({group_count_column}, 1)), 0) '
+                        f"FROM ({grouped_source}) AS groups",
+                    )[0]
             else:
                 # Live notebook relations execute on the user's connection.
                 # Retain the two-query shape instead of changing its settings.
@@ -2178,6 +2183,26 @@ class DuckDBEngine(DataFrameEngine):
             except Exception:
                 if not failed:
                     raise
+
+    @contextmanager
+    def _single_threaded(self, connection: Any) -> Iterator[None]:
+        reservation = self._database_reservation if connection is self._database_connection else None
+        if reservation is None:
+            # Transient file connections own their in-memory instance and close after this read.
+            connection.execute("SET threads = 1")
+            yield
+            return
+        with _database_reservations_lock:
+            if not reservation.single_threaded_queries:
+                connection.execute("SET threads = 1")
+            reservation.single_threaded_queries += 1
+        try:
+            yield
+        finally:
+            with _database_reservations_lock:
+                reservation.single_threaded_queries -= 1
+                if not reservation.single_threaded_queries:
+                    connection.execute("RESET threads")
 
     def _relation(self, frame: Any, query: str) -> Any:
         source = self.normalize(frame)
