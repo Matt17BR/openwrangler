@@ -7352,6 +7352,9 @@ local({
     list(values = c(-Inf, Inf, -Inf, Inf, NA_real_, NaN), distinct = 2L),
     list(values = c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps), distinct = 3L),
     list(values = as.difftime(c(-0, 0, 1, 2), units = "hours"), distinct = 4L),
+    list(values = c(9L, 4L, NA_integer_, 6L, 4L), distinct = 3L, top = c("4", "9", "6")),
+    list(values = c(5, -0, 5, 0, 1), distinct = 3L),
+    list(values = c(-0, 2, 0, 9, 2147483647, -2147483647), distinct = 5L),
     list(values = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994")), distinct = 3L,
       exactSum = "1080890932166683382979"),
     list(values = bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "9223372036854775807", NA_character_)), distinct = 3L,
@@ -7375,6 +7378,10 @@ local({
       assert_true(is.null(summary$numeric$median), "a non-finite large median was published")
     }
     assert_identical(length(summary$topValues), min(10L, case$distinct), "large numeric top values were omitted")
+    if (!is.null(case$top)) {
+      assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), case$top,
+        "large top values lost count or first-occurrence order")
+    }
     bins <- summary$visualization$bins
     if (length(finite) == 0L) {
       assert_true(is.null(summary$visualization), "non-finite values invented histogram bins")

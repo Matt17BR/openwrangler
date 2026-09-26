@@ -25,6 +25,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - R profiles, duplicate-row counts and value choices are exact on dataframes of any size. Large columns now show exact distinct counts, top values and medians instead of sampled charts or `n/a`, and Filters lists exact counts without a sample note.
 - DuckDB database tables sort and profile about three times faster. Profiling every column of an 11.7-million-row table now takes about 3 seconds instead of 11.5, and dataset statistics no longer leave later queries on that database single-threaded.
 - R grid pages load about six times faster. Scrolling to a new 200-row block of an 11.7-million-row file now takes about 0.07 seconds instead of 0.43.
+- R profiles take about a third less time. Profiling every column of an 11.7-million-row file now takes about 12 seconds instead of 17, with the same exact counts, medians and histograms.
 
 ### Fixed
 
