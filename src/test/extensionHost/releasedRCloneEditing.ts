@@ -323,6 +323,7 @@ export function createReleasedRCloneEditingJourney({
         assert.deepEqual(switched.metadata.schema, originalMetadata.schema);
         assert.deepEqual(switched.metadata.steps, originalMetadata.steps);
         assert.ok(switched.code?.includes(`.ow_library <- "${to}"`), `The generated plan must select ${to}.`);
+        app = await releasedRSessionApp(workbench, testing, sessionId, `the R source after choosing R · ${to}`);
         await app
           .getByRole("button", { name: `Change dataframe engine. Current engine: R · ${to}`, exact: true })
           .waitFor({ state: "visible", timeout: 10_000 });
