@@ -194,7 +194,49 @@ openwrangler_r_frame_contract <- local({
     text
   }
 
-  clock_parse <- function(value, semantics, label) {
+  # strftime formats exact whole UTC seconds, so %S never rounds up, and %OSn
+  # prints n exact fraction digits where base R would truncate a double.
+  clock_format <- function(column, format) {
+    clock_require()
+    seconds <- clock::time_point_floor(column, "second")
+    whole <- base::as.POSIXct(clock::as_sys_time(clock::time_point_cast(seconds, "second")), tz = "UTC")
+    digits <- base::switch(base::as.character(base::attr(column, "precision", exact = TRUE)), `8` = 3L, `9` = 6L, `10` = 9L)
+    fraction <- base::as.integer(clock::as_duration(column) - clock::as_duration(seconds))
+    fraction <- base::paste0(base::formatC(fraction, width = digits, flag = "0", format = "d"), base::strrep("0", 9L - digits))
+    part <- function(text) {
+      if (base::identical(text, "")) return(base::rep.int("", base::length(whole)))
+      base::format.POSIXct(whole, format = text, tz = "UTC", usetz = FALSE)
+    }
+    tokens <- base::gregexpr("%%|%OS[0-9]", format, perl = TRUE)
+    matches <- base::regmatches(format, tokens)[[1L]]
+    pieces <- base::regmatches(format, tokens, invert = TRUE)[[1L]]
+    result <- base::rep.int("", base::length(whole))
+    pending <- pieces[[1L]]
+    for (index in base::seq_along(matches)) {
+      if (base::identical(matches[[index]], "%%")) {
+        pending <- base::paste0(pending, "%%", pieces[[index + 1L]])
+        next
+      }
+      places <- base::as.integer(base::substr(matches[[index]], 4L, 4L))
+      subsecond <- if (places == 0L) "" else base::paste0(".", base::substr(fraction, 1L, places))
+      result <- base::paste0(result, part(pending), part("%S"), subsecond)
+      pending <- pieces[[index + 1L]]
+    }
+    result <- base::paste0(result, part(pending))
+    result[base::is.na(column)] <- NA_character_
+    result
+  }
+
+  # Offsets from the earliest instant keep nanosecond differences exact in a double for spans up to about 104 days.
+  clock_offsets <- function(column) {
+    if (base::length(column) == 0L) return(base::double())
+    durations <- clock::as_duration(column)
+    base::as.double(durations - base::min(durations))
+  }
+
+  clock_parse <- function(value, semantics, label) clock_ticks(clock_parse_value(value, semantics, label))[[1L]]
+
+  clock_parse_value <- function(value, semantics, label) {
     clock_require()
     if (!base::is.character(value) || base::length(value) != 1L || base::is.na(value)) {
       abort("invalid-view-value", base::sprintf("%s must be an ISO datetime", label))
@@ -216,7 +258,7 @@ openwrangler_r_frame_contract <- local({
       }
     }, warning = function(error) NULL, error = function(error) NULL)
     if (base::is.null(parsed) || base::anyNA(parsed)) abort("invalid-view-value", base::sprintf("%s is not a valid datetime", label))
-    clock_ticks(parsed)[[1L]]
+    parsed
   }
 
   plain_metadata_storage <- function(value) {
@@ -1961,22 +2003,35 @@ openwrangler_r_frame_contract <- local({
     metadata$element_names <- c(base::lapply(metadata$element_names[id_positions], function(labels) if (base::is.null(labels)) NULL else labels[rows]), base::list(NULL, NULL))
     labels <- base::rep(source_names[value_positions], each = row_count)
     working <- prepared$frame
+    clock_aliases <- base::paste0("ow_c", value_positions)
+    if (base::all(clock_aliases %in% base::names(metadata$clock))) {
+      # Distinct stand-ins per input column let the reshaped rows index the stacked clock values.
+      metadata$clock$ow_value <- base::do.call(vctrs::vec_c, base::unname(metadata$clock[clock_aliases]))
+      for (index in base::seq_along(value_positions)) {
+        placeholders <- (index - 1L) * row_count + base::seq_len(row_count)
+        if (base::inherits(working, "data.table")) data.table::set(working, j = value_positions[[index]], value = placeholders) else working[[value_positions[[index]]]] <- placeholders
+      }
+    }
     result <- base::switch(library,
       dplyr = {
         # dplyr has no reshape verb. Its slice/select/mutate operations construct
         # the actual output while this bounded vector kernel preserves types.
         first <- working[[value_positions[[1L]]]]
-        values <- base::vector(base::typeof(first), base::length(rows))
-        cursor <- 0L
-        for (position in value_positions) {
-          storage <- base::unclass(working[[position]])
-          base::attributes(storage) <- NULL
-          if (row_count != 0L) values[cursor + base::seq_len(row_count)] <- storage
-          cursor <- cursor + row_count
+        if (base::inherits(first, "clock_time_point")) {
+          values <- base::do.call(vctrs::vec_c, base::unname(base::lapply(value_positions, function(position) working[[position]])))
+        } else {
+          values <- base::vector(base::typeof(first), base::length(rows))
+          cursor <- 0L
+          for (position in value_positions) {
+            storage <- base::unclass(working[[position]])
+            base::attributes(storage) <- NULL
+            if (row_count != 0L) values[cursor + base::seq_len(row_count)] <- storage
+            cursor <- cursor + row_count
+          }
+          attrs <- base::attributes(first)
+          attrs$names <- NULL
+          base::attributes(values) <- attrs
         }
-        attrs <- base::attributes(first)
-        attrs$names <- NULL
-        base::attributes(values) <- attrs
         retained <- if (base::length(id_positions)) id_positions else value_positions[[1L]]
         selected <- library_rows(library_columns(working, retained, library), rows, library)
         if (base::length(id_positions)) {
@@ -2044,7 +2099,9 @@ openwrangler_r_frame_contract <- local({
     ordinals <- base::match(labels, domain$keys)
     if (base::anyDuplicated(base::paste(group_ids, ordinals, sep = ":"))) abort("invalid-view-value", "Pivot wider found duplicate identifier-and-key rows")
     source <- owned[[value_position]]
+    clock_values <- base::inherits(source, "clock_time_point")
     missing_values <- function(count) {
+      if (clock_values) return(vctrs::vec_slice(source, base::rep.int(NA_integer_, count)))
       storage <- base::vector(base::typeof(source), count)
       if (base::identical(base::class(source), "integer64")) {
         storage[] <- base::unclass(bit64::NA_integer64_)[[1L]]
@@ -2055,7 +2112,7 @@ openwrangler_r_frame_contract <- local({
       storage
     }
     output_aliases <- base::paste0("ow_value", base::seq_along(domain$keys))
-    pivot_source <- base::structure(base::list(ow_group = group_ids, ow_name = output_aliases[ordinals], ow_value = source),
+    pivot_source <- base::structure(base::list(ow_group = group_ids, ow_name = output_aliases[ordinals], ow_value = if (clock_values) base::seq_len(row_count) else source),
       class = "data.frame", row.names = base::.set_row_names(row_count))
     output_columns <- if (group_count == 0L) {
       # There are no groups to reshape; collapse::pivot refuses an empty wider
@@ -2065,6 +2122,10 @@ openwrangler_r_frame_contract <- local({
       base::lapply(base::seq_along(domain$keys), function(i) {
         values <- missing_values(group_count)
         selected <- base::which(ordinals == i)
+        if (clock_values) {
+          values[group_ids[selected]] <- source[selected]
+          return(values)
+        }
         storage <- base::unclass(values)
         base::attributes(storage) <- NULL
         source_storage <- base::unclass(source)
@@ -2079,7 +2140,10 @@ openwrangler_r_frame_contract <- local({
         collapse = collapse::pivot(pivot_source, ids = "ow_group", names = "ow_name", values = "ow_value", how = "wider", check.dups = FALSE, sort = FALSE),
         base::stop("Unsupported selected R library", call. = FALSE))
       if (group_count != 0L) reshaped <- library_rows(reshaped, base::match(base::seq_len(group_count), reshaped[[1L]]), library)
-      base::lapply(output_aliases, function(name) if (name %in% base::names(reshaped)) reshaped[[name]] else missing_values(group_count))
+      base::lapply(output_aliases, function(name) {
+        if (!name %in% base::names(reshaped)) return(missing_values(group_count))
+        if (clock_values) vctrs::vec_slice(source, reshaped[[name]]) else reshaped[[name]]
+      })
     }
     result <- library_rows(owned, first_rows, library)
     # Group keys share the established NA/NaN equality and visible missing value.
@@ -4413,6 +4477,7 @@ openwrangler_r_frame_contract <- local({
               "logical",
               "date",
               "datetime",
+              "clock_datetime",
               "difftime"
             ))
         ) {
@@ -4865,7 +4930,7 @@ openwrangler_r_frame_contract <- local({
           }
         } else if (index %in% datetime_format_positions) {
           if (
-            !source_column$semantics$kind %in% c("date", "datetime") ||
+            !source_column$semantics$kind %in% c("date", "datetime", "clock_datetime") ||
               !identical(output_column$semantics$kind, "character")
           ) {
             abort("internal-error", "a derived R frame has an invalid datetime-format output")
@@ -4880,12 +4945,12 @@ openwrangler_r_frame_contract <- local({
             float = "double",
             boolean = "logical",
             date = "date",
-            datetime = "datetime"
+            datetime = if (identical(source_column$semantics$kind, "clock_datetime")) "clock_datetime" else "datetime"
           )
           if (
             !identical(output_ids[[index]], mapped_source_ids[[index]]) ||
               !identical(output_column$semantics$kind, expected_kind) ||
-              (identical(dtype, "datetime") &&
+              (identical(expected_kind, "datetime") &&
                 !identical(output_column$semantics$timezone, "UTC"))
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
@@ -5473,14 +5538,15 @@ openwrangler_r_frame_contract <- local({
       !is.character(result_kind) || length(result_kind) != 1L || is.na(result_kind) ||
         !result_kind %in% c(
           "character", "factor", "integer", "integer64", "double", "logical",
-          "date", "datetime", "difftime"
+          "date", "datetime", "clock_datetime", "difftime"
         )
     ) {
       abort("internal-error", "the by-example result kind is invalid")
     }
+    clock_result <- identical(result_kind, "clock_datetime")
     if (!is.function(evaluator)) abort("internal-error", "the by-example evaluator must be a function")
 
-    element_bytes <- if (result_kind %in% c("factor", "integer", "logical")) 4 else 8
+    element_bytes <- if (result_kind %in% c("factor", "integer", "logical")) 4 else if (clock_result) 16 else 8
     operation_budget <- new_payload_budget()
     spend_operation_output_budget(
       operation_budget,
@@ -5505,6 +5571,7 @@ openwrangler_r_frame_contract <- local({
     }
     source_chunk <- function(position, row_positions) {
       source <- .subset2(result, position)
+      if (clock_is_column(source)) return(vctrs::vec_slice(source, row_positions))
       source_attributes <- attributes(source)
       source_names <- source_attributes$names
       chunk <- .subset(unclass(source), row_positions)
@@ -5585,6 +5652,7 @@ openwrangler_r_frame_contract <- local({
       factor = rep.int(NA_integer_, row_count),
       integer = rep.int(NA_integer_, row_count),
       logical = rep.int(NA, row_count),
+      clock_datetime = NULL,
       rep.int(NA_real_, row_count)
     )
     transformed_attributes <- NULL
@@ -5597,6 +5665,18 @@ openwrangler_r_frame_contract <- local({
       lapply(starts, function(start) {
         seq.int(start, min(row_count, start + maximum_operation_output_chunk_rows - 1L))
       })
+    }
+    if (clock_result) {
+      # Only a column copy yields a clock result, so it is evaluated once on the whole columns.
+      clock_output <- tryCatch(
+        evaluator(lapply(positions, function(position) .subset2(result, position))),
+        openwrangler_r_frame_error = function(error) stop(error),
+        error = function(error) abort("invalid-view-query", "the by-example program could not be evaluated")
+      )
+      if (!clock_is_column(clock_output) || vctrs::vec_size(clock_output) != row_count) {
+        abort("invalid-view-query", "the by-example program returned an invalid R column")
+      }
+      ranges <- list()
     }
     for (row_positions in ranges) {
       selected <- lapply(positions, source_chunk, row_positions = row_positions)
@@ -5745,12 +5825,12 @@ openwrangler_r_frame_contract <- local({
       }
       transformed_storage[row_positions] <- unclass(transformed_chunk)
     }
-    transformed <- transformed_storage
+    transformed <- if (clock_result) clock_output else transformed_storage
     final_attributes <- transformed_attributes %||% list()
     if (isTRUE(output_has_names)) final_attributes$names <- transformed_names
     if (length(final_attributes) > 0L) attributes(transformed) <- final_attributes
 
-    transformed_names <- attr(transformed, "names", exact = TRUE)
+    transformed_names <- if (clock_result) NULL else attr(transformed, "names", exact = TRUE)
     if (!identical(library, "base")) {
       result <- library_assign(result, column_count + 1L, list(transformed), c(names(result), new_name), library)
     } else if (identical(inspected$flavor, "r.data.table")) {
@@ -6991,7 +7071,7 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "Pivot longer requires exact R scalar metadata")
     }
     if (!selected_semantics[[1L]]$kind %in% c(
-      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
     )) {
       abort("invalid-view-query", "Pivot longer requires portable scalar R columns")
     }
@@ -7028,37 +7108,41 @@ openwrangler_r_frame_contract <- local({
         result <- snapshot[row_indices, retained_positions, drop = FALSE]
       }
       selected_values <- lapply(positions, function(position) snapshot[[position]])
-      selected_storage <- lapply(selected_values, function(column) {
-        attributes(column) <- NULL
-        column
-      })
-      storage_type <- typeof(selected_storage[[1L]])
-      if (any(!vapply(selected_storage, function(column) identical(typeof(column), storage_type), logical(1L)))) {
-        abort("internal-error", "Pivot longer selected columns have incompatible R storage")
-      }
-      pivot_values <- vector(storage_type, as.integer(output_rows))
-      cursor <- 1L
-      for (column in selected_storage) {
-        next_cursor <- cursor + length(column)
-        if (length(column) != 0L) pivot_values[cursor:(next_cursor - 1L)] <- column
-        cursor <- next_cursor
-      }
       semantics <- selected_semantics[[1L]]
-      first_selected <- selected_values[[1L]]
-      if (identical(semantics$kind, "factor")) {
-        attr(pivot_values, "levels") <- levels(first_selected)
-        attr(pivot_values, "class") <- class(first_selected)
-      } else if (identical(semantics$kind, "datetime")) {
-        attr(pivot_values, "class") <- class(first_selected)
-        timezone <- attr(first_selected, "tzone", exact = TRUE)
-        if (!is.null(timezone)) attr(pivot_values, "tzone") <- timezone
-      } else if (identical(semantics$kind, "difftime")) {
-        attr(pivot_values, "class") <- class(first_selected)
-        attr(pivot_values, "units") <- attr(first_selected, "units", exact = TRUE)
-      } else if (identical(semantics$kind, "date")) {
-        attr(pivot_values, "class") <- class(first_selected)
-      } else if (identical(semantics$kind, "integer64")) {
-        attr(pivot_values, "class") <- class(first_selected)
+      if (identical(semantics$kind, "clock_datetime")) {
+        pivot_values <- do.call(vctrs::vec_c, unname(selected_values))
+      } else {
+        selected_storage <- lapply(selected_values, function(column) {
+          attributes(column) <- NULL
+          column
+        })
+        storage_type <- typeof(selected_storage[[1L]])
+        if (any(!vapply(selected_storage, function(column) identical(typeof(column), storage_type), logical(1L)))) {
+          abort("internal-error", "Pivot longer selected columns have incompatible R storage")
+        }
+        pivot_values <- vector(storage_type, as.integer(output_rows))
+        cursor <- 1L
+        for (column in selected_storage) {
+          next_cursor <- cursor + length(column)
+          if (length(column) != 0L) pivot_values[cursor:(next_cursor - 1L)] <- column
+          cursor <- next_cursor
+        }
+        first_selected <- selected_values[[1L]]
+        if (identical(semantics$kind, "factor")) {
+          attr(pivot_values, "levels") <- levels(first_selected)
+          attr(pivot_values, "class") <- class(first_selected)
+        } else if (identical(semantics$kind, "datetime")) {
+          attr(pivot_values, "class") <- class(first_selected)
+          timezone <- attr(first_selected, "tzone", exact = TRUE)
+          if (!is.null(timezone)) attr(pivot_values, "tzone") <- timezone
+        } else if (identical(semantics$kind, "difftime")) {
+          attr(pivot_values, "class") <- class(first_selected)
+          attr(pivot_values, "units") <- attr(first_selected, "units", exact = TRUE)
+        } else if (identical(semantics$kind, "date")) {
+          attr(pivot_values, "class") <- class(first_selected)
+        } else if (identical(semantics$kind, "integer64")) {
+          attr(pivot_values, "class") <- class(first_selected)
+        }
       }
       pivot_labels <- rep(old_names, each = as.integer(row_count))
       if (identical(inspected$flavor, "r.data.table")) {
@@ -7179,7 +7263,7 @@ openwrangler_r_frame_contract <- local({
     }
     names_semantics <- schema[[positions[[1L]]]]$semantics
     value_semantics <- schema[[positions[[2L]]]]$semantics
-    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime")
     retained_positions <- setdiff(seq_along(schema), positions)
     if (
       !names_semantics$kind %in% c("character", "factor") ||
@@ -7241,7 +7325,9 @@ openwrangler_r_frame_contract <- local({
       if (length(retained_positions) == 0L) {
         group_ids <- if (row_count == 0L) integer() else rep.int(1L, row_count)
       } else {
-        identifiers <- data.table::as.data.table(identifier_values)
+        identifiers <- data.table::as.data.table(lapply(identifier_values, function(column) {
+          if (clock_is_column(column)) as.integer(vctrs::vec_group_id(column)) else column
+        }))
         identifier_names <- paste0("ow_identifier_", seq_along(retained_positions))
         data.table::setnames(identifiers, identifier_names)
         group_column <- "__open_wrangler_internal_row_id_pivot_wider_group"
@@ -7292,7 +7378,12 @@ openwrangler_r_frame_contract <- local({
         }
         result
       }
-      output_values <- lapply(seq_along(output_keys), function(output_index) {
+      output_values <- if (identical(value_semantics$kind, "clock_datetime")) lapply(seq_along(output_keys), function(output_index) {
+        storage <- vctrs::vec_slice(value_source, rep.int(NA_integer_, group_count))
+        matching_rows <- which(key_ordinals == output_index)
+        if (length(matching_rows) != 0L) storage[group_ids[matching_rows]] <- value_source[matching_rows]
+        storage
+      }) else lapply(seq_along(output_keys), function(output_index) {
         storage <- missing_storage(group_count)
         matching_rows <- which(key_ordinals == output_index)
         if (length(matching_rows) != 0L) storage[group_ids[matching_rows]] <- value_storage[matching_rows]
@@ -7313,9 +7404,13 @@ openwrangler_r_frame_contract <- local({
         }
       } else {
         result <- snapshot[group_rows, retained_positions, drop = FALSE]
+        # [[<-.data.frame drops element names; the unclassed frame keeps each group's first labels.
+        result_classes <- class(result)
+        class(result) <- NULL
         for (identifier_index in seq_along(identifier_values)) {
           result[[identifier_index]] <- identifier_values[[identifier_index]][group_rows]
         }
+        class(result) <- result_classes
         original_names <- names(result)
         for (output_index in seq_along(output_names)) result[[length(result) + 1L]] <- output_values[[output_index]]
         names(result) <- c(original_names, output_names)
@@ -7954,8 +8049,8 @@ openwrangler_r_frame_contract <- local({
     if (!identical(source_column$name, old_name)) {
       abort("stale-column", "the formatDatetime column name no longer matches the R dataframe")
     }
-    if (!source_column$semantics$kind %in% c("date", "datetime")) {
-      abort("invalid-view-query", "formatDatetime requires a Date or POSIXct R column")
+    if (!source_column$semantics$kind %in% c("date", "datetime", "clock_datetime")) {
+      abort("invalid-view-query", "formatDatetime requires a Date, POSIXct or clock timestamp R column")
     }
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
@@ -8006,6 +8101,19 @@ openwrangler_r_frame_contract <- local({
     source_storage <- unclass(source_values)
     transformed <- rep.int(NA_character_, row_count)
     start <- 1L
+    if (identical(source_column$semantics$kind, "clock_datetime")) {
+      transformed <- clock_format(source_values, format)
+      special <- !is.na(transformed) & grepl("[^ -~]", transformed, perl = TRUE)
+      transformed[special] <- vapply(transformed[special], bounded_operation_output, character(1L), "Format datetime", USE.NAMES = FALSE)
+      if (any(nchar(transformed, type = "bytes") > maximum_text_bytes, na.rm = TRUE)) {
+        abort("operation-output-too-large", sprintf("Format datetime would produce text longer than %d UTF-8 bytes", maximum_text_bytes))
+      }
+      output_bytes <- output_bytes + sum(as.double(nchar(transformed[!is.na(transformed)], type = "bytes")))
+      if (!is.finite(output_bytes) || output_bytes > maximum_operation_output_bytes) {
+        abort("operation-output-too-large", sprintf("formatDatetime exceeds the %d-byte aggregate output budget", maximum_operation_output_bytes))
+      }
+      start <- row_count + 1L
+    }
     while (start <= row_count) {
       end <- min(row_count, start + maximum_operation_output_chunk_rows - 1L)
       positions <- seq.int(start, end)
@@ -8200,6 +8308,7 @@ openwrangler_r_frame_contract <- local({
       logical = kind %in% c("mostFrequent", "boolean"),
       date = identical(kind, "date"),
       datetime = identical(kind, "datetime"),
+      clock_datetime = identical(kind, "datetime"),
       FALSE
     )
     if (!compatible) {
@@ -8320,6 +8429,8 @@ openwrangler_r_frame_contract <- local({
       fill <- as.Date(as.double(parse_date_key(value, "replacement$value")), origin = "1970-01-01")
     } else if (identical(semantic_kind, "datetime")) {
       fill <- as.double(parse_datetime_key(value, descriptor$semantics, "replacement$value"))
+    } else if (identical(semantic_kind, "clock_datetime")) {
+      fill <- clock_parse_value(value, descriptor$semantics, "replacement$value")
     } else {
       abort("invalid-view-query", "the selected R column cannot be filled")
     }
@@ -8435,11 +8546,16 @@ openwrangler_r_frame_contract <- local({
     compatible_fallback_kind <- function(fallback_kind) {
       if (target_kind %in% c("character", "factor")) return(fallback_kind %in% c("character", "factor"))
       if (target_kind %in% c("integer", "integer64")) return(fallback_kind %in% c("integer", "integer64"))
-      identical(fallback_kind, target_kind) && target_kind %in% c("double", "logical", "date", "datetime")
+      identical(fallback_kind, target_kind) && target_kind %in% c("double", "logical", "date", "datetime", "clock_datetime")
     }
     fallback_descriptors <- lapply(fallback_positions, function(fallback_position) {
       descriptor <- inspected$descriptor$schema[[fallback_position]]
-      if (!compatible_fallback_kind(descriptor$semantics$kind)) {
+      if (
+        !compatible_fallback_kind(descriptor$semantics$kind) ||
+          (identical(target_kind, "clock_datetime") &&
+            (!identical(descriptor$semantics$clock, target_descriptor$semantics$clock) ||
+              !identical(descriptor$semantics$precision, target_descriptor$semantics$precision)))
+      ) {
         abort(
           "invalid-view-query",
           sprintf("fallback column %s is incompatible with the selected R column", descriptor$name)
@@ -8579,9 +8695,6 @@ openwrangler_r_frame_contract <- local({
         old_name %in% (data.table::key(value) %||% character())
     ) {
       abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
-    }
-    if (identical(target_descriptor$semantics$kind, "clock_datetime")) {
-      abort("invalid-view-query", "Fill Missing Values does not support exact clock timestamp targets")
     }
     if (
       !is.numeric(order_positions) ||
@@ -8760,8 +8873,8 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "linear interpolation requires a floating-point R target column")
     }
     coordinate_kind <- coordinate_descriptor$semantics$kind
-    if (!coordinate_kind %in% c("integer", "double", "date", "datetime")) {
-      abort("invalid-view-query", "linear interpolation requires a numeric, Date, or POSIXct coordinate column")
+    if (!coordinate_kind %in% c("integer", "double", "date", "datetime", "clock_datetime")) {
+      abort("invalid-view-query", "linear interpolation requires a numeric, Date, POSIXct or clock timestamp coordinate column")
     }
     if (!is.null(max_gap)) {
       max_gap <- whole_number(max_gap, "max_gap", maximum_fill_directional_gap)
@@ -8769,7 +8882,11 @@ openwrangler_r_frame_contract <- local({
       max_gap <- as.integer(max_gap)
     }
 
-    coordinate_values <- as.double(value[[coordinate_position]])
+    coordinate_values <- if (identical(coordinate_kind, "clock_datetime")) {
+      clock_offsets(value[[coordinate_position]])
+    } else {
+      as.double(value[[coordinate_position]])
+    }
     if (anyNA(coordinate_values) || any(!is.finite(coordinate_values))) {
       abort("invalid-view-value", "every interpolation coordinate must be present and finite")
     }
@@ -8911,7 +9028,7 @@ openwrangler_r_frame_contract <- local({
     }
     key_positions <- as.integer(key_positions)
     supported_key_kinds <- c(
-      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
     )
     key_names <- vapply(seq_along(key_names), function(index) {
       name <- bounded_utf8(key_names[[index]], sprintf("key_names[[%d]]", index), maximum_name_bytes)
@@ -9051,6 +9168,8 @@ openwrangler_r_frame_contract <- local({
       pad_iso_years(format(column, format = "%Y-%m-%d"))
     } else if (identical(kind, "datetime")) {
       format_iso_datetime(column, "UTC", utc_suffix = TRUE)
+    } else if (identical(kind, "clock_datetime")) {
+      clock_display(column)
     } else if (identical(kind, "difftime")) {
       units <- semantics$units
       numeric_values <- as.double(column, units = units)
@@ -9166,12 +9285,12 @@ openwrangler_r_frame_contract <- local({
     source_kind <- semantics$kind
     supported_sources <- switch(
       dtype,
-      string = c("logical", "integer", "double", "character", "factor", "date", "datetime", "difftime", "integer64"),
+      string = c("logical", "integer", "double", "character", "factor", "date", "datetime", "clock_datetime", "difftime", "integer64"),
       integer = c("logical", "integer", "double", "character", "factor", "integer64"),
       float = c("logical", "integer", "double", "character", "factor"),
       boolean = c("logical", "integer", "double", "character", "factor"),
-      date = c("character", "factor", "date", "datetime"),
-      datetime = c("character", "factor", "date", "datetime")
+      date = c("character", "factor", "date", "datetime", "clock_datetime"),
+      datetime = c("character", "factor", "date", "datetime", "clock_datetime")
     )
     if (!source_kind %in% supported_sources) {
       abort(
@@ -9209,9 +9328,11 @@ openwrangler_r_frame_contract <- local({
     if (identical(dtype, "date")) {
       if (identical(source_kind, "date")) return(cast_canonical_dates(column))
       if (identical(source_kind, "datetime")) return(cast_canonical_dates(as.Date(column, tz = "UTC")))
+      if (identical(source_kind, "clock_datetime")) return(cast_canonical_dates(clock::as_date(column)))
       return(cast_date_text(cast_text_source(column, source_kind, label)))
     }
     if (identical(dtype, "datetime")) {
+      if (identical(source_kind, "clock_datetime")) return(column)
       if (identical(source_kind, "datetime")) {
         return(cast_canonical_datetimes(
           structure(as.double(column), class = c("POSIXct", "POSIXt"), tzone = "UTC")
@@ -9773,7 +9894,7 @@ openwrangler_r_frame_contract <- local({
       abort("operation-output-too-large", sprintf("Group By may produce at most %d columns", maximum_columns))
     }
 
-    supported_kinds <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    supported_kinds <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime")
     key_semantics <- lapply(key_positions, function(position) inspected$descriptor$schema[[position]]$semantics)
     if (any(!vapply(key_semantics, function(semantics) semantics$kind %in% supported_kinds, logical(1L)))) {
       abort("invalid-view-query", "an R Group By key uses an unsupported type")
@@ -9792,7 +9913,7 @@ openwrangler_r_frame_contract <- local({
       if (!compatible) {
         abort(
           "invalid-view-query",
-          sprintf("R %s columns do not support the %s Group By aggregation", kind, operation)
+          sprintf("R %s columns do not support the %s Group By aggregation", if (identical(kind, "clock_datetime")) "datetime" else kind, operation)
         )
       }
     }
@@ -12201,7 +12322,10 @@ openwrangler_r_frame_contract <- local({
       clock_validate = clock_validate,
       clock_ticks = clock_ticks,
       clock_display = clock_display,
+      clock_format = clock_format,
       clock_parse = clock_parse,
+      clock_parse_value = clock_parse_value,
+      clock_offsets = clock_offsets,
       normalize_integer_text = normalize_integer_text,
       compare_integer_text = compare_integer_text,
       compare_integer_keys = compare_integer_keys

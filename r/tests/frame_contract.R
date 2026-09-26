@@ -320,9 +320,16 @@ local({
     assert_identical(summary$nullCount, 1L, "clock INT64_MIN became a missing value")
     assert_identical(summary$visualization, list(kind = "datetime", min = text[[1L]], max = text[[7L]]), "clock extrema lost exact ordering")
     assert_identical(serialize(source, NULL, version = 3L), source_before, "clock operations mutated their source")
-    assert_error(fc$cast_column_at(source, 2L, "civil", "string"), "cannot convert")
-    assert_error(fc$format_datetime_column_at(source, 2L, "civil", "%Y", "year"), "Date or POSIXct")
-    assert_error(fc$fill_missing_directional_at(source, 2L, "civil", 1L, "id", "asc", "last", "forward"), "clock timestamp targets")
+    assert_identical(unname(fc$cast_column_at(source, 2L, "civil", "string")$civil), text, "clock text lost digits at the int64 limits")
+    assert_identical(unname(fc$cast_column_at(source, 3L, "instant", "string")$instant), ifelse(is.na(text), NA_character_, paste0(text, "Z")),
+      "instant text omitted UTC")
+    assert_identical(unname(fc$cast_column_at(source, 2L, "civil", "date")$civil), as.Date(substr(text, 1L, 10L)),
+      "clock dates did not floor at the int64 limits")
+    assert_identical(unname(fc$format_datetime_column_at(source, 2L, "civil", "%Y-%m-%d %H:%M:%S|%OS9", "formatted")$formatted),
+      ifelse(is.na(text), NA_character_, paste0(sub("T", " ", substr(text, 1L, 19L)), "|", substr(text, 18L, 29L))),
+      "clock formatting rounded seconds or truncated fractions")
+    assert_identical(format(fc$fill_missing_directional_at(source, 2L, "civil", 1L, "id", "asc", "last", "forward")$civil),
+      replace(text, 5L, text[[4L]]), "forward fill changed a clock timestamp")
   }
   changing <- frame
   live <- fc$capture_live_frame(function() changing)
@@ -4871,7 +4878,7 @@ assert_error(
   openwrangler_r_frame_contract$format_datetime_column_at(
     data.frame(value = 1), 1L, "value", "%Y"
   ),
-  "Date or POSIXct"
+  "Date, POSIXct or clock timestamp"
 )
 assert_error(
   openwrangler_r_frame_contract$format_datetime_column_at(

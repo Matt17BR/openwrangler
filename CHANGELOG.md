@@ -16,6 +16,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Changed
 
 - R · data.table and R · collapse can clean dataframes with precise timestamps, with the same operations as R · base and R · dplyr. Previously they only viewed and exported them.
+- Format Datetime, Convert Type, Fill Missing Values, Group By, Pivot longer, Pivot wider and By Example work on precise R timestamps, such as nanosecond Parquet timestamps, in every R library. Previously they refused these columns. As in the Python engines, Group By can't average or sum timestamps, and Fill can't replace a missing timestamp with a mean, median or most frequent value.
 - Switching engines happens in the same tab and replays the cleaning steps and draft, for files (between Python and R and between R libraries) and for live R dataframes (between R libraries), which no longer open an editing copy. The engine picker says when a step can't move or the new engine has other saved work for the file, and a dialog offers the choices. Switching a file back restores the previous engine's work. A live R dataframe asks first only when the switch would run Custom Code again in its R session. Changing R import options also stays in the same tab.
 - Engine switches and import-option changes show their progress with a Cancel button. The previous data stays dimmed until the new engine is ready, and the engine badge shows the engine being opened.
 - **Copy column** works on columns longer than the clipboard holds. It copies the leading values that fit in 100,000 cells or 4 MiB, reads **Copy first N values**, and says how many values it copied. The footer button copies the focused cell's column when no header is selected.
@@ -45,6 +46,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- R · base Pivot wider keeps the names of named identifier values, as R · dplyr does. Previously it dropped them.
 - A data.table that has been filtered, which gives it an automatic index, now opens. Previously it failed with "the dataframe has unsupported attributes: index".
 - Histogram ranges and bin labels now show exact edges. The first and last edges match the column's Min and Max, and inner edges are no longer rounded to 5 significant digits, so a column starting at `-406,851` no longer reads as starting at `-406,850`. Bin labels use "to" instead of a hyphen, so negative ranges read clearly.
 - A dataframe or file with saved cleaning steps now reopens in Editing and restores them, even when the start mode is Viewing. Previously the panel stopped with instructions to change the start-mode setting and reopen.
