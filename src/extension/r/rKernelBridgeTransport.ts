@@ -37,7 +37,7 @@ export interface RKernelBridgeTransport {
     search: string | undefined,
     limit: number,
     options?: RKernelRequestOptions
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>>;
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
   previewStep(
     sessionId: string,
     revision: number,

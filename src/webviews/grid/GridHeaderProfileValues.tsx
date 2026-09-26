@@ -20,7 +20,6 @@ import {
   describeProfileValue,
   formatProfileValue,
   profileDistributionDenominator,
-  sampledDistributionDescription,
   type ProfileValueMode
 } from "../profileValueMode";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
@@ -176,7 +175,6 @@ export function useGridHeaderProfiles({
     const summary = summaryByColumnId.get(column.id);
     if (!summary) return <span className="columnInsight emptyInsight">Profiling…</span>;
     const distributionDenominator = profileDistributionDenominator(summary);
-    const sampleDescription = summary.visualization?.sampled ? sampledDistributionDescription(summary) : undefined;
     const applyFilter =
       filterAvailable && onApplyFilter ? (filter: ColumnFilter): void => onApplyFilter(column, filter) : undefined;
     return (
@@ -198,16 +196,6 @@ export function useGridHeaderProfiles({
           {summary.numeric && <CompactExtremum label="Max" summary={summary.numeric} bound="max" />}
         </div>
         <div className="summaryDistribution">
-          {sampleDescription && (
-            <span className="sampledLabel" role="note" title={sampleDescription} aria-label={sampleDescription}>
-              Sampled distribution
-              <br />
-              {distributionDenominator.toLocaleString()} /{" "}
-              {Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount).toLocaleString()}
-              <br />
-              non-missing values
-            </span>
-          )}
           <MiniChart
             visualization={summary.visualization}
             column={column}
@@ -385,7 +373,7 @@ function MiniChart({
       <span
         className={`booleanMiniChart${onApplyFilter ? " interactive" : ""}`}
         role={onApplyFilter ? "group" : "img"}
-        aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: ${trueDescription}, ${falseDescription}.`}
+        aria-label={`boolean distribution: ${trueDescription}, ${falseDescription}.`}
       >
         <span className="miniChartLegend">
           {values.map((item) => {
@@ -433,7 +421,7 @@ function MiniChart({
       <span
         className={`categoryMiniChart${onApplyFilter ? " interactive" : ""}`}
         role={onApplyFilter ? "group" : "img"}
-        aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
+        aria-label={`categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
       >
         {visibleCategories.map((category, index) => {
           const selectionValue = valueCountSelectionValue(category);
@@ -486,7 +474,7 @@ function MiniChart({
     <span
       className="datetimeMiniChart"
       role="img"
-      aria-label={`${visualization.sampled ? "Sampled " : ""}datetime distribution: minimum ${min}, maximum ${max}.`}
+      aria-label={`datetime distribution: minimum ${min}, maximum ${max}.`}
     >
       <span title={`Minimum ${min}`}>
         <b>Min</b> {min}

@@ -41,6 +41,7 @@ require_package("collapse")
 require_package("nanoparquet")
 
 contract_environment <- environment(openwrangler_r_frame_contract$materialize_summaries)
+direct_profile_rows <- get("maximum_direct_profile_rows", contract_environment, inherits = FALSE)
 compare_signed_decimal_text <- get("compare_integer_text", contract_environment, inherits = FALSE)
 
 oracle_decimal_parts <- function(value) {
@@ -272,8 +273,9 @@ local({
         assert_true(page$page$rows[[row]]$values[[2L]]$isNull, "clock missing value became present")
       } else {
         assert_identical(page$page$rows[[row]]$values[[2L]]$raw, ticks[[row]], "clock tick identity changed")
-        assert_identical(page$page$rows[[row]]$values[[2L]]$display, text[[row]], "civil display changed precision or timezone")
-        assert_identical(page$page$rows[[row]]$values[[3L]]$display, paste0(text[[row]], "Z"), "instant display omitted UTC")
+        display <- sub("\\.000000000$", "", text[[row]])
+        assert_identical(page$page$rows[[row]]$values[[2L]]$display, display, "civil display changed precision or timezone")
+        assert_identical(page$page$rows[[row]]$values[[3L]]$display, paste0(display, "+00:00"), "instant display omitted UTC")
       }
     }
     reference <- list(id = "r:c:1", name = "civil")
@@ -1247,7 +1249,7 @@ assert_identical(
 )
 assert_identical(
   ambient_page_new_york$page$rows[[1L]]$values[[2L]]$display,
-  "1970-01-01T00:00:00.250000",
+  "1970-01-01T00:00:00.250000+00:00",
   "a timezone-less POSIXct value was not displayed in UTC"
 )
 assert_identical(
@@ -1257,7 +1259,7 @@ assert_identical(
 )
 assert_identical(
   ambient_page_new_york$page$rows[[1L]]$values[[3L]]$display,
-  "1970-01-01T00:00:00.250000",
+  "1970-01-01T00:00:00.250000+00:00",
   "an empty-string POSIXct timezone was not displayed in UTC"
 )
 
@@ -6123,10 +6125,16 @@ local({
     -0.0000001, 59.9999998, 1704067199.9999998, NA_real_
   )
   expected <- c(
-    "2041-05-10T11:56:53.685247", "1898-08-23T12:03:06.314753",
-    "1969-12-31T23:59:59.999999", "1970-01-01T00:00:00.000000",
-    "1970-01-01T00:00:00.000000", "1970-01-01T00:00:00.000000",
-    "1970-01-01T00:01:00.000000", "2024-01-01T00:00:00.000000", NA_character_
+    "2041-05-10T11:56:53.685247+00:00", "1898-08-23T12:03:06.314753+00:00",
+    "1969-12-31T23:59:59.999999+00:00", "1970-01-01T00:00:00+00:00",
+    "1970-01-01T00:00:00+00:00", "1970-01-01T00:00:00+00:00",
+    "1970-01-01T00:01:00+00:00", "2024-01-01T00:00:00+00:00", NA_character_
+  )
+  cast_expected <- c(
+    "2041-05-10T11:56:53.685247Z", "1898-08-23T12:03:06.314753Z",
+    "1969-12-31T23:59:59.999999Z", "1970-01-01T00:00:00.000000Z",
+    "1970-01-01T00:00:00.000000Z", "1970-01-01T00:00:00.000000Z",
+    "1970-01-01T00:01:00.000000Z", "2024-01-01T00:00:00.000000Z", NA_character_
   )
   frame <- data.frame(instant = structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC"))
   before <- serialize(frame, NULL, version = 3L)
@@ -6146,7 +6154,7 @@ local({
   assert_identical(summary$visualization$min, expected[[2L]], "datetime profile minimum did not use rounded text")
   assert_identical(summary$visualization$max, expected[[1L]], "datetime profile maximum did not use rounded text")
   text <- openwrangler_r_frame_contract$cast_column_at(frame, 1L, "instant", "string")$instant
-  assert_identical(text, ifelse(is.na(expected), NA_character_, paste0(expected, "Z")), "datetime Cast did not use rounded UTC text")
+  assert_identical(text, cast_expected, "datetime Cast did not use rounded UTC text")
   empty <- openwrangler_r_frame_contract$cast_column_at(frame[FALSE, , drop = FALSE], 1L, "instant", "string")
   assert_identical(empty$instant, character(), "empty datetime Cast changed its output type")
   nonfinite <- data.frame(instant = structure(c(Inf, -Inf, NaN, NA_real_), class = c("POSIXct", "POSIXt"), tzone = "UTC"))
@@ -6156,11 +6164,11 @@ local({
 
   zones <- list(
     list(timezone = "Europe/Berlin", seconds = c(1711846799.9999998, 1729990799.9999998),
-      expected = c("2024-03-31T03:00:00.000000", "2024-10-27T02:00:00.000000")),
+      expected = c("2024-03-31T03:00:00+02:00", "2024-10-27T02:00:00+01:00")),
     list(timezone = "Europe/Paris", seconds = -2208988800 + 0.123456,
-      expected = "1900-01-01T00:09:21.123456"),
-    list(timezone = "", seconds = 59.9999998, expected = "1970-01-01T00:01:00.000000"),
-    list(timezone = NULL, seconds = 59.9999998, expected = "1970-01-01T00:01:00.000000")
+      expected = "1900-01-01T00:09:21.123456+00:09:21"),
+    list(timezone = "", seconds = 59.9999998, expected = "1970-01-01T00:01:00+00:00"),
+    list(timezone = NULL, seconds = 59.9999998, expected = "1970-01-01T00:01:00+00:00")
   )
   for (case in zones) {
     instant <- structure(case$seconds, class = c("POSIXct", "POSIXt"))
@@ -6207,16 +6215,8 @@ cast_ancient_datetime <- openwrangler_r_frame_contract$cast_column_at(
   "datetime",
   "datetime"
 )
-# Native year padding differs: keep year 0001 only when this runtime can display its ISO form.
 cast_ancient_date_expected <- as.Date(c("2024-02-29", "0001-01-01", NA))
-if (!identical(format(cast_ancient_date_expected[2L], "%Y-%m-%d"), "0001-01-01")) {
-  cast_ancient_date_expected[2L] <- as.Date(NA_character_)
-}
 cast_ancient_datetime_expected <- as.POSIXct(c("2024-02-29 12:00:00", "0001-01-01 00:00:00", NA), tz = "UTC")
-if (!identical(format(cast_ancient_datetime_expected[2L], "%Y-%m-%dT%H:%M:%OS6", tz = "UTC"),
-  "0001-01-01T00:00:00.000000")) {
-  cast_ancient_datetime_expected[2L] <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
-}
 assert_identical(
   cast_ancient_date$date,
   cast_ancient_date_expected,
@@ -6234,10 +6234,6 @@ cast_fixed_ancient <- openwrangler_r_frame_contract$cast_column_at(
   cast_ancient_text, 1L, "date", "datetime", "YYYY-MM-DD"
 )
 cast_fixed_ancient_expected <- as.POSIXct(cast_ancient_date_expected, tz = "UTC")
-if (!identical(format(cast_fixed_ancient_expected[2L], "%Y-%m-%dT%H:%M:%OS6", tz = "UTC"),
-  "0001-01-01T00:00:00.000000")) {
-  cast_fixed_ancient_expected[2L] <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
-}
 assert_identical(cast_fixed_ancient$date, cast_fixed_ancient_expected, "fixed-layout Cast bypassed native temporal capacity")
 invisible(openwrangler_r_frame_contract$capture_frame(cast_fixed_ancient))
 
@@ -6252,9 +6248,6 @@ cast_ancient_posix_date <- openwrangler_r_frame_contract$cast_column_at(
   "date"
 )
 cast_ancient_posix_date_expected <- as.Date(cast_ancient_posix$instant, tz = "UTC")
-if (!identical(format(cast_ancient_posix_date_expected[2L], "%Y-%m-%d"), "0001-01-01")) {
-  cast_ancient_posix_date_expected[2L] <- as.Date(NA_character_)
-}
 assert_identical(
   cast_ancient_posix_date$instant,
   cast_ancient_posix_date_expected,
@@ -6751,17 +6744,17 @@ local({
     list(list(id = "r:c:0", name = "civil"), list(id = "r:c:1", name = "instant")))
   assert_identical(small_summaries[[1L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192",
     max = "2262-04-11T23:47:16.854775807"), "isolated small clock profiling lost exact civil extrema")
-  assert_identical(small_summaries[[2L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192Z",
-    max = "2262-04-11T23:47:16.854775807Z"), "isolated small clock profiling lost exact UTC extrema")
+  assert_identical(small_summaries[[2L]]$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192+00:00",
+    max = "2262-04-11T23:47:16.854775807+00:00"), "isolated small clock profiling lost exact UTC extrema")
   column <- rep(extrema[2L], 100003L)
   column[c(65536L, 100003L, 100002L)] <- extrema[c(1L, 3L, 4L)]
   frame <- data.frame(stamp = column)
   before <- serialize(frame, NULL, version = 3L)
   capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
   summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(list(id = "r:c:0", name = "stamp")))[[1L]]
-  assert_identical(summary$nullCount, 1L, "chunked clock profiling missed a null beyond the sample bound")
+  assert_identical(summary$nullCount, 1L, "chunked clock profiling missed a late null")
   assert_identical(summary$visualization, list(kind = "datetime", min = "1677-09-21T00:12:43.145224192",
-    max = "2262-04-11T23:47:16.854775807"), "chunked clock profiling sampled or rounded exact extrema")
+    max = "2262-04-11T23:47:16.854775807"), "chunked clock profiling rounded exact extrema")
   assert_identical(serialize(frame, NULL, version = 3L), before, "chunked clock profiling changed its live source")
 })
 
@@ -6901,7 +6894,7 @@ local({
     if (had_methods[[i]]) assign(method_names[[i]], prior_methods[[i]], methods)
     else if (exists(method_names[[i]], methods, inherits = FALSE)) rm(list = method_names[[i]], envir = methods)
   }, add = TRUE)
-  frames <- lapply(c(3L, openwrangler_r_frame_contract$limits$profileSampleRows + 1L), function(size) {
+  frames <- lapply(c(3L, direct_profile_rows + 1L), function(size) {
     values <- c(1, 3, rep(NA_real_, size - 2L))
     text <- c("a", "bbb", rep(NA_character_, size - 2L))
     data.frame(number = values, integer = as.integer(values), wide = bit64::as.integer64(values),
@@ -6987,7 +6980,7 @@ local({
 })
 assert_identical(
   base_summaries[[8L]]$visualization$min,
-  "2026-01-01T12:00:00.000000",
+  "2026-01-01T12:00:00+01:00",
   "POSIXct profile minimum changed"
 )
 assert_identical(base_summaries[[9L]]$numeric$min, 1, "difftime profile minimum changed")
@@ -7149,11 +7142,11 @@ local({
     expected <- contract$materialize_summaries(capture, reference)[[1L]]
     state <- contract$begin_summary(capture, reference, list(filters = list(), sorts = list()))
     assert_identical(drain(state, contract$advance_summary), expected,
-      "yielding changed exact counts, histograms or deterministic profile samples")
+      "yielding changed exact counts or histograms")
   }
   stats <- contract$begin_dataset_stats(capture)
   assert_identical(drain(stats, contract$advance_dataset_stats), contract$materialize_dataset_stats(capture),
-    "yielding between dataset columns lost row missingness or duplicate sampling")
+    "yielding between dataset columns lost row missingness or duplicate rows")
   assert_identical(serialize(frame, NULL, version = 3L), before, "continued profiles changed their source")
 
   state <- contract$begin_summary(capture, list(profile_reference(capture, 1L)), list(filters = list(), sorts = list()))
@@ -7225,7 +7218,6 @@ for (wide_profile_flavor in c("base", "tibble", "data.table")) {
   wide_profile_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(wide_profile_capture)$stats
   assert_identical(wide_profile_stats$duplicateRows, 2L, "Dataset profiling merged distinct integer64 values or missingness")
   assert_identical(wide_profile_stats$missingCells, 2, "Exact duplicate comparison changed missing counts")
-  assert_true(is.null(wide_profile_stats$duplicateRowsSampleSize), "A full duplicate count was labeled sampled")
   assert_identical(serialize(wide_profile_frame, NULL, version = 3L), wide_profile_before, "Duplicate profiling changed its source")
 }
 
@@ -7273,7 +7265,7 @@ assert_error(
   "profile-too-large"
 )
 work_column_count <- 51L
-work_row_count <- openwrangler_r_frame_contract$limits$profileSampleRows + 17L
+work_row_count <- direct_profile_rows + 17L
 shared_work_column <- rep(TRUE, work_row_count)
 bounded_work_frame <- structure(
   c(
@@ -7300,9 +7292,13 @@ assert_identical(
   as.double(work_row_count),
   "large numeric maximum was not exact"
 )
-assert_true(is.null(bounded_work_summaries[[1L]]$numeric$median), "a sampled profile mislabeled its median as exact")
-assert_true(is.null(bounded_work_summaries[[1L]]$distinctCount), "a sampled profile invented an exact distinct count")
-assert_true(is.null(bounded_work_summaries[[1L]]$visualization$sampled), "exact large histogram was labeled sampled")
+assert_identical(bounded_work_summaries[[1L]]$numeric$median, (work_row_count + 1) / 2, "large median was not exact")
+assert_identical(bounded_work_summaries[[1L]]$distinctCount, work_row_count, "large distinct count was not exact")
+assert_identical(
+  vapply(bounded_work_summaries[[1L]]$topValues, `[[`, character(1L), "value"),
+  paste0(1:10, ".0"),
+  "large all-distinct top values lost first-occurrence order"
+)
 assert_identical(
   sum(vapply(bounded_work_summaries[[1L]]$visualization$bins, `[[`, integer(1L), "count")),
   work_row_count,
@@ -7310,7 +7306,6 @@ assert_identical(
 )
 assert_identical(bounded_work_summaries[[2L]]$text$minLength, 4L, "large exact text minimum changed")
 assert_identical(bounded_work_summaries[[2L]]$text$maxLength, 5L, "large exact text maximum changed")
-assert_true(is.null(bounded_work_summaries[[2L]]$visualization$sampled), "exact categories were labeled sampled")
 assert_identical(bounded_work_summaries[[2L]]$distinctCount, 2L, "large low-cardinality distinct count was omitted")
 assert_identical(
   vapply(bounded_work_summaries[[2L]]$topValues, `[[`, integer(1L), "count"),
@@ -7320,24 +7315,12 @@ assert_identical(
 assert_identical(
   bounded_work_summaries[[3L]]$visualization$trueCount,
   work_row_count,
-  "cheap large boolean counts were sampled"
-)
-assert_true(
-  is.null(bounded_work_summaries[[3L]]$visualization$sampled),
-  "an exact large boolean distribution was labeled sampled"
+  "large boolean counts were not exact"
 )
 bounded_work_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(bounded_work_capture)$stats
-expected_duplicate_sample <- as.integer(floor(
-  openwrangler_r_frame_contract$limits$datasetDuplicateSampleCells / work_column_count
-))
 assert_identical(bounded_work_stats$missingCells, 0, "large dataset missing cells were not exact")
 assert_identical(bounded_work_stats$missingRows, 0L, "large dataset missing rows were not exact")
-assert_identical(bounded_work_stats$duplicateRows, 0L, "large sampled duplicate rows changed")
-assert_identical(
-  bounded_work_stats$duplicateRowsSampleSize,
-  expected_duplicate_sample,
-  "large dataset duplicate sample ignored its cell budget"
-)
+assert_identical(bounded_work_stats$duplicateRows, 0L, "large distinct rows were counted as duplicates")
 
 periodic_row_count <- 150001L
 periodic_periods <- c(2L, 3L, 5L, 7L)
@@ -7350,74 +7333,16 @@ periodic_frame <- structure(
   row.names = c(NA_integer_, -periodic_row_count)
 )
 periodic_capture <- openwrangler_r_frame_contract$capture_live_frame(function() periodic_frame)
-invisible(local({
-  sampler <- get(
-    "deterministic_sample_positions",
-    envir = environment(openwrangler_r_frame_contract$materialize_summaries),
-    inherits = FALSE
-  )
-  previous_rng_kind <- RNGkind()
-  had_random_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  if (had_random_seed) previous_random_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  on.exit({
-    assert_no_warning(
-      do.call(RNGkind, as.list(previous_rng_kind)),
-      "restoring the Native R contract RNG kind"
-    )
-    if (had_random_seed) {
-      assign(".Random.seed", previous_random_seed, envir = .GlobalEnv)
-    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-      rm(".Random.seed", envir = .GlobalEnv)
-    }
-  })
-
-  assert_exact_warning(
-    RNGkind(kind = "L'Ecuyer-CMRG", normal.kind = "Box-Muller", sample.kind = "Rounding"),
-    c("simpleWarning", "warning", "condition"),
-    "non-uniform 'Rounding' sampler used",
-    "selecting the legacy Native R contract sampler"
-  )
-  set.seed(937L)
-  expected_rng_kind <- RNGkind()
-  expected_random_seed <- .Random.seed
-  maximum_positions <- sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows)
-  repeated_positions <- sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows)
-  assert_identical(RNGkind(), expected_rng_kind, "profile sampling changed a non-default R RNG kind")
-  assert_identical(.Random.seed, expected_random_seed, "profile sampling changed a non-default R random seed")
-  assert_identical(repeated_positions, maximum_positions, "profile sampling was not deterministic at the R row limit")
-  assert_identical(
-    length(maximum_positions),
-    openwrangler_r_frame_contract$limits$profileSampleRows,
-    "profile sampling changed size at the R row limit"
-  )
-  assert_true(
-    all(diff(maximum_positions) > 0) && maximum_positions[[1L]] >= 1 &&
-      maximum_positions[[length(maximum_positions)]] <= .Machine$integer.max,
-    "profile sampling returned duplicate or out-of-range positions at the R row limit"
-  )
-
-  rm(".Random.seed", envir = .GlobalEnv)
-  invisible(sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows))
-  assert_true(
-    !exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE),
-    "profile sampling created a user-visible R random seed"
-  )
-}))
-set.seed(937L)
-expected_random_value <- stats::runif(1L)
-set.seed(937L)
 periodic_summaries <- openwrangler_r_frame_contract$materialize_summaries(
   periodic_capture,
   lapply(seq_along(periodic_periods), function(position) profile_reference(periodic_capture, position))
 )
-assert_identical(stats::runif(1L), expected_random_value, "profile sampling changed the user's R random state")
 for (index in seq_along(periodic_periods)) {
   period <- periodic_periods[[index]]
   counts <- vapply(periodic_summaries[[index]]$visualization$categories, `[[`, integer(1L), "count")
-  expected_counts <- tabulate(rep(seq_len(period), length.out = periodic_row_count), nbins = period)
+  expected_counts <- utils::head(tabulate(rep(seq_len(period), length.out = periodic_row_count), nbins = period), 6L)
   assert_identical(counts, expected_counts, sprintf("the period-%d exact counts changed", period))
   assert_identical(periodic_summaries[[index]]$distinctCount, period, "periodic exact distinct count changed")
-  assert_true(is.null(periodic_summaries[[index]]$visualization$sampled), "exact periodic counts were sampled")
 }
 # Large profiles count the full finite domain, retaining native missing/type rules.
 local({
@@ -7443,8 +7368,13 @@ local({
     assert_identical(summary$nullCount, as.integer(sum(is.na(projected) & !is.nan(projected)) * repeats), "large null count changed")
     assert_identical(summary$nanCount, as.integer(sum(is.nan(projected)) * repeats), "large NaN count changed")
     assert_identical(summary$distinctCount, case$distinct, "large numeric distinct count lost native identity")
-    assert_true(is.null(summary$numeric$median), "large numeric median was mislabeled exact")
-    assert_true(is.null(summary$visualization$sampled), "complete numeric histogram was sampled")
+    expected_median <- stats::median(rep(projected[!is.na(projected)], repeats))
+    if (is.finite(expected_median)) {
+      assert_identical(summary$numeric$median, expected_median, "large numeric median was not exact")
+    } else {
+      assert_true(is.null(summary$numeric$median), "a non-finite large median was published")
+    }
+    assert_identical(length(summary$topValues), min(10L, case$distinct), "large numeric top values were omitted")
     bins <- summary$visualization$bins
     if (length(finite) == 0L) {
       assert_true(is.null(summary$visualization), "non-finite values invented histogram bins")
@@ -7478,57 +7408,39 @@ local({
   assert_identical(summary$numeric$exactSum$display, "300215977642229790005", "a late wide integer64 value lost earlier sum bits")
 })
 
-# Numeric distinct tracking stays bounded even when an extra value arrives late.
+# Large numeric profiles count every distinct value and keep the median exact.
 local({
-  limit <- openwrangler_r_frame_contract$limits$columnValueDistinctMatches
   frame <- data.frame(
     integer = rep(seq_len(900L), length.out = 120001L),
     double = rep(seq_len(900L) / 10, length.out = 120001L),
     duration = as.difftime(rep(seq_len(900L) / 10, length.out = 120001L), units = "hours")
   )
   before <- serialize(frame, NULL, version = 3L)
-  set.seed(714L)
-  rng <- .Random.seed
   capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
   summaries <- openwrangler_r_frame_contract$materialize_summaries(capture, lapply(1:3, function(i) profile_reference(capture, i)))
-  for (summary in summaries) {
+  for (position in seq_along(summaries)) {
+    summary <- summaries[[position]]
     assert_identical(summary$distinctCount, 900L, "large ordinary numeric distinct count was omitted")
-    assert_true(is.null(summary$numeric$median), "distinct tracking invented a large numeric median")
+    assert_identical(summary$numeric$median, stats::median(as.double(frame[[position]])), "large numeric median was not exact")
+    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), rep(134L, 10L), "large numeric top counts changed")
   }
-  assert_identical(.Random.seed, rng, "numeric distinct tracking changed caller RNG")
-  assert_identical(serialize(frame, NULL, version = 3L), before, "numeric distinct tracking mutated its source")
+  assert_identical(serialize(frame, NULL, version = 3L), before, "numeric profiling mutated its source")
 
   cases <- list(
-    list(values = rep(seq_len(limit), length.out = 110000L), distinct = limit),
-    list(values = c(rep(seq_len(limit), length.out = 110000L), limit + 1L), distinct = NULL),
-    list(values = as.difftime(c(rep(0:(limit - 1L), length.out = 110000L), -0), units = "hours"), distinct = NULL),
-    list(values = c(seq_len(limit + 1L), rep(NA_integer_, 100000L)), distinct = limit + 1L)
+    list(values = c(rep(seq_len(10000L), length.out = 110000L), 10001L), distinct = 10001L),
+    list(values = as.difftime(c(rep(0:9999, length.out = 110000L), -0), units = "hours"), distinct = 10001L),
+    list(values = c(seq_len(10001L), rep(NA_integer_, 100000L)), distinct = 10001L),
+    list(values = as.double(seq_len(200001L)), distinct = 200001L)
   )
   for (case in cases) {
     frame <- data.frame(value = case$values)
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
     summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
-    assert_identical(summary$distinctCount, case$distinct, "numeric distinct bound or sparse exact fallback changed")
+    assert_identical(summary$distinctCount, case$distinct, "high-cardinality numeric distinct count was not exact")
+    assert_identical(summary$numeric$median, stats::median(as.double(case$values), na.rm = TRUE), "high-cardinality median was not exact")
     assert_identical(sum(vapply(summary$visualization$bins, `[[`, integer(1L), "count")),
-      as.integer(sum(!is.na(case$values))), "distinct overflow changed complete histogram counts")
+      as.integer(sum(!is.na(case$values))), "high-cardinality histogram lost rows")
   }
-
-  local({
-    maximum_unique_width <- 0L
-    assert_true(!exists("unique", contract_environment, inherits = FALSE), "distinct test would overwrite a private unique helper")
-    assign("unique", function(x, ...) {
-      maximum_unique_width <<- max(maximum_unique_width, length(x))
-      base::unique(x, ...)
-    }, contract_environment)
-    on.exit(rm("unique", envir = contract_environment), add = TRUE)
-    frame <- data.frame(value = as.double(seq_len(200001L)))
-    capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
-    summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
-    assert_true(is.null(summary$distinctCount), "high-cardinality numeric profile invented an exact distinct count")
-    assert_true(maximum_unique_width > 0L &&
-      maximum_unique_width <= openwrangler_r_frame_contract$limits$profileChunkRows + limit,
-      "numeric distinct tracking grew beyond one scan chunk plus its retained bound")
-  })
 
   frame <- data.frame(value = c(rep(seq_len(900L), length.out = 120001L), seq.int(901L, 11000L)),
     keep = c(rep(TRUE, 120001L), rep(FALSE, 10100L)))
@@ -7537,7 +7449,7 @@ local({
     predicates = list(list(kind = "predicate", operator = "equals", value = TRUE)))), sorts = list())
   summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)), query)[[1L]]
   assert_identical(summary$totalCount, 120001, "numeric distinct count ignored filtered population")
-  assert_identical(summary$distinctCount, 900L, "excluded numeric values exhausted the distinct bound")
+  assert_identical(summary$distinctCount, 900L, "excluded rows changed the filtered distinct count")
 })
 
 # Equal counts use first visible occurrence, including empty text and late values;
@@ -7555,42 +7467,33 @@ local({
     assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), c("β", "", "Alpha", "late"), "categorical ties lost first-occurrence order")
     assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), c(40000L, 40000L, 40000L, 1L), "categorical exact counts changed")
     assert_identical(summary$visualization$otherCount, 0L, "exact low-cardinality profile invented Other")
-    assert_true(is.null(summary$visualization$sampled), "exact categories were labeled sampled")
   }
   assert_identical(serialize(frame, NULL, version = 3L), before, "categorical profiling mutated source or factor levels")
 })
 
-# Either aggregation bound falls back to a sample of the full population, while
-# sparse large frames retain their existing exact <=100k-present result.
+# High-cardinality and wide text profiles count the complete population.
 local({
   cases <- list(
     rep(sprintf("key-%05d", seq_len(10001L)), length.out = 120001L),
     rep(paste0(sprintf("%04d", seq_len(4097L)), strrep("x", 4092L)), length.out = 100001L)
   )
-  sampler <- get("deterministic_sample_positions", contract_environment, inherits = FALSE)
   for (values in cases) {
     frame <- data.frame(value = values)
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
-    set.seed(541L)
-    rng <- .Random.seed
     summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
-    assert_identical(.Random.seed, rng, "fallback sampling changed caller RNG")
-    sample <- values[sampler(length(values), 100000L)]
-    keys <- unique(sample)
-    counts <- tabulate(match(sample, keys), nbins = length(keys))
+    keys <- unique(values)
+    counts <- tabulate(match(values, keys), nbins = length(keys))
     top <- head(order(-counts, seq_along(counts)), 10L)
-    assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), keys[top], "fallback sampled only a partial domain")
-    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), counts[top], "fallback counts changed")
-    assert_identical(summary$visualization$otherCount, as.integer(100000L - sum(counts[top])), "sample Other used full-population counts")
-    assert_identical(summary$visualization$sampled, TRUE, "bounded fallback lost its sample label")
-    assert_true(is.null(summary$distinctCount), "bounded fallback invented exact distinct count")
+    assert_identical(vapply(summary$topValues, `[[`, character(1L), "value"), keys[top], "text top values changed")
+    assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), counts[top], "text counts were not exact")
+    assert_identical(summary$visualization$otherCount, as.integer(length(values) - sum(counts[head(top, 6L)])), "text Other changed")
+    assert_identical(summary$distinctCount, length(keys), "text distinct count was not exact")
   }
   sparse <- data.frame(value = c(sprintf("key-%05d", seq_len(10001L)), rep(NA_character_, 100000L)))
   capture <- openwrangler_r_frame_contract$capture_live_frame(function() sparse)
   summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
-  assert_identical(summary$distinctCount, 10001L, "bounded tracking downgraded an exact sparse profile")
-  assert_identical(summary$visualization$otherCount, 9991L, "exact sparse Other changed")
-  assert_true(is.null(summary$visualization$sampled), "exact sparse profile was labeled sampled")
+  assert_identical(summary$distinctCount, 10001L, "sparse text distinct count changed")
+  assert_identical(summary$visualization$otherCount, 9995L, "sparse text Other changed")
 })
 
 local({
@@ -7606,14 +7509,9 @@ local({
 
 periodic_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(periodic_capture)$stats
 assert_identical(
-  periodic_stats$duplicateRowsSampleSize,
-  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows,
-  "periodic duplicate detection ignored its sample limit"
-)
-assert_identical(
   periodic_stats$duplicateRows,
-  as.integer(openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - prod(periodic_periods)),
-  "deterministic duplicate sampling aliased short-period columns"
+  as.integer(periodic_row_count - prod(periodic_periods)),
+  "periodic duplicate rows were not counted exactly"
 )
 
 former_row_limit <- 1000000L + 1L
@@ -7638,34 +7536,23 @@ large_sum_summary <- openwrangler_r_frame_contract$materialize_summaries(
 assert_identical(
   large_sum_summary$numeric$sum,
   as.double(former_row_limit),
-  "large sampled-distribution profile did not sum the complete domain"
+  "large profile did not sum the complete domain"
 )
 assert_identical(
   large_sum_summary$numeric$exactSum$display,
   as.character(former_row_limit),
-  "large sampled-distribution profile lost its exact integer Sum"
+  "large profile lost its exact integer Sum"
 )
-assert_true(is.null(large_sum_summary$visualization$sampled), "large constant distribution was sampled")
 assert_identical(large_sum_summary$visualization$bins[[1L]]$count, former_row_limit, "constant bin lost rows")
 too_tall_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(too_tall_capture)$stats
-assert_identical(
-  too_tall_stats$duplicateRowsSampleSize,
-  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows,
-  "large duplicate detection did not publish its row sample"
-)
-assert_identical(
-  too_tall_stats$duplicateRows,
-  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - 1L,
-  "large duplicate sample count changed"
-)
-value_boundary_row_count <- openwrangler_r_frame_contract$limits$profileSampleRows
+assert_identical(too_tall_stats$duplicateRows, former_row_limit - 1L, "large duplicate rows were not counted exactly")
+value_boundary_row_count <- direct_profile_rows
 value_boundary_frame <- data.frame(value = rep(TRUE, value_boundary_row_count))
 value_boundary_capture <- openwrangler_r_frame_contract$capture_live_frame(function() value_boundary_frame)
 value_boundary_discovery <- openwrangler_r_frame_contract$materialize_column_values(
   value_boundary_capture,
   profile_reference(value_boundary_capture, 1L)
 )
-assert_true(is.null(value_boundary_discovery$sampleSize), "the exact value-discovery boundary was sampled")
 assert_identical(value_boundary_discovery$hasMore, FALSE, "the exact value-discovery boundary claimed truncation")
 assert_identical(
   value_boundary_discovery$values[[1L]]$count,
@@ -7676,24 +7563,14 @@ too_tall_values <- openwrangler_r_frame_contract$materialize_column_values(
   too_tall_capture,
   profile_reference(too_tall_capture, 1L)
 )
-assert_identical(
-  too_tall_values$sampleSize,
-  openwrangler_r_frame_contract$limits$profileSampleRows,
-  "large initial value discovery did not publish its sample size"
-)
-assert_identical(too_tall_values$hasMore, TRUE, "large initial value discovery claimed to be exhaustive")
+assert_identical(too_tall_values$hasMore, FALSE, "large initial value discovery hid no further values")
 assert_identical(too_tall_values$values[[1L]]$value, "FALSE", "large initial value discovery changed its value")
-assert_identical(
-  too_tall_values$values[[1L]]$count,
-  openwrangler_r_frame_contract$limits$profileSampleRows,
-  "large initial value discovery counted outside its sample"
-)
+assert_identical(too_tall_values$values[[1L]]$count, former_row_limit, "large initial value discovery was not exact")
 too_tall_search <- openwrangler_r_frame_contract$materialize_column_values(
   too_tall_capture,
   profile_reference(too_tall_capture, 1L),
   search = "false"
 )
-assert_true(is.null(too_tall_search$sampleSize), "an explicit large value search was labeled as sampled")
 assert_identical(too_tall_search$hasMore, FALSE, "a complete large value search claimed truncation")
 assert_identical(too_tall_search$values[[1L]]$value, "FALSE", "large exact value search changed its match")
 assert_identical(
@@ -7702,42 +7579,18 @@ assert_identical(
   "large exact value search did not count every matching row"
 )
 
-distinct_match_limit <- openwrangler_r_frame_contract$limits$columnValueDistinctMatches
-bounded_match_values <- c(
-  "match-most-common",
-  "match-most-common",
-  sprintf("match-%05d", seq_len(distinct_match_limit - 1L))
-)
-bounded_match_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = bounded_match_values))
-bounded_match_search <- openwrangler_r_frame_contract$materialize_column_values(
-  bounded_match_capture,
-  profile_reference(bounded_match_capture, 1L),
+# Searches with more than 10,000 distinct matches still return exact counts.
+wide_match_values <- c("match-most-common", "match-most-common", sprintf("match-%05d", seq_len(10000L)))
+wide_match_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = wide_match_values))
+wide_match_search <- openwrangler_r_frame_contract$materialize_column_values(
+  wide_match_capture,
+  profile_reference(wide_match_capture, 1L),
   search = "match",
   limit = 1L
 )
-assert_identical(
-  bounded_match_search$values[[1L]]$value,
-  "match-most-common",
-  "bounded high-cardinality search lost its exact top result"
-)
-assert_identical(
-  bounded_match_search$values[[1L]]$count,
-  2L,
-  "bounded high-cardinality search changed the exact top count"
-)
-assert_identical(bounded_match_search$hasMore, TRUE, "bounded high-cardinality search hid remaining matches")
-overflow_match_capture <- openwrangler_r_frame_contract$capture_frame(
-  data.frame(value = c(bounded_match_values, "match-overflow"))
-)
-assert_error(
-  openwrangler_r_frame_contract$materialize_column_values(
-    overflow_match_capture,
-    profile_reference(overflow_match_capture, 1L),
-    search = "match",
-    limit = 1L
-  ),
-  "distinct-match state limit"
-)
+assert_identical(wide_match_search$values[[1L]]$value, "match-most-common", "high-cardinality search lost its top result")
+assert_identical(wide_match_search$values[[1L]]$count, 2L, "high-cardinality search changed the exact top count")
+assert_identical(wide_match_search$hasMore, TRUE, "high-cardinality search hid remaining matches")
 
 large_value_row_count <- 4000001L
 large_value_frame <- data.frame(value = rep(c(TRUE, FALSE), length.out = large_value_row_count))
@@ -7747,20 +7600,16 @@ large_value_discovery <- openwrangler_r_frame_contract$materialize_column_values
   profile_reference(large_value_capture, 1L)
 )
 assert_identical(
-  large_value_discovery$sampleSize,
-  openwrangler_r_frame_contract$limits$profileSampleRows,
-  "four-million-row value discovery exceeded its bounded sample"
+  vapply(large_value_discovery$values, `[[`, character(1L), "value"),
+  c("TRUE", "FALSE"),
+  "four-million-row value discovery changed its order"
 )
 assert_identical(
-  sort(vapply(large_value_discovery$values, `[[`, character(1L), "value")),
-  c("FALSE", "TRUE"),
-  "four-million-row value discovery aliased an alternating column"
+  vapply(large_value_discovery$values, `[[`, integer(1L), "count"),
+  c(2000001L, 2000000L),
+  "four-million-row value discovery was not exact"
 )
-assert_identical(
-  sum(vapply(large_value_discovery$values, `[[`, integer(1L), "count")),
-  openwrangler_r_frame_contract$limits$profileSampleRows,
-  "four-million-row value discovery counted outside its sample"
-)
+assert_identical(large_value_discovery$hasMore, FALSE, "four-million-row value discovery hid no further values")
 profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
 assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
 assert_identical(profile_metrics$datasetProfiles, 1, "dataset profiling ran an unexpected number of times")
@@ -8210,7 +8059,7 @@ for (case in literal_contract$rejected) {
 }
 
 for (case in list(
-  list(values = c(-1/Inf, 0, 1), type = "float", display = "0", raw = 0),
+  list(values = c(-1/Inf, 0, 1), type = "float", display = "0.0", raw = 0),
   list(values = structure(c(-1/Inf, 0, 1, NA_real_), class = "Date"),
     type = "date", display = "1970-01-01", raw = "1970-01-01")
 )) {
@@ -8256,6 +8105,37 @@ for (case in list(
   assert_identical(serialize(signed_zero_capture$snapshot, NULL, version = 3L), signed_zero_before,
     "signed-zero value selection changed captured bits")
 }
+
+local({
+  # Every engine displays doubles as Python's float repr and temporal values as ISO text with padded years.
+  values <- c(0.1, 0.1 + 0.2, 1/3, 100, -0, 1e16, 1e-5, 1e-4, 123456789.125, 2^53 + 2, 5e-324,
+    1.7976931348623157e308, 1e15, 1234567890123456.7, 2.2250738585072014e-308, 60000000000000008, 1e23,
+    -0x1.a48900157abb9p+19)
+  expected <- c("0.1", "0.30000000000000004", "0.3333333333333333", "100.0", "-0.0", "1e+16", "1e-05", "0.0001",
+    "123456789.125", "9007199254740994.0", "5e-324", "1.7976931348623157e+308", "1000000000000000.0",
+    "1234567890123456.8", "2.2250738585072014e-308", "6.000000000000001e+16", "1e+23", "-861256.002622")
+  frame <- data.frame(
+    value = values,
+    day = as.Date("0999-12-31") + seq_along(values) - 2L,
+    at = structure(-30610310400 + seq_along(values), class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+    elapsed = as.difftime(c(90, 1e-6, 1.5, -0, -5, rep(1, length(values) - 5L)), units = "secs")
+  )
+  page <- openwrangler_r_frame_contract$materialize_page(
+    openwrangler_r_frame_contract$capture_frame(frame), row_limit = length(values)
+  )
+  displays <- function(column) vapply(page$page$rows, function(row) row$values[[column]]$display, character(1L))
+  assert_identical(displays(1L), expected, "double displays differ from Python's float repr")
+  assert_identical(displays(2L)[1:3], c("0999-12-30", "0999-12-31", "1000-01-01"), "dates before 1000 lost padded years")
+  assert_identical(displays(3L)[1:2], c("0999-12-31T00:00:01+00:00", "0999-12-31T00:00:02+00:00"),
+    "datetimes before 1000 lost padded years or their offset")
+  assert_identical(displays(4L)[1:5], c("90 secs", "1e-06 secs", "1.5 secs", "-0 secs", "-5 secs"),
+    "durations lost their shortest decimal text")
+  summary <- openwrangler_r_frame_contract$materialize_summaries(
+    openwrangler_r_frame_contract$capture_frame(data.frame(value = c(-0, 0, 1))),
+    list(list(id = "r:c:0", name = "value"))
+  )[[1L]]
+  assert_identical(summary$topValues[[1L]]$value, "0.0", "top values labeled signed zeros by their first sign")
+})
 
 numeric_value_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(score = c(1200, 8, 7)))
 numeric_values <- openwrangler_r_frame_contract$materialize_column_values(
@@ -8467,7 +8347,7 @@ assert_typed_selection_round_trip(
   "r:c:4",
   "when",
   "datetime",
-  "2026-01-03T02:00:00.000000",
+  "2026-01-03T02:00:00+00:00",
   "r:r:2"
 )
 assert_typed_selection_round_trip("r:c:5", "elapsed", "duration", "3 hours", "r:r:2")
@@ -8484,7 +8364,6 @@ assert_identical(
   "column-value search did not use portable ASCII folding"
 )
 assert_identical(searched_values$hasMore, FALSE, "column-value search reported a false truncation")
-assert_true(is.null(searched_values$sampleSize), "an exact column-value search was labeled sampled")
 
 combined_view <- view_query(
   filters = list(

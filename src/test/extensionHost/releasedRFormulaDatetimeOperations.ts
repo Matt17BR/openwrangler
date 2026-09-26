@@ -181,7 +181,7 @@ export function createReleasedRFormulaDatetimeOperations(dependencies: ReleasedR
     app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Formula preview");
     await waitForLocatorText(
       app.locator(`td[data-grid-row="0"][data-grid-column="${output.position}"]`),
-      (text) => text.trim() === "3",
+      (text) => text.trim() === "3.0",
       10_000,
       "the visible R Formula value"
     );

@@ -189,7 +189,7 @@ export function createReleasedRInteractiveTerminalJourney({
       assert.equal(opened.metadata.capabilities.notebookInsert, false);
       assert.notEqual(opened.metadata.capabilities.documentInsert, true);
       recordAcceptanceProgress("jupyter-r:interactive:session-opened");
-      await assertReleasedSessionPage(testing, opened, "3400001", "jupyter-r-interactive-page");
+      await assertReleasedSessionPage(testing, opened, "3400001.0", "jupyter-r-interactive-page");
       await assertReleasedRInteractiveProfileEditingAndExport(testing, workbench, opened.sessionId, directory);
 
       recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal-close");

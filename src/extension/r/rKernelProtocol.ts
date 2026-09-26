@@ -939,7 +939,6 @@ export type RKernelResponse =
       column: string;
       values: readonly ValueCount[];
       hasMore: boolean;
-      sampleSize?: number;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -1238,27 +1237,23 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "columnValues") {
-    const record = exactRecord(
-      value,
-      ["transportVersion", "requestId", "kind", "sessionId", "column", "values", "hasMore"],
-      ["sampleSize"]
-    );
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "column",
+      "values",
+      "hasMore"
+    ]);
     validateEnvelope(record, expected);
-    const sampleSize =
-      record.sampleSize === undefined
-        ? undefined
-        : boundedInteger(record.sampleSize, "response.sampleSize", R_FRAME_CONTRACT_LIMITS.profileSampleRows);
-    if (sampleSize !== undefined && sampleSize !== R_FRAME_CONTRACT_LIMITS.profileSampleRows) {
-      fail(`R kernel column-values sampleSize must be ${R_FRAME_CONTRACT_LIMITS.profileSampleRows}.`);
-    }
     const candidate: unknown = {
       kind: "columnValues",
       revision: 0,
       viewRequestId: "r-kernel-values",
       column: record.column,
       values: record.values,
-      hasMore: record.hasMore,
-      ...(sampleSize === undefined ? {} : { sampleSize })
+      hasMore: record.hasMore
     };
     if (!isOpenWranglerResponse(candidate) || candidate.kind !== "columnValues") {
       fail("R kernel column-values response is invalid.");
@@ -1277,8 +1272,7 @@ export function decodeRKernelResponseJson(
       sessionId: identifier(record.sessionId, "response.sessionId"),
       column: boundedText(record.column, "response.column", maximumVariableNameBytes, true),
       values: Object.freeze(candidate.values),
-      hasMore: candidate.hasMore,
-      ...(candidate.sampleSize === undefined ? {} : { sampleSize: candidate.sampleSize })
+      hasMore: candidate.hasMore
     });
   }
   if (kind === "stepPreview" || (kind === "planUpdated" && value.action === "redo")) {
@@ -2829,24 +2823,12 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       fail(`${label} has unsupported nested profile statistics.`);
     const present = summary.totalCount - summary.nullCount - summary.nanCount;
     const visualization = summary.visualization;
-    const sampledDistribution = visualization?.sampled === true;
-    const omittedNumericTopValues =
-      (summary.type === "integer" || summary.type === "float" || summary.type === "duration") &&
-      present > R_FRAME_CONTRACT_LIMITS.profileSampleRows &&
-      !sampledDistribution &&
-      summary.topValues.length === 0 &&
-      summary.distinctCount !== undefined &&
-      summary.distinctCount <= R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches;
     if (
       present < 0 ||
-      (sampledDistribution && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||
-      (summary.distinctCount !== undefined && summary.distinctCount > present) ||
+      (!nested && summary.distinctCount === undefined) ||
       (summary.distinctCount !== undefined &&
-        !omittedNumericTopValues &&
-        summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount)) ||
-      (summary.distinctCount === undefined &&
-        ((!nested && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||
-          (!sampledDistribution && summary.topValues.length !== 0)))
+        (summary.distinctCount > present ||
+          summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount)))
     ) {
       fail(`${label} has inconsistent value counts.`);
     }
@@ -2887,22 +2869,11 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
         previousMaximum = bin.max;
         binCount += bin.count;
       }
-      if (
-        binCount > present ||
-        (sampledDistribution &&
-          (binCount === 0 ||
-            binCount > R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
-            summary.distinctCount !== undefined ||
-            summary.topValues.length !== 0))
-      ) {
+      if (binCount > present) {
         fail(`${label} has histogram counts outside the column.`);
       }
     } else if (visualization.kind === "boolean") {
-      if (
-        summary.type !== "boolean" ||
-        visualization.sampled === true ||
-        visualization.trueCount + visualization.falseCount !== present
-      ) {
+      if (summary.type !== "boolean" || visualization.trueCount + visualization.falseCount !== present) {
         fail(`${label} has inconsistent boolean counts.`);
       }
     } else if (visualization.kind === "categorical") {
@@ -2912,21 +2883,20 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       if (
         summary.type !== "string" ||
         categoryValues.size !== visualization.categories.length ||
-        visualization.categories.length !== summary.topValues.length ||
+        visualization.categories.length !==
+          Math.min(R_FRAME_CONTRACT_LIMITS.chartCategories, summary.topValues.length) ||
         visualization.categories.some(
           (entry, categoryIndex) =>
             entry.value !== summary.topValues[categoryIndex]?.value ||
             entry.count !== summary.topValues[categoryIndex]?.count ||
             entry.selectionValue !== undefined
         ) ||
-        (visualization.sampled === true
-          ? categoryCount !== R_FRAME_CONTRACT_LIMITS.profileSampleRows || summary.distinctCount !== undefined
-          : categoryCount !== present || summary.distinctCount === undefined)
+        categoryCount !== present
       ) {
         fail(`${label} has inconsistent categorical counts.`);
       }
     } else {
-      if ((summary.type !== "date" && summary.type !== "datetime") || visualization.sampled === true) {
+      if (summary.type !== "date" && summary.type !== "datetime") {
         fail(`${label} has a datetime visualization for the wrong column type.`);
       }
       const hasMinimum = visualization.min !== undefined;
@@ -2943,12 +2913,9 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
 }
 
 function validateRDatasetStats(stats: DatasetStats, totalRows: number): void {
-  const duplicateRowsDomain = stats.duplicateRowsSampleSize ?? totalRows;
   if (
-    (stats.duplicateRows === null && stats.duplicateRowsSampleSize !== undefined) ||
     stats.missingRows > totalRows ||
-    duplicateRowsDomain > totalRows ||
-    (stats.duplicateRows !== null && stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1)) ||
+    (stats.duplicateRows !== null && stats.duplicateRows > Math.max(0, totalRows - 1)) ||
     stats.missingCells > totalRows * stats.missingValuesByColumn.length
   ) {
     fail("R kernel dataset statistics exceed the filtered row count.");

@@ -534,7 +534,8 @@ describe("native R kernel protocol", () => {
     }
   });
 
-  it("admits bounded distinct counts with omitted large numeric top values only", () => {
+  it("requires exact distinct counts and top values in R summaries", () => {
+    const topValues = Array.from({ length: 10 }, (_, index) => ({ value: String(index), count: 134 }));
     const summary = {
       ...minimalSummary(),
       type: "float",
@@ -544,7 +545,7 @@ describe("native R kernel protocol", () => {
       nanCount: 1,
       distinctCount: 900,
       numeric: { min: 0, max: 899, mean: 449.5 },
-      topValues: [],
+      topValues,
       visualization: { kind: "numeric", bins: [{ min: 0, max: 899, count: 120_000 }] }
     };
     const decode = (value: unknown) =>
@@ -561,34 +562,23 @@ describe("native R kernel protocol", () => {
     for (const type of ["integer", "float", "duration"]) {
       expect(
         decode({ ...summary, type, nullCount: type === "float" ? 1 : 2, nanCount: type === "float" ? 1 : 0 })
-      ).toMatchObject({ summaries: [{ distinctCount: 900, topValues: [] }] });
+      ).toMatchObject({ summaries: [{ distinctCount: 900, topValues }] });
     }
-    expect(decode({ ...summary, distinctCount: R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches })).toMatchObject({
-      summaries: [{ distinctCount: 10_000, topValues: [] }]
-    });
+    expect(decode({ ...summary, distinctCount: 120_000 })).toMatchObject({ summaries: [{ distinctCount: 120_000 }] });
     // A numeric population can have no finite values to put in a histogram.
-    expect(decode({ ...summary, distinctCount: 2, numeric: {}, visualization: undefined })).toMatchObject({
-      summaries: [{ distinctCount: 2, topValues: [] }]
-    });
+    expect(
+      decode({ ...summary, distinctCount: 2, topValues: topValues.slice(0, 2), numeric: {}, visualization: undefined })
+    ).toMatchObject({ summaries: [{ distinctCount: 2 }] });
     for (const numeric of [undefined, null, []]) {
       expect(() => decode({ ...summary, numeric })).toThrow("summary response is invalid");
     }
+    expect(() => decode({ ...summary, visualization: { ...summary.visualization, sampled: true } })).toThrow(
+      "summary response is invalid"
+    );
     for (const [label, value] of [
-      ["small population", { ...summary, totalCount: 100_002 }],
-      ["sparse population", { ...summary, nullCount: 20_001 }],
-      [
-        "wrong type",
-        {
-          ...summary,
-          type: "date",
-          rawType: "Date",
-          numeric: undefined,
-          visualization: { kind: "datetime", min: "2026-01-01", max: "2026-01-02" }
-        }
-      ],
-      ["sampled", { ...summary, visualization: { ...summary.visualization, sampled: true } }],
-      ["partial top values", { ...summary, topValues: [{ value: "0", count: 100 }] }],
-      ["distinct bound", { ...summary, distinctCount: R_FRAME_CONTRACT_LIMITS.columnValueDistinctMatches + 1 }],
+      ["missing distinct count", { ...summary, distinctCount: undefined }],
+      ["partial top values", { ...summary, topValues: topValues.slice(0, 9) }],
+      ["distinct beyond population", { ...summary, distinctCount: 120_001 }],
       [
         "distinct population",
         {
@@ -677,15 +667,6 @@ describe("native R kernel protocol", () => {
     expect(decodeRKernelResponseJson(JSON.stringify(unavailableDuplicates), statsRequestId)).toMatchObject({
       stats: { duplicateRows: null }
     });
-    expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          ...unavailableDuplicates,
-          stats: { ...unavailableDuplicates.stats, duplicateRowsSampleSize: 1 }
-        }),
-        statsRequestId
-      )
-    ).toThrow("dataset-statistics response is invalid");
     const summary = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
@@ -709,7 +690,7 @@ describe("native R kernel protocol", () => {
       kind: "summary",
       summaries: [{ columnId: longDerivedColumnId() }]
     });
-    const sampledSummary = JSON.stringify({
+    const exactHistogram = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: summaryRequestId,
       kind: "summary",
@@ -718,48 +699,18 @@ describe("native R kernel protocol", () => {
         {
           ...minimalSummary(),
           totalCount: 1_500_001,
-          distinctCount: undefined,
-          topValues: [],
-          visualization: { kind: "numeric", bins: [{ min: 1, max: 1_500_001, count: 100_000 }], sampled: true }
+          visualization: { kind: "numeric", bins: [{ min: 1, max: 1_500_001, count: 1_500_001 }] }
         }
       ]
-    });
-    expect(decodeRKernelResponseJson(sampledSummary, summaryRequestId)).toMatchObject({
-      kind: "summary",
-      summaries: [{ totalCount: 1_500_001, visualization: { sampled: true } }]
-    });
-    const exactHistogram = JSON.parse(sampledSummary);
-    exactHistogram.summaries[0].visualization = {
-      kind: "numeric",
-      bins: [{ min: 1, max: 1_500_001, count: 1_500_001 }]
     };
     expect(decodeRKernelResponseJson(JSON.stringify(exactHistogram), summaryRequestId)).toMatchObject({
       kind: "summary",
-      summaries: [{ topValues: [], visualization: { bins: [{ count: 1_500_001 }] } }]
+      summaries: [{ totalCount: 1_500_001, visualization: { bins: [{ count: 1_500_001 }] } }]
     });
-    exactHistogram.summaries[0].visualization.bins[0].count++;
+    exactHistogram.summaries[0]!.visualization.bins[0]!.count++;
     expect(() => decodeRKernelResponseJson(JSON.stringify(exactHistogram), summaryRequestId)).toThrow(
       "histogram counts outside the column"
     );
-    expect(() =>
-      decodeRKernelResponseJson(
-        JSON.stringify({
-          transportVersion: R_KERNEL_TRANSPORT_VERSION,
-          requestId: summaryRequestId,
-          kind: "summary",
-          sessionId,
-          summaries: [
-            {
-              ...minimalSummary(),
-              distinctCount: undefined,
-              topValues: [],
-              visualization: { kind: "numeric", bins: [{ min: 1, max: 1, count: 1 }], sampled: true }
-            }
-          ]
-        }),
-        summaryRequestId
-      )
-    ).toThrow("inconsistent value counts");
 
     const stats = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -775,20 +726,6 @@ describe("native R kernel protocol", () => {
       totalRows: 1,
       stats: { missingCells: 0, missingValuesByColumn: [{ column: "value", count: 0 }] }
     });
-    const sampledStats = JSON.stringify({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: statsRequestId,
-      kind: "datasetStats",
-      sessionId,
-      totalRows: 1_500_001,
-      stats: { ...minimalDatasetStats(), duplicateRows: 4, duplicateRowsSampleSize: 100_000 }
-    });
-    expect(decodeRKernelResponseJson(sampledStats, statsRequestId)).toMatchObject({
-      kind: "datasetStats",
-      totalRows: 1_500_001,
-      stats: { duplicateRows: 4, duplicateRowsSampleSize: 100_000 }
-    });
-
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
@@ -901,7 +838,7 @@ describe("native R kernel protocol", () => {
           kind: "datasetStats",
           sessionId,
           totalRows: 10,
-          stats: { ...minimalDatasetStats(), duplicateRows: 1, duplicateRowsSampleSize: 11 }
+          stats: { ...minimalDatasetStats(), duplicateRows: 10 }
         }),
         statsRequestId
       )
@@ -925,21 +862,9 @@ describe("native R kernel protocol", () => {
       values: [{ value: "1", count: 1 }],
       hasMore: false
     });
-    const sampled = JSON.parse(encoded) as Record<string, unknown>;
-    sampled.hasMore = true;
-    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows;
-    expect(decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toMatchObject({
-      kind: "columnValues",
-      sampleSize: R_FRAME_CONTRACT_LIMITS.profileSampleRows,
-      hasMore: true
-    });
-    sampled.hasMore = false;
-    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("response");
-    sampled.hasMore = true;
-    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows - 1;
-    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("sampleSize");
-    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows + 1;
-    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("sampleSize");
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify({ ...JSON.parse(encoded), sampleSize: 1 }), valuesRequestId)
+    ).toThrow("invalid fields");
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({

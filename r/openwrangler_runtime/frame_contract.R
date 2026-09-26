@@ -12,13 +12,10 @@ openwrangler_r_frame_contract <- local({
   maximum_fill_fallback_columns <- 64L
   maximum_fill_directional_gap <- 1000000L
   maximum_profile_columns <- 64L
-  maximum_profile_sample_rows <- 100000L
+  maximum_direct_profile_rows <- 100000L
   maximum_profile_chunk_rows <- 65536L
-  maximum_dataset_duplicate_sample_rows <- 100000L
-  maximum_dataset_duplicate_sample_cells <- 5000000L
-  maximum_column_value_distinct_matches <- maximum_selected_values_per_filter
-  maximum_column_value_distinct_key_bytes <- 16L * 1024L * 1024L
   maximum_top_values <- 10L
+  maximum_chart_categories <- 6L
   maximum_histogram_bins <- 20L
   maximum_cached_sort_columns <- 4L
   maximum_sort_cache_bytes <- 32L * 1024L * 1024L
@@ -167,10 +164,32 @@ openwrangler_r_frame_contract <- local({
     base::get("format.clock_duration", namespace, inherits = FALSE)(duration)
   }
 
+  # Both halves of a clock time point are exact doubles, so a complex pair hashes each instant exactly.
+  clock_identities <- function(column) {
+    fields <- base::unclass(column)
+    base::complex(real = fields$lower, imaginary = fields$upper)
+  }
+
   clock_display <- function(column) {
     text <- base::get("format.clock_time_point", base::asNamespace("clock"), inherits = FALSE)(column)
     if (base::identical(base::attr(column, "clock", exact = TRUE), 0L)) {
       text[!base::is.na(text)] <- base::paste0(text[!base::is.na(text)], "Z")
+    }
+    text
+  }
+
+  # Grid and value labels follow Python's isoformat: no zero fraction, microseconds unless nanoseconds are nonzero,
+  # and an explicit offset for instants.
+  trim_iso_fraction <- function(text) {
+    text <- base::sub("\\.(0{3}|0{6}|0{9})$", "", text)
+    text <- base::sub("^(.*\\.[0-9]{6})000$", "\\1", text)
+    base::sub("^(.*\\.[0-9]{3})$", "\\1000", text)
+  }
+
+  clock_display_values <- function(column) {
+    text <- trim_iso_fraction(base::get("format.clock_time_point", base::asNamespace("clock"), inherits = FALSE)(column))
+    if (base::identical(base::attr(column, "clock", exact = TRUE), 0L)) {
+      text[!base::is.na(text)] <- base::paste0(text[!base::is.na(text)], "+00:00")
     }
     text
   }
@@ -686,17 +705,126 @@ openwrangler_r_frame_contract <- local({
     exact_double(if (!is.na(numeric_value) && numeric_value == 0) 0 else numeric_value)
   }
 
-  display_double <- function(value) {
+  # One Hot labels are persistent column names, shared with saved generated plans.
+  category_double_label <- function(value) {
     base::format.default(value, digits = 15L, trim = TRUE, scientific = FALSE, decimal.mark = ".")
+  }
+
+  # Python's float repr: the shortest round-trip digits, in fixed notation for decimal exponents -4..15.
+  display_double_values <- function(values) {
+    values <- as.double(values)
+    displays <- ifelse(is.nan(values), "NaN", "NA")
+    displays[values %in% Inf] <- "Infinity"
+    displays[values %in% -Inf] <- "-Infinity"
+    finite <- which(is.finite(values))
+    if (length(finite) == 0L) return(displays)
+    x <- values[finite]
+    magnitude <- abs(x)
+    significant <- rep.int(17L, length(x))
+    exponent <- floor(log10(magnitude))
+    significant[magnitude == 0] <- 1L
+    exponent[magnitude == 0] <- 0
+    # Scaling by an exact power of ten rounds once, so these products and quotients are correctly rounded.
+    scaled <- function(value, power) ifelse(power >= 0, value * 10^power, value / 10^(-power))
+    fast <- which(magnitude >= 2.2250738585072014e-308 & exponent >= -6 & exponent <= 35)
+    if (length(fast) != 0L) {
+      m <- magnitude[fast]
+      e <- exponent[fast]
+      probe <- scaled(m, 15 - e)
+      e <- e + (probe >= 1e16) - (probe < 1e15)
+      digits <- rep.int(17L, length(m))
+      decimal_exponent <- e
+      # The correctly rounded 15-digit candidate equals this rounding whenever it can round-trip.
+      candidate <- round(scaled(m, 14 - e))
+      exact <- scaled(candidate, e - 14) == m
+      carried <- exact & candidate == 1e15
+      candidate[carried] <- 1e14
+      decimal_exponent[carried] <- e[carried] + 1
+      digits[exact] <- 15L
+      repeat {
+        zero <- which(exact & digits > 1L & candidate %% 10 == 0)
+        if (length(zero) == 0L) break
+        candidate[zero] <- candidate[zero] / 10
+        digits[zero] <- digits[zero] - 1L
+      }
+      # Above 2^53 the nearest 16-digit candidate is always within half an ulp; below it one neighbor is proven.
+      pending <- which(!exact)
+      candidate <- round(scaled(m[pending], 15 - e[pending]))
+      found <- candidate >= 2^53
+      for (offset in c(-1, 0, 1)) {
+        found <- found | scaled(candidate + offset, e[pending] - 15) == m[pending]
+      }
+      digits[pending[found]] <- 16L
+      significant[fast] <- digits
+      exponent[fast] <- decimal_exponent
+    }
+    # R's parser is not correctly rounded, so other magnitudes prove round trips from the exact 25-digit expansion.
+    normal <- which(magnitude >= 2.2250738585072014e-308 & !(exponent >= -6 & exponent <= 35))
+    if (length(normal) != 0L) {
+      m <- magnitude[normal]
+      expansion <- sprintf("%.24e", m)
+      mantissa <- paste0(substr(expansion, 1L, 1L), substr(expansion, 3L, 26L))
+      scale <- 24L - as.integer(substring(expansion, 28L))
+      binary_exponent <- floor(log2(m))
+      binary_exponent <- binary_exponent - (2^binary_exponent > m) + (2^(binary_exponent + 1) <= m)
+      # Half an ulp in units of the 25th significant decimal digit.
+      half_ulp <- exp((binary_exponent - 53) * log(2) + scale * log(10))
+      power_of_two <- 2^binary_exponent == m
+      even <- (m / 2^(binary_exponent - 52)) %% 2 == 0
+      shown <- sprintf("%.16e", m)
+      for (precision in c(16L, 15L)) {
+        candidate <- sprintf(paste0("%.", precision - 1L, "e"), m)
+        rounded_up <- paste0(substr(candidate, 1L, 1L), substr(candidate, 3L, precision + 1L)) !=
+          substr(mantissa, 1L, precision)
+        tail <- as.double(substring(mantissa, precision + 1L))
+        distance <- ifelse(rounded_up, 10^(25L - precision) - tail, tail)
+        # Below an exact power of two the next double down is only a quarter ulp away.
+        bound <- ifelse(power_of_two & !rounded_up, half_ulp / 2, half_ulp)
+        exact <- distance < bound | (distance == bound & even)
+        shown[exact] <- candidate[exact]
+      }
+      digits <- sub("0+$", "", paste0(substr(shown, 1L, 1L), sub("e.*$", "", substring(shown, 3L))))
+      significant[normal] <- pmax(1L, nchar(digits))
+      exponent[normal] <- as.integer(sub("^[^e]*e", "", shown))
+    }
+    # Subnormals have fewer significant bits, so their shortest form may need fewer than 15 digits.
+    for (index in which(magnitude != 0 & magnitude < 2.2250738585072014e-308)) {
+      for (precision in 0:16) {
+        candidate <- sprintf(paste0("%.", precision, "e"), magnitude[[index]])
+        if (as.double(candidate) == magnitude[[index]]) {
+          significant[[index]] <- precision + 1L
+          exponent[[index]] <- as.integer(sub("^[^e]*e", "", candidate))
+          break
+        }
+      }
+    }
+    fixed <- exponent >= -4 & exponent < 16
+    shown <- character(length(x))
+    shown[fixed] <- sprintf("%.*f", as.integer(pmax(1, significant[fixed] - 1 - exponent[fixed])), x[fixed])
+    shown[!fixed] <- sprintf("%.*e", significant[!fixed] - 1L, x[!fixed])
+    displays[finite] <- shown
+    displays
+  }
+
+  display_difftime_values <- function(values, units) {
+    # R prints whole durations without a decimal point.
+    paste(sub("\\.0$", "", display_double_values(values)), units)
   }
 
   indexed_value_label <- function(label, index, count) {
     if (count == 1L) label else sprintf("%s[%d]", label, index)
   }
 
+  # glibc strftime omits the leading zeros of years before 1000.
+  pad_iso_years <- function(text) {
+    short <- base::which(base::grepl("^[0-9]{1,3}-", text))
+    text[short] <- base::paste0(base::strrep("0", 5L - base::regexpr("-", text[short], fixed = TRUE)), text[short])
+    text
+  }
+
   display_date_values <- function(values, label) {
     displays <- tryCatch(
-      base::format.Date(values, format = "%Y-%m-%d"),
+      pad_iso_years(base::format.Date(values, format = "%Y-%m-%d")),
       error = function(error) NULL
     )
     value_count <- storage_length(values)
@@ -734,8 +862,33 @@ openwrangler_r_frame_contract <- local({
       format = "%Y-%m-%dT%H:%M:%S",
       usetz = FALSE
     )
+    # Generated code deparses this function, so it pads years before 1000 inline.
+    short <- base::which(base::grepl("^[0-9]{1,3}-", text))
+    text[short] <- base::paste0(base::strrep("0", 5L - base::regexpr("-", text[short], fixed = TRUE)), text[short])
     present <- finite & !base::is.na(text)
     text[present] <- base::paste0(text[present], ".", base::sprintf("%06.0f", micros[present]), if (utc_suffix) "Z" else "")
+    text
+  }
+
+  # Offsets belong to the displayed microsecond, so a rounding carry across a transition uses the later offset.
+  iso_offsets <- function(values, timezone) {
+    instants <- base::structure(round(unclass(values) * 1e6) / 1e6, class = c("POSIXct", "POSIXt"))
+    local <- base::as.POSIXlt(instants, tz = timezone)
+    offsets <- local$gmtoff
+    if (is.null(offsets)) offsets <- rep(NA_real_, length(instants))
+    unknown <- is.na(offsets)
+    if (any(unknown)) {
+      wall <- base::ISOdatetime(local$year + 1900, local$mon + 1, local$mday, local$hour, local$min, floor(local$sec), tz = "UTC")
+      offsets[unknown] <- (as.double(wall) - floor(as.double(instants)))[unknown]
+    }
+    magnitude <- abs(as.integer(round(offsets)))
+    seconds <- magnitude %% 60L
+    text <- paste0(
+      ifelse(offsets < 0, "-", "+"),
+      sprintf("%02d:%02d", magnitude %/% 3600L, magnitude %% 3600L %/% 60L),
+      ifelse(seconds == 0L, "", sprintf(":%02d", seconds))
+    )
+    text[is.na(offsets)] <- NA_character_
     text
   }
 
@@ -745,9 +898,13 @@ openwrangler_r_frame_contract <- local({
     displays <- tryCatch(
       if (stable_category_labels) {
         # One Hot labels are persistent column names, shared with saved generated plans.
-        base::format.POSIXct(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
+        pad_iso_years(base::format.POSIXct(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE))
       } else {
-        format_iso_datetime(values, display_timezone)
+        text <- format_iso_datetime(values, display_timezone)
+        present <- which(!is.na(text))
+        offsets <- iso_offsets(values[present], display_timezone)
+        text[present] <- ifelse(is.na(offsets), NA_character_, paste0(trim_iso_fraction(text[present]), offsets))
+        text
       },
       error = function(error) NULL
     )
@@ -1155,7 +1312,7 @@ openwrangler_r_frame_contract <- local({
     anyNA(column)
   }
 
-  encode_value <- function(column, semantics, index, label, budget, integer64_bindings = NULL) {
+  encode_value <- function(column, semantics, index, label, budget, integer64_bindings = NULL, double_display = NULL) {
     spend_payload_budget(budget, cell_fixed_bytes, label)
     kind <- semantics$kind
     if (nested_kind(semantics)) return(encode_nested_value(column, semantics, index, label, budget))
@@ -1164,7 +1321,7 @@ openwrangler_r_frame_contract <- local({
       clock_validate(value, label)
       exact <- clock_ticks(value)[[1L]]
       if (is.na(exact)) return(cell_missing())
-      display <- clock_display(value)[[1L]]
+      display <- clock_display_values(value)[[1L]]
       if (is.na(display)) abort("unsupported-cell", sprintf("%s is outside clock's calendar display range", label))
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
@@ -1236,7 +1393,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "double") {
       exact <- exact_double(value)
-      display <- display_double(value)
+      display <- double_display %||% display_double_values(value)
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
       return(ordinary_cell("number", exact, display))
@@ -1260,7 +1417,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "difftime") {
       exact <- exact_double(numeric_value)
-      display <- paste(exact, semantics$units)
+      display <- display_difftime_values(numeric_value, semantics$units)
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
       return(ordinary_cell("duration", exact, display))
@@ -2588,6 +2745,16 @@ openwrangler_r_frame_contract <- local({
     invisible(NULL)
   }
 
+  profile_present_indices <- function(column, semantics, integer64_bindings = NULL) {
+    # anyNA() proves most atomic columns complete without allocating masks; it also reports NaN.
+    if (semantics$kind %in% c("integer", "double", "character", "factor", "date", "datetime", "difftime") &&
+        !anyNA(column)) {
+      return(seq_len(length(column)))
+    }
+    missing <- profile_missing_masks(column, semantics, integer64_bindings)
+    which(!missing$null & !missing$nan)
+  }
+
   profile_missing_masks <- function(column, semantics, integer64_bindings = NULL) {
     if (nested_kind(semantics)) return(list(null = vapply(plain_metadata_storage(column), is.null, logical(1L)), nan = rep(FALSE, storage_length(column))))
     if (identical(semantics$kind, "double")) {
@@ -2692,9 +2859,11 @@ openwrangler_r_frame_contract <- local({
       return(keys %||% profile_value_keys(column, semantics, indices))
     }
     values <- column[indices]
-    if (kind == "clock_datetime") return(clock_display(values))
+    if (kind == "clock_datetime") return(clock_display_values(values))
     if (kind == "double") {
-      return(vapply(values, display_double, character(1L), USE.NAMES = FALSE))
+      # Equal zeros share one label regardless of which sign occurred first.
+      values[values == 0] <- 0
+      return(display_double_values(values))
     }
     if (kind == "date") {
       return(display_date_values(values, "column values"))
@@ -2703,102 +2872,11 @@ openwrangler_r_frame_contract <- local({
       return(display_datetime_values(values, semantics$timezone, "column values"))
     }
     if (kind == "difftime") {
-      exact <- vapply(as.double(values, units = semantics$units), exact_double, character(1L), USE.NAMES = FALSE)
-      return(paste(exact, semantics$units))
+      numbers <- as.double(values, units = semantics$units)
+      numbers[numbers == 0] <- 0
+      return(display_difftime_values(numbers, semantics$units))
     }
     abort("internal-error", "unknown R column kind")
-  }
-
-  chunked_searched_value_counts <- function(column, semantics, row_positions, row_count, search) {
-    counts_by_key <- new.env(hash = TRUE, parent = emptyenv())
-    key_batches <- list()
-    source_batches <- list()
-    batch_count <- 0L
-    distinct_count <- 0L
-    distinct_key_bytes <- 0
-    folded_search <- ascii_fold(search)
-    start <- 1
-    while (start <= row_count) {
-      count <- min(maximum_profile_chunk_rows, row_count - start + 1)
-      source_positions <- profile_chunk_source_positions(row_positions, start, count)
-      chunk <- column[source_positions]
-      validate_profile_column(chunk, semantics, "column values")
-      missing <- profile_missing_masks(chunk, semantics)
-      present_indices <- which(!missing$null & !missing$nan)
-      if (length(present_indices) != 0L) {
-        keys <- profile_value_keys(chunk, semantics, present_indices)
-        displays <- profile_value_displays(chunk, semantics, present_indices, keys)
-        keep <- grepl(folded_search, ascii_fold(displays), fixed = TRUE)
-        if (any(keep)) {
-          matching_indices <- present_indices[keep]
-          matching_keys <- keys[keep]
-          first <- !duplicated(matching_keys)
-          unique_keys <- matching_keys[first]
-          first_sources <- source_positions[matching_indices[first]]
-          chunk_counts <- tabulate(match(matching_keys, unique_keys), nbins = length(unique_keys))
-          new_keys <- character(length(unique_keys))
-          new_sources <- integer(length(unique_keys))
-          new_count <- 0L
-          for (index in seq_along(unique_keys)) {
-            key <- unique_keys[[index]]
-            environment_key <- paste0(":", key)
-            if (exists(environment_key, envir = counts_by_key, inherits = FALSE)) {
-              assign(
-                environment_key,
-                get(environment_key, envir = counts_by_key, inherits = FALSE) + chunk_counts[[index]],
-                envir = counts_by_key
-              )
-            } else {
-              next_key_bytes <- distinct_key_bytes + as.double(nchar(key, type = "bytes"))
-              if (
-                distinct_count >= maximum_column_value_distinct_matches ||
-                  next_key_bytes > maximum_column_value_distinct_key_bytes
-              ) {
-                abort(
-                  "profile-too-large",
-                  sprintf(
-                    paste0(
-                      "The requested R column-value search exceeds the distinct-match state limit of ",
-                      "%d values and %d UTF-8 key bytes; narrow the search and try again"
-                    ),
-                    maximum_column_value_distinct_matches,
-                    maximum_column_value_distinct_key_bytes
-                  )
-                )
-              }
-              assign(environment_key, as.double(chunk_counts[[index]]), envir = counts_by_key)
-              distinct_count <- distinct_count + 1L
-              distinct_key_bytes <- next_key_bytes
-              new_count <- new_count + 1L
-              new_keys[[new_count]] <- key
-              new_sources[[new_count]] <- first_sources[[index]]
-            }
-          }
-          if (new_count != 0L) {
-            batch_count <- batch_count + 1L
-            key_batches[[batch_count]] <- new_keys[seq_len(new_count)]
-            source_batches[[batch_count]] <- new_sources[seq_len(new_count)]
-          }
-        }
-      }
-      start <- start + count
-    }
-    if (batch_count == 0L) {
-      return(list(keys = character(), firstSources = integer(), counts = numeric()))
-    }
-    keys <- unlist(key_batches, use.names = FALSE)
-    list(
-      keys = keys,
-      firstSources = unlist(source_batches, use.names = FALSE),
-      counts = vapply(
-        paste0(":", keys),
-        get,
-        numeric(1L),
-        envir = counts_by_key,
-        inherits = FALSE,
-        USE.NAMES = FALSE
-      )
-    )
   }
 
   profile_value_counts <- function(column, semantics, present_indices, budget, label) {
@@ -2827,13 +2905,64 @@ openwrangler_r_frame_contract <- local({
         sprintf("%s top value %d", label, result_index),
         budget
       )
-      list(value = encoded$display, count = as.integer(counts[[selected[[result_index]]]]))
+      display <- encoded$display
+      # Equal zeros share one label regardless of which sign occurred first.
+      if (semantics$kind %in% c("double", "difftime")) display <- sub("^-0(\\.0)?( |$)", "0\\1\\2", display)
+      list(value = display, count = as.integer(counts[[selected[[result_index]]]]))
     })
     list(
       distinctCount = as.integer(length(counts)),
       topValues = json_array(top_values),
       keys = character()
     )
+  }
+
+  categorical_visualization <- function(top_values, present_count) {
+    shown <- utils::head(unclass(top_values), maximum_chart_categories)
+    list(
+      kind = "categorical",
+      categories = json_array(shown),
+      otherCount = as.integer(present_count - sum(vapply(shown, `[[`, integer(1L), "count")))
+    )
+  }
+
+  # Hashable identities that group exactly as profile_value_keys without formatting each value.
+  profile_value_identities <- function(column, semantics, indices, integer64_bindings = NULL, numeric_values = NULL) {
+    kind <- semantics$kind
+    if (kind == "integer") return(column[indices])
+    if (kind == "clock_datetime") return(clock_identities(column[indices]))
+    if (kind %in% c("double", "date", "datetime", "difftime", "integer64")) {
+      values <- numeric_values %||% numeric_profile_values(column, semantics, indices, integer64_bindings)
+      if (kind == "integer64" && length(values) != 0L && max(abs(values)) >= 9007199254740992) {
+        return(profile_value_keys(column, semantics, indices, integer64_bindings))
+      }
+      # unique() merges signed zeros; date-time and duration keys keep negative zero apart as the unused NA.
+      if (kind %in% c("datetime", "difftime")) values[values == 0 & 1 / values < 0] <- NA_real_
+      return(values)
+    }
+    profile_value_keys(column, semantics, indices, integer64_bindings)
+  }
+
+  profile_population_counts <- function(column, semantics, present_indices, integer64_bindings = NULL,
+                                        numeric_values = NULL) {
+    text <- semantics$kind == "character"
+    identities <- if (text) column[present_indices] else {
+      profile_value_identities(column, semantics, present_indices, integer64_bindings, numeric_values)
+    }
+    # One hash pass maps every row to its first equal row, which marks first occurrences and counts together.
+    position <- match(identities, identities)
+    first <- which(position == seq_along(position))
+    counts <- tabulate(position, nbins = length(position))[first]
+    if (text) {
+      # match() equates encodings that translate alike; normalized keys can still merge unmarked UTF-8.
+      keys <- profile_text_values(identities[first], present_indices[first])
+      group <- match(keys, keys)
+      if (anyDuplicated(group) != 0L) {
+        counts <- as.integer(rowsum(counts, group, reorder = FALSE))
+        first <- first[group == seq_along(group)]
+      }
+    }
+    list(first = present_indices[first], counts = counts)
   }
 
   # Finite binary64 values are integer multiples of 2^-1074. With fewer than 2^31
@@ -3208,11 +3337,7 @@ openwrangler_r_frame_contract <- local({
     } else if (semantics$kind %in% c("character", "factor")) {
       text_values <- if (semantics$kind == "factor") profile_text_values(counts$keys, present_indices, "profile text") else counts$keys
       summary$text <- text_profile(text_values)
-      summary$visualization <- list(
-        kind = "categorical",
-        categories = counts$topValues,
-        otherCount = as.integer(length(present_indices) - sum(vapply(counts$topValues, `[[`, integer(1L), "count")))
-      )
+      summary$visualization <- categorical_visualization(counts$topValues, length(present_indices))
     }
     summary
   }
@@ -3250,33 +3375,6 @@ openwrangler_r_frame_contract <- local({
     base::order(values, decreasing = decreasing, method = "radix", na.last = NA)
   }
 
-  deterministic_sample_positions <- function(total, maximum) {
-    if (total <= 0 || maximum <= 0) return(integer())
-    count <- as.integer(min(as.double(total), as.double(maximum)))
-    if (count == total) return(seq_len(count))
-
-    had_random_seed <- base::exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-    if (had_random_seed) previous_random_seed <- base::get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-    previous_rng_kind <- base::RNGkind()
-    on.exit({
-      base::suppressWarnings(base::do.call(base::RNGkind, base::as.list(previous_rng_kind)))
-      if (had_random_seed) {
-        base::assign(".Random.seed", previous_random_seed, envir = .GlobalEnv)
-      } else if (base::exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-        base::rm(".Random.seed", envir = .GlobalEnv)
-      }
-    }, add = TRUE)
-
-    base::RNGkind(kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
-    base::set.seed(104729L)
-    base::sort(base::sample.int(
-      as.double(total),
-      count,
-      replace = FALSE,
-      useHash = count <= total / 2 && total > 1000000
-    ))
-  }
-
   profile_chunk_source_positions <- function(row_positions, start, count) {
     logical_positions <- seq.int(as.integer(start), length.out = as.integer(count))
     if (is.null(row_positions)) logical_positions else row_positions[logical_positions]
@@ -3305,17 +3403,11 @@ openwrangler_r_frame_contract <- local({
     state$text_min_length <- Inf
     state$text_max_length <- -Inf
     state$text_total_length <- 0
-    state$text_counts <- if (state$kind %in% c("character", "factor")) numeric() else NULL
-    state$text_keys <- character()
-    state$text_first_sources <- integer()
-    state$text_key_bytes <- 0
     state$numeric_minimum <- NULL
     state$numeric_maximum <- NULL
     state$numeric_finite_minimum <- Inf
     state$numeric_finite_maximum <- -Inf
     state$numeric_bin_values <- NULL
-    state$numeric_distinct_values <- numeric()
-    state$numeric_distinct_zero_signs <- numeric()
     state$numeric_finite_count <- 0
     state$numeric_mean <- 0
     state$numeric_exact_mean <- if (state$kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
@@ -3334,7 +3426,7 @@ openwrangler_r_frame_contract <- local({
     state$datetime_minimum_source <- NULL
     state$datetime_maximum_source <- NULL
 
-    if (!nested_kind(state$semantics) && row_count > maximum_profile_sample_rows) {
+    if (!nested_kind(state$semantics) && row_count > maximum_direct_profile_rows) {
       spend_payload_budget(state$budget, summary_fixed_bytes, state$label)
       spend_json_string(state$budget, state$descriptor$id, paste0(state$label, " ID"))
       spend_json_string(state$budget, state$descriptor$name, paste0(state$label, " name"))
@@ -3345,10 +3437,9 @@ openwrangler_r_frame_contract <- local({
     if (nested_kind(state$semantics)) {
       state$result <- column_summary(capture, state$column[integer()], resolved, budget)
       state$phase <- "nested"
-    } else if (row_count <= maximum_profile_sample_rows) {
+    } else if (row_count <= maximum_direct_profile_rows) {
       values <- state$column
       if (!is.null(row_positions)) values <- values[row_positions]
-      # Keep the exact existing small-profile statistics and sampling policy.
       state$result <- column_summary(capture, values, resolved, budget)
       state$phase <- "complete"
     }
@@ -3411,38 +3502,6 @@ openwrangler_r_frame_contract <- local({
             state$text_min_length <- min(state$text_min_length, min(lengths))
             state$text_max_length <- max(state$text_max_length, max(lengths))
             state$text_total_length <- state$text_total_length + sum(as.double(lengths) * row_counts)
-            if (!is.null(state$text_counts)) {
-              # Different encodings of one string convert to the same key.
-              first <- !duplicated(text_values)
-              keys <- text_values[first]
-              if (length(keys) > maximum_column_value_distinct_matches) {
-                state$text_counts <- NULL
-                state$text_keys <- character()
-                state$text_first_sources <- integer()
-              } else {
-                sources <- present_sources[first_rows[first]]
-                counts <- if (all(first)) {
-                  as.double(row_counts)
-                } else {
-                  as.double(rowsum(as.double(row_counts), match(text_values, keys), reorder = TRUE))
-                }
-                existing <- match(keys, state$text_keys)
-                known <- !is.na(existing)
-                next_bytes <- state$text_key_bytes + sum(as.double(nchar(keys[!known], type = "bytes")))
-                if (length(state$text_keys) + sum(!known) > maximum_column_value_distinct_matches ||
-                    next_bytes > maximum_column_value_distinct_key_bytes) {
-                  state$text_counts <- NULL
-                  state$text_keys <- character()
-                  state$text_first_sources <- integer()
-                } else {
-                  state$text_counts[existing[known]] <- state$text_counts[existing[known]] + counts[known]
-                  state$text_counts <- c(state$text_counts, counts[!known])
-                  state$text_keys <- c(state$text_keys, keys[!known])
-                  state$text_first_sources <- c(state$text_first_sources, sources[!known])
-                  state$text_key_bytes <- next_bytes
-                }
-              }
-            }
           } else if (state$kind == "clock_datetime") {
             ordered <- order_present_values(present, state$semantics, FALSE)
             first <- ordered[[1L]]
@@ -3475,23 +3534,12 @@ openwrangler_r_frame_contract <- local({
             if (state$kind == "integer64" && !exact_doubles && !state$integer64_text_keys) {
               # Wider values need text identities; retained exact doubles print as the same text.
               state$integer64_text_keys <- TRUE
-              if (!is.null(state$numeric_distinct_values)) state$numeric_distinct_values <- sprintf("%.0f", state$numeric_distinct_values)
               if (!is.null(state$numeric_bin_values)) state$numeric_bin_values <- sprintf("%.0f", state$numeric_bin_values)
             }
             identity_values <- if (state$kind == "integer64" && state$integer64_text_keys &&
-                (!is.null(state$numeric_distinct_values) || length(state$numeric_bin_values) < maximum_histogram_bins)) {
+                length(state$numeric_bin_values) < maximum_histogram_bins) {
               profile_value_keys(present, state$semantics, seq_along(present), integer64_bindings)
             } else values
-            if (!is.null(state$numeric_distinct_values)) {
-              # The temporary union adds only this scan chunk to the retained bound.
-              state$numeric_distinct_values <- unique(c(state$numeric_distinct_values, identity_values))
-              # Duration keys preserve signed zero; ordinary double keys merge it.
-              if (state$kind == "difftime") {
-                state$numeric_distinct_zero_signs <- unique(c(state$numeric_distinct_zero_signs, 1 / values[values == 0]))
-              }
-              distinct_count <- length(state$numeric_distinct_values) + max(0L, length(state$numeric_distinct_zero_signs) - 1L)
-              if (distinct_count > maximum_column_value_distinct_matches) state$numeric_distinct_values <- NULL
-            }
             chunk_minimum <- suppressWarnings(min(values))
             chunk_maximum <- suppressWarnings(max(values))
             if (is.null(state$numeric_minimum) || chunk_minimum < state$numeric_minimum) state$numeric_minimum <- chunk_minimum
@@ -3553,56 +3601,46 @@ openwrangler_r_frame_contract <- local({
         processed <- processed + 1L
         if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
       }
-      state$large_population <- state$present_count > maximum_profile_sample_rows
-      state$exact_text_counts <- state$large_population && !is.null(state$text_counts)
-      state$histogram_edges <- if (state$large_population && state$numeric_finite_count > 0) {
+      state$histogram_edges <- if (state$numeric_finite_count > 0) {
         numeric_histogram_edges(state$numeric_finite_minimum, state$numeric_finite_maximum, length(state$numeric_bin_values))
       } else NULL
       state$histogram_counts <- numeric(max(0L, length(state$histogram_edges) - 1L))
-      state$sample_size <- if (state$kind == "logical" || state$exact_text_counts ||
-          (state$large_population && !state$kind %in% c("character", "factor"))) {
-        0L
-      } else {
-        as.integer(min(as.double(state$present_count), as.double(maximum_profile_sample_rows)))
-      }
-      state$sample_sources <- integer(state$sample_size)
-      state$sample_ranks <- if (state$sample_size != 0L) deterministic_sample_positions(state$present_count, state$sample_size) else integer()
-      state$sampled <- 0L
-      state$seen_present <- 0
       state$start <- 1
       state$phase <- "distribution"
     }
-    while (state$start <= state$row_count && (!is.null(state$histogram_edges) || state$sampled < state$sample_size)) {
+    while (state$start <= state$row_count && !is.null(state$histogram_edges)) {
       count <- min(maximum_profile_chunk_rows, state$row_count - state$start + 1)
       source_positions <- profile_chunk_source_positions(state$row_positions, state$start, count)
       chunk <- if (state$kind == "integer64") integer64_subset(state$column, source_positions) else state$column[source_positions]
       missing <- profile_missing_masks(chunk, state$semantics, integer64_bindings)
-      present_indices <- which(!missing$null & !missing$nan)
-      if (!is.null(state$histogram_edges)) {
-        values <- numeric_profile_values(chunk, state$semantics, present_indices, integer64_bindings)
-        bin_indices <- findInterval(values[is.finite(values)], state$histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
-        state$histogram_counts <- state$histogram_counts + tabulate(bin_indices, nbins = length(state$histogram_counts))
-      } else {
-        present_sources <- source_positions[present_indices]
-        next_seen <- state$seen_present + length(present_sources)
-        first_target <- findInterval(state$seen_present, state$sample_ranks) + 1L
-        last_target <- findInterval(next_seen, state$sample_ranks)
-        if (first_target <= last_target) {
-          targets <- state$sample_ranks[seq.int(first_target, last_target)]
-          selected <- present_sources[as.integer(targets - state$seen_present)]
-          destination <- seq.int(state$sampled + 1L, length.out = length(selected))
-          state$sample_sources[destination] <- selected
-          state$sampled <- state$sampled + length(selected)
-        }
-        state$seen_present <- next_seen
-      }
+      values <- numeric_profile_values(chunk, state$semantics, which(!missing$null & !missing$nan), integer64_bindings)
+      bin_indices <- findInterval(values[is.finite(values)], state$histogram_edges, rightmost.closed = TRUE, all.inside = TRUE)
+      state$histogram_counts <- state$histogram_counts + tabulate(bin_indices, nbins = length(state$histogram_counts))
       state$start <- state$start + count
       processed <- processed + 1L
       if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
     }
-    if (state$sampled != state$sample_size) abort("internal-error", "the R profile sample is incomplete")
-    sample_column <- if (state$kind == "integer64") integer64_subset(state$column, state$sample_sources) else state$column[state$sample_sources]
-    sample_indices <- seq_len(state$sample_size)
+    if (state$kind != "logical" && state$present_count != 0) {
+      # One whole-view pass keeps distinct counts, top values and the median exact at every size.
+      sources <- state$row_positions %||% seq_len(state$row_count)
+      population <- if (is.null(state$row_positions)) state$column else if (state$kind == "integer64") {
+        integer64_subset(state$column, sources)
+      } else state$column[sources]
+      present <- if (state$present_count == length(sources)) seq_along(sources) else {
+        missing <- profile_missing_masks(population, state$semantics, integer64_bindings)
+        which(!missing$null & !missing$nan)
+      }
+      numeric_values <- if (state$kind %in% c("integer", "integer64", "double", "date", "datetime", "difftime")) {
+        numeric_profile_values(population, state$semantics, present, integer64_bindings)
+      }
+      exact <- profile_population_counts(population, state$semantics, present, integer64_bindings, numeric_values)
+      counts <- profile_count_summary(state$column, state$semantics, sources[exact$first], exact$counts, state$budget, state$label)
+      if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
+        median_value <- numeric_profile_median(numeric_values)
+      }
+    } else if (state$kind != "logical") {
+      counts <- list(distinctCount = 0L, topValues = json_array(list()))
+    }
     if (state$kind == "logical") {
       entries <- list()
       if (state$true_count > 0) entries[[length(entries) + 1L]] <- list(value = "TRUE", count = state$true_count, first = state$first_true)
@@ -3620,18 +3658,8 @@ openwrangler_r_frame_contract <- local({
       }
       counts <- list(
         distinctCount = as.integer((state$true_count > 0) + (state$false_count > 0)),
-        topValues = json_array(entries),
-        keys = character()
+        topValues = json_array(entries)
       )
-    } else if (state$exact_text_counts) {
-      counts <- profile_count_summary(
-        state$column, state$semantics, state$text_first_sources, state$text_counts,
-        state$budget, state$label
-      )
-    } else if (state$large_population && !state$kind %in% c("character", "factor")) {
-      counts <- list(distinctCount = NULL, topValues = json_array(list()), keys = character())
-    } else {
-      counts <- profile_value_counts(sample_column, state$semantics, sample_indices, state$budget, state$label)
     }
 
     summary <- list(
@@ -3642,17 +3670,9 @@ openwrangler_r_frame_contract <- local({
       totalCount = as.double(state$row_count),
       nullCount = as.integer(state$null_count),
       nanCount = as.integer(state$nan_count),
-      topValues = if (state$large_population && state$kind %in% c("integer", "integer64", "double", "difftime")) {
-        json_array(list())
-      } else {
-        counts$topValues
-      }
+      distinctCount = counts$distinctCount,
+      topValues = counts$topValues
     )
-    if (!state$large_population || state$kind == "logical" || state$exact_text_counts) summary$distinctCount <- counts$distinctCount
-    if (state$large_population && state$kind %in% c("integer", "integer64", "double", "difftime") &&
-        !is.null(state$numeric_distinct_values)) {
-      summary$distinctCount <- as.integer(length(state$numeric_distinct_values) + max(0L, length(state$numeric_distinct_zero_signs) - 1L))
-    }
 
     if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
       numeric <- list()
@@ -3678,9 +3698,8 @@ openwrangler_r_frame_contract <- local({
           if (!is.null(standard_deviation)) numeric$std <- standard_deviation
         }
       }
-      sample_values <- numeric_profile_values(sample_column, state$semantics, sample_indices, integer64_bindings)
-      if (!state$large_population && length(sample_values) != 0L) {
-        median_value <- finite_statistic(suppressWarnings(numeric_profile_median(sample_values)))
+      if (state$present_count != 0) {
+        median_value <- finite_statistic(suppressWarnings(median_value))
         if (!is.null(median_value)) numeric$median <- median_value
       }
       if (!is.null(state$exact_minimum) && !is.null(state$exact_maximum)) {
@@ -3688,11 +3707,8 @@ openwrangler_r_frame_contract <- local({
         numeric$exactMax <- exact_profile_integer_text_cell(state$exact_maximum, state$budget, paste0(state$label, " maximum"))
       }
       summary$numeric <- if (length(numeric) == 0L) structure(list(), names = character()) else numeric
-      finite_keys <- counts$keys[is.finite(sample_values)]
-      visualization <- if (!is.null(state$histogram_edges)) numeric_histogram_from_counts(state$histogram_edges, state$histogram_counts) else
-        numeric_histogram(sample_values, length(unique(finite_keys)))
-      if (!is.null(visualization)) {
-        summary$visualization <- visualization
+      if (!is.null(state$histogram_edges)) {
+        summary$visualization <- numeric_histogram_from_counts(state$histogram_edges, state$histogram_counts)
       }
     } else if (state$kind == "logical") {
       summary$visualization <- list(
@@ -3721,14 +3737,7 @@ openwrangler_r_frame_contract <- local({
           meanLength = as.double(state$text_total_length / state$present_count)
         )
       }
-      visualization <- list(
-        kind = "categorical",
-        categories = counts$topValues,
-        otherCount = as.integer((if (state$exact_text_counts) state$present_count else state$sample_size) -
-          sum(vapply(counts$topValues, `[[`, integer(1L), "count")))
-      )
-      if (state$large_population && !state$exact_text_counts) visualization$sampled <- TRUE
-      summary$visualization <- visualization
+      summary$visualization <- categorical_visualization(counts$topValues, state$present_count)
     }
     state$result <- summary
     state$phase <- "complete"
@@ -5760,7 +5769,7 @@ openwrangler_r_frame_contract <- local({
         kind,
         logical = ifelse(categories, "TRUE", "FALSE"),
         integer = sprintf("%d", categories),
-        double = vapply(categories, display_double, character(1L), USE.NAMES = FALSE),
+        double = vapply(categories, category_double_label, character(1L), USE.NAMES = FALSE),
         date = display_date_values(structure(categories, class = "Date"), label),
         datetime = {
           datetime_values <- categories
@@ -8842,7 +8851,7 @@ openwrangler_r_frame_contract <- local({
         exact_double(value)
       }, character(1L), USE.NAMES = FALSE)
     } else if (identical(kind, "date")) {
-      format(column, format = "%Y-%m-%d")
+      pad_iso_years(format(column, format = "%Y-%m-%d"))
     } else if (identical(kind, "datetime")) {
       format_iso_datetime(column, "UTC", utc_suffix = TRUE)
     } else if (identical(kind, "difftime")) {
@@ -8886,7 +8895,16 @@ openwrangler_r_frame_contract <- local({
     result <- structure(rep(NA_real_, length(values)), class = "Date")
     if (any(valid)) {
       parsed <- suppressWarnings(as.Date(values[valid], format = native_format))
-      matches <- !is.na(parsed) & format(parsed, format = native_format) == values[valid]
+      # Components keep four-digit years, which glibc strftime does not pad before 1000.
+      parts <- as.POSIXlt(parsed)
+      year <- parts$year + 1900L
+      month <- parts$mon + 1L
+      rendered <- switch(input_format,
+        "DD/MM/YYYY" = sprintf("%02d/%02d/%04d", parts$mday, month, year),
+        "MM/DD/YYYY" = sprintf("%02d/%02d/%04d", month, parts$mday, year),
+        "YYYY-MM-DD" = sprintf("%04d-%02d-%02d", year, month, parts$mday)
+      )
+      matches <- !is.na(parsed) & rendered == values[valid]
       parsed[!matches] <- as.Date(NA_character_)
       result[valid] <- parsed
     }
@@ -8897,7 +8915,7 @@ openwrangler_r_frame_contract <- local({
     result <- values
     present <- !is.na(result)
     if (!any(present)) return(result)
-    rendered <- format(result[present], format = "%Y-%m-%d")
+    rendered <- pad_iso_years(format(result[present], format = "%Y-%m-%d"))
     canonical <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", rendered, perl = TRUE) &
       !startsWith(rendered, "0000-")
     if (any(canonical)) {
@@ -8912,7 +8930,7 @@ openwrangler_r_frame_contract <- local({
     result <- values
     present <- !is.na(result)
     if (!any(present)) return(result)
-    rendered <- format(result[present], tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
+    rendered <- pad_iso_years(format(result[present], tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE))
     canonical <- grepl(
       "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}$",
       rendered,
@@ -11498,6 +11516,12 @@ openwrangler_r_frame_contract <- local({
       NULL
     }
 
+    # Formatting each double column once keeps shortest-repr displays off the per-cell path.
+    double_displays <- lapply(column_positions, function(source_column) {
+      if (identical(.subset2(.subset2(plain_schema, source_column), "semantics")$kind, "double")) {
+        display_double_values(.subset2(frame, source_column)[row_positions])
+      }
+    })
     rows <- lapply(seq_along(row_positions), function(row_index) {
       source_row <- row_positions[[row_index]]
       spend_payload_budget(page_budget, row_fixed_bytes, sprintf("row %d", source_row))
@@ -11509,7 +11533,8 @@ openwrangler_r_frame_contract <- local({
           source_row,
           sprintf("cell[%d,%d]", source_row, source_column),
           page_budget,
-          page_integer64_bindings
+          page_integer64_bindings,
+          .subset2(double_displays, column_index)[row_index]
         )
       })
       row <- list(
@@ -11590,6 +11615,35 @@ openwrangler_r_frame_contract <- local({
     new_column_summary(capture, frame, resolved[[1L]], view$rows, view$totalRows, new_payload_budget(capture$metadataBytes))
   }
 
+  # Row-equality identities: NA and NaN stay distinct and signed zeros merge, as in duplicated().
+  duplicate_value_identities <- function(column, semantics, positions, integer64_bindings = NULL) {
+    kind <- semantics$kind
+    if (kind == "integer64") {
+      values <- if (is.null(positions)) column else integer64_subset(column, positions)
+      doubles <- suppressWarnings(integer64_as_double(values, integer64_bindings))
+      present <- doubles[!is.na(doubles)]
+      if (length(present) == 0L || max(abs(present)) < 9007199254740992) return(doubles)
+      return(integer64_as_character(values, integer64_bindings))
+    }
+    values <- if (is.null(positions)) column else column[positions]
+    if (kind == "clock_datetime") return(clock_identities(values))
+    if (kind == "character") return(values)
+    values <- unclass(values)
+    attributes(values) <- NULL
+    values
+  }
+
+  refine_duplicate_groups <- function(groups, keys) {
+    count <- length(keys)
+    ordering <- order(groups, keys, method = "radix")
+    ordered_groups <- groups[ordering]
+    ordered_keys <- keys[ordering]
+    changed <- c(TRUE, ordered_groups[-1L] != ordered_groups[-count] | ordered_keys[-1L] != ordered_keys[-count])
+    refined <- integer(count)
+    refined[ordering] <- cumsum(changed)
+    refined
+  }
+
   begin_dataset_stats <- function(capture, view_query = list(filters = list(), sorts = list()), filter_cache = NULL) {
     validate_capture(capture)
     state <- new.env(parent = emptyenv())
@@ -11641,33 +11695,47 @@ openwrangler_r_frame_contract <- local({
       processed <- processed + 1L
       if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
     }
+    nested <- any(vapply(plain_metadata_storage(state$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))
+    if (!nested && state$row_count > 1L && state$column_count != 0L) {
+      # Rows keep group identities refined one column at a time; unique rows leave early.
+      if (is.null(state$duplicate_column)) {
+        state$duplicate_column <- 1L
+        state$duplicate_positions <- state$view$rows
+        state$duplicate_groups <- NULL
+      }
+      while (state$duplicate_column <= state$column_count && length(state$duplicate_groups %||% 1L) != 0L) {
+        position <- state$duplicate_column
+        positions <- state$duplicate_positions %||% seq_len(state$row_count)
+        identities <- duplicate_value_identities(
+          .subset2(state$frame, position),
+          state$descriptor$schema[[position]]$semantics,
+          state$duplicate_positions,
+          integer64_bindings
+        )
+        keys <- match(identities, identities)
+        groups <- if (is.null(state$duplicate_groups)) keys else refine_duplicate_groups(state$duplicate_groups, keys)
+        keep <- tabulate(groups, length(groups))[groups] > 1L
+        state$duplicate_positions <- positions[keep]
+        state$duplicate_groups <- match(groups[keep], groups[keep])
+        state$duplicate_column <- position + 1L
+        processed <- processed + 1L
+        if (processed >= maximum_chunks || (is.finite(deadline) && proc.time()[["elapsed"]] >= deadline)) return(NULL)
+      }
+    }
     missing_by_column <- lapply(seq_len(state$column_count), function(position) {
       schema <- state$descriptor$schema[[position]]
       spend_json_string(state$budget, schema$name, sprintf("column %d missing-value name", position))
       spend_payload_budget(state$budget, 96L, sprintf("column %d missing-value count", position))
       list(column = schema$name, count = state$missing_counts[[position]])
     })
-    duplicate_sample_size <- state$row_count
-    duplicate_rows <- if (any(vapply(plain_metadata_storage(state$descriptor$schema), function(column) nested_kind(column$semantics), logical(1L)))) {
+    duplicate_rows <- if (nested) {
       NULL
     } else if (state$row_count <= 1L) {
       0L
     } else if (state$column_count == 0L) {
       as.integer(state$row_count - 1L)
     } else {
-      duplicate_sample_size <- min(
-        state$row_count,
-        maximum_dataset_duplicate_sample_rows,
-        floor(maximum_dataset_duplicate_sample_cells / state$column_count)
-      )
-      logical_positions <- deterministic_sample_positions(state$row_count, duplicate_sample_size)
-      source_positions <- if (is.null(state$view$rows)) logical_positions else state$view$rows[logical_positions]
-      sampled_frame <- if (identical(state$dataframe_flavor, "r.data.table")) {
-        state$frame[source_positions]
-      } else {
-        state$frame[source_positions, , drop = FALSE]
-      }
-      as.integer(sum(duplicate_row_mask(sampled_frame, "first", integer64_as_character)))
+      as.integer(sum(duplicated(state$duplicate_groups)))
     }
     stats <- list(
       missingCells = as.double(sum(as.double(state$missing_counts))),
@@ -11675,9 +11743,6 @@ openwrangler_r_frame_contract <- local({
       duplicateRows = duplicate_rows,
       missingValuesByColumn = json_array(missing_by_column)
     )
-    if (duplicate_sample_size < state$row_count) {
-      stats$duplicateRowsSampleSize <- as.integer(duplicate_sample_size)
-    }
     result <- list(
       totalRows = as.double(state$row_count),
       stats = stats
@@ -11712,63 +11777,41 @@ openwrangler_r_frame_contract <- local({
     semantics <- column_descriptor$semantics
     if (nested_kind(semantics)) abort("invalid-view-query", "Extract or explode nested columns before requesting distinct values")
     initial_discovery <- is.null(search) || identical(search, "")
-    sampled <- initial_discovery && view$totalRows > maximum_profile_sample_rows
     budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(budget, summary_fixed_bytes, "R column values")
-    finish <- function(values, has_more, sample_size = NULL) {
-      result <- list(
-        column = column_descriptor$name,
-        values = values,
-        hasMore = isTRUE(has_more) || sampled
-      )
-      if (!is.null(sample_size)) result$sampleSize <- sample_size
-      result
+    finish <- function(values, has_more) {
+      list(column = column_descriptor$name, values = values, hasMore = isTRUE(has_more))
     }
 
+    value_column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+    validate_profile_column(value_column, semantics, "column values")
+    integer64_bindings <- if (identical(semantics$kind, "integer64")) ensure_integer64_bindings() else NULL
+    present_indices <- profile_present_indices(value_column, semantics, integer64_bindings)
+    if (length(present_indices) == 0L) return(finish(json_array(list()), FALSE))
+    exact <- profile_population_counts(value_column, semantics, present_indices, integer64_bindings)
+    first_indices <- exact$first
+    counts <- exact$counts
+    candidates <- seq_along(counts)
+    if (initial_discovery && length(counts) > limit) {
+      # Only values tied with or above the last listed count need a display for the tie-break.
+      candidates <- which(counts >= -sort(-counts, partial = limit + 1L)[[limit + 1L]])
+    }
+    displays <- profile_value_displays(value_column, semantics, first_indices[candidates])
     if (!initial_discovery) {
-      searched <- chunked_searched_value_counts(
-        source_column,
-        semantics,
-        view$rows,
-        view$totalRows,
-        search
-      )
-      value_column <- source_column
-      unique_keys <- searched$keys
-      first_indices <- searched$firstSources
-      counts <- searched$counts
-    } else if (sampled) {
-      logical_positions <- deterministic_sample_positions(view$totalRows, maximum_profile_sample_rows)
-      source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
-      column <- source_column[source_positions]
-    } else {
-      column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+      matching <- grepl(ascii_fold(search), ascii_fold(displays), fixed = TRUE)
+      candidates <- candidates[matching]
+      displays <- displays[matching]
     }
-    if (initial_discovery) {
-      validate_profile_column(column, semantics, "column values")
-      missing <- profile_missing_masks(column, semantics)
-      present_indices <- which(!missing$null & !missing$nan)
-      if (length(present_indices) == 0L) {
-        return(finish(json_array(list()), FALSE, if (sampled) storage_length(column) else NULL))
-      }
-      keys <- profile_value_keys(column, semantics, present_indices)
-      first <- !duplicated(keys)
-      unique_keys <- keys[first]
-      first_indices <- present_indices[first]
-      counts <- tabulate(match(keys, unique_keys), nbins = length(unique_keys))
-      value_column <- column
-    }
-    if (length(first_indices) == 0L) {
-      return(finish(json_array(list()), FALSE))
-    }
-    displays <- profile_value_displays(value_column, semantics, first_indices, unique_keys)
-    priority <- base::order(-counts, displays, seq_along(counts), method = "radix")
+    if (length(candidates) == 0L) return(finish(json_array(list()), FALSE))
+    priority <- candidates[base::order(-counts[candidates], displays, candidates, method = "radix")]
     selected <- utils::head(priority, limit)
     values <- lapply(seq_along(selected), function(result_index) {
       source_index <- first_indices[[selected[[result_index]]]]
-      encoded <- encode_value(value_column, semantics, source_index, sprintf("column value %d", result_index), budget)
-      if (identical(semantics$kind, "double") && identical(unique_keys[[selected[[result_index]]]], "0")) {
-        encoded <- ordinary_cell("number", "0", "0")
+      encoded <- encode_value(
+        value_column, semantics, source_index, sprintf("column value %d", result_index), budget, integer64_bindings
+      )
+      if (identical(semantics$kind, "double") && value_column[[source_index]] == 0) {
+        encoded <- ordinary_cell("number", "0", "0.0")
       }
       selection_cell <- encoded
       if (identical(semantics$kind, "double") && identical(encoded$kind, "number")) {
@@ -11786,7 +11829,7 @@ openwrangler_r_frame_contract <- local({
         )
       )
     })
-    finish(json_array(values), length(priority) > limit, if (sampled) storage_length(column) else NULL)
+    finish(json_array(values), length(priority) > limit)
   }
 
   materialize_page <- function(
@@ -12077,13 +12120,9 @@ openwrangler_r_frame_contract <- local({
       sortRules = maximum_sort_rules,
       fillFallbackColumns = maximum_fill_fallback_columns,
       profileColumns = maximum_profile_columns,
-      profileSampleRows = maximum_profile_sample_rows,
       profileChunkRows = maximum_profile_chunk_rows,
-      datasetDuplicateSampleRows = maximum_dataset_duplicate_sample_rows,
-      datasetDuplicateSampleCells = maximum_dataset_duplicate_sample_cells,
-      columnValueDistinctMatches = maximum_column_value_distinct_matches,
-      columnValueDistinctKeyBytes = maximum_column_value_distinct_key_bytes,
       topValues = maximum_top_values,
+      chartCategories = maximum_chart_categories,
       histogramBins = maximum_histogram_bins,
       cachedSortColumns = maximum_cached_sort_columns,
       sortCacheBytes = maximum_sort_cache_bytes,

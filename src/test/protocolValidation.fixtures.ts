@@ -104,7 +104,7 @@ const summaries = [
       sum: 1,
       exactSum: { kind: "integer" as const, raw: 1, display: "1", isNull: false, isNaN: false }
     },
-    visualization: { kind: "numeric" as const, bins: [{ min: 1, max: 1, count: 1 }], sampled: false },
+    visualization: { kind: "numeric" as const, bins: [{ min: 1, max: 1, count: 1 }] },
     topValues: [{ value: "1", count: 1 }]
   }
 ];

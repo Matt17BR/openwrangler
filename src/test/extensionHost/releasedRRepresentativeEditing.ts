@@ -119,9 +119,9 @@ export function createReleasedRRepresentativeEditingJourney(
     assert.deepEqual(
       previewRows.map((row) => row.values.map((value) => value.display)),
       [
-        ["1", "1", "2"],
-        ["2", "2", "3"],
-        ["3", "3", "4"]
+        ["1", "1.0", "2.0"],
+        ["2", "2.0", "3.0"],
+        ["3", "3.0", "4.0"]
       ]
     );
     let app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code preview");
@@ -173,7 +173,7 @@ export function createReleasedRRepresentativeEditingJourney(
       "undoing native R Custom code"
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Custom code session after undo");
-    const restoredDisplays = ["1", "A", "1"] as const;
+    const restoredDisplays = ["1", "A", "1.0"] as const;
     for (const [column, display] of restoredDisplays.entries()) {
       await app
         .locator(`td[data-grid-row="0"][data-grid-column="${column}"][aria-label=${JSON.stringify(display)}]`)

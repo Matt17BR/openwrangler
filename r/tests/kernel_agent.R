@@ -704,7 +704,7 @@ local({
   parquet_path <- normalizePath("fixtures/r-file-input.parquet")
   check_file(list(path = parquet_path, format = "parquet"), data.frame(
     id = bit64::as.integer64(c("1", NA, "9007199254740991")), text = c("  é  ", "", NA), flag = c(TRUE, FALSE, NA), amount = c(2.5, NaN, NA),
-    at = structure(c(1789569600.123456, (2^51 - 1) / 1e6, NA), class = c("POSIXct", "POSIXt"), tzone = "UTC"), date = as.Date(c("2026-09-16", NA, "2000-01-01")),
+    at = structure(c(1789569600.123456, (2^51 - 1) / 1e6, NA), class = c("POSIXct", "POSIXt"), tzone = "Europe/Rome"), date = as.Date(c("2026-09-16", NA, "2000-01-01")),
     unsigned32 = c(0L, .Machine$integer.max, NA_integer_), unsigned64 = bit64::as.integer64(c("0", "9223372036854775807", NA)),
     # PyArrow timestamp("ns") arrays from int64 ticks 1774751400000000000, +1, null.
     civil_ns = clock::naive_time_parse(c("2026-03-29 02:30:00.000000000", "2026-03-29 02:30:00.000000001", NA_character_), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond"),

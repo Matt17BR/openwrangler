@@ -174,7 +174,7 @@ export function createReleasedRValueOperationState(dependencies: ReleasedRValueO
     );
     assert.deepEqual(
       page.page.rows[0]?.values.map((value) => value.display),
-      ["1", "A", "1", "row-0001"]
+      ["1", "A", "1.0", "row-0001"]
     );
     recordAcceptanceProgress(`jupyter-r:editing:value-operations:${checkpoint}`);
   }

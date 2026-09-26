@@ -16,25 +16,5 @@ export function describeProfileValue(label: string, value: number, denominator: 
 }
 
 export function profileDistributionDenominator(summary: ColumnSummary): number {
-  if (summary.visualization?.sampled) {
-    if (summary.visualization.kind === "numeric") {
-      return summary.visualization.bins.reduce((total, bin) => total + bin.count, 0);
-    }
-    if (summary.visualization.kind === "categorical") {
-      return (
-        summary.visualization.categories.reduce((total, category) => total + category.count, 0) +
-        summary.visualization.otherCount
-      );
-    }
-    if (summary.visualization.kind === "boolean") {
-      return summary.visualization.trueCount + summary.visualization.falseCount;
-    }
-  }
   return Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
-}
-
-export function sampledDistributionDescription(summary: ColumnSummary): string {
-  const sampleCount = profileDistributionDenominator(summary);
-  const population = Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
-  return `Approximate distribution uses ${sampleCount.toLocaleString()} sample values from ${population.toLocaleString()} non-missing values.`;
 }

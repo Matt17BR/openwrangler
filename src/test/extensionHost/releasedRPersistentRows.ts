@@ -72,7 +72,7 @@ export function createReleasedRPersistentRowsJourney({
     let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-sort-draft`);
     assert.deepEqual(
       { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
-      { id: "r:r:601", label: "case-0602", values: ["602", "A", "602"] }
+      { id: "r:r:601", label: "case-0602", values: ["602", "A", "602.0"] }
     );
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R Sort rows draft");
@@ -213,7 +213,7 @@ export function createReleasedRPersistentRowsJourney({
     const expectedFilteredFirst = {
       id: "r:r:1204",
       label: "case-1205",
-      values: ["1205", "B", "1205"]
+      values: ["1205", "B", "1205.0"]
     };
     recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:model-confirmed`);
     first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-view`);

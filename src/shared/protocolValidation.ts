@@ -379,25 +379,13 @@ function isDatasetStatsResponse(candidate: UnknownRecord): boolean {
 }
 
 function isValuesResponse(candidate: UnknownRecord): boolean {
-  if (
-    !isNonNegativeInteger(candidate.revision) ||
-    !isNonEmptyString(candidate.viewRequestId) ||
-    !isString(candidate.column) ||
-    !isArrayOf(candidate.values, isValueCount) ||
-    !isBoolean(candidate.hasMore)
-  ) {
-    return false;
-  }
-  if (candidate.sampleSize === undefined) return true;
-  if (!isNonNegativeSafeInteger(candidate.sampleSize) || candidate.sampleSize === 0 || candidate.hasMore !== true) {
-    return false;
-  }
-  let countedRows = 0;
-  for (const valueCount of candidate.values as UnknownRecord[]) {
-    countedRows += valueCount.count as number;
-    if (countedRows > candidate.sampleSize) return false;
-  }
-  return true;
+  return (
+    isNonNegativeInteger(candidate.revision) &&
+    isNonEmptyString(candidate.viewRequestId) &&
+    isString(candidate.column) &&
+    isArrayOf(candidate.values, isValueCount) &&
+    isBoolean(candidate.hasMore)
+  );
 }
 
 function isStepPreviewResponse(candidate: UnknownRecord): boolean {
@@ -1908,36 +1896,31 @@ function isColumnVisualization(value: unknown): boolean {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   switch (value.kind) {
     case "numeric": {
-      const candidate = exactRecord(value, ["kind", "bins"], ["sampled"]);
-      return (
-        candidate !== undefined && isArrayOf(candidate.bins, isNumericBin) && optional(candidate, "sampled", isBoolean)
-      );
+      const candidate = exactRecord(value, ["kind", "bins"]);
+      return candidate !== undefined && isArrayOf(candidate.bins, isNumericBin);
     }
     case "categorical": {
-      const candidate = exactRecord(value, ["kind", "categories", "otherCount"], ["sampled"]);
+      const candidate = exactRecord(value, ["kind", "categories", "otherCount"]);
       return (
         candidate !== undefined &&
         isArrayOf(candidate.categories, isValueCount) &&
-        isNonNegativeInteger(candidate.otherCount) &&
-        optional(candidate, "sampled", isBoolean)
+        isNonNegativeInteger(candidate.otherCount)
       );
     }
     case "boolean": {
-      const candidate = exactRecord(value, ["kind", "trueCount", "falseCount"], ["sampled"]);
+      const candidate = exactRecord(value, ["kind", "trueCount", "falseCount"]);
       return (
         candidate !== undefined &&
         isNonNegativeInteger(candidate.trueCount) &&
-        isNonNegativeInteger(candidate.falseCount) &&
-        optional(candidate, "sampled", isBoolean)
+        isNonNegativeInteger(candidate.falseCount)
       );
     }
     case "datetime": {
-      const candidate = exactRecord(value, ["kind"], ["min", "max", "sampled"]);
+      const candidate = exactRecord(value, ["kind"], ["min", "max"]);
       return (
         candidate !== undefined &&
         optional(candidate, "min", isNullableString) &&
-        optional(candidate, "max", isNullableString) &&
-        optional(candidate, "sampled", isBoolean)
+        optional(candidate, "max", isNullableString)
       );
     }
     default:
@@ -2035,21 +2018,12 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
 }
 
 function isDatasetStats(value: unknown): boolean {
-  const candidate = exactRecord(
-    value,
-    ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"],
-    ["duplicateRowsSampleSize"]
-  );
-  if (candidate === undefined) return false;
-  const sampleSize = candidate.duplicateRowsSampleSize;
+  const candidate = exactRecord(value, ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"]);
   return (
+    candidate !== undefined &&
     isNonNegativeInteger(candidate.missingCells) &&
     isNonNegativeInteger(candidate.missingRows) &&
-    (candidate.duplicateRows === null
-      ? !Object.prototype.hasOwnProperty.call(candidate, "duplicateRowsSampleSize")
-      : isNonNegativeInteger(candidate.duplicateRows) &&
-        (sampleSize === undefined ||
-          (isNonNegativeInteger(sampleSize) && sampleSize > 0 && candidate.duplicateRows < sampleSize))) &&
+    (candidate.duplicateRows === null || isNonNegativeInteger(candidate.duplicateRows)) &&
     isArrayOf(candidate.missingValuesByColumn, isMissingValueCount)
   );
 }

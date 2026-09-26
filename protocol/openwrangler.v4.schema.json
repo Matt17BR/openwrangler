@@ -809,8 +809,7 @@
           "required": ["kind", "bins"],
           "properties": {
             "kind": { "const": "numeric" },
-            "bins": { "type": "array", "items": { "$ref": "#/definitions/NumericBin" } },
-            "sampled": { "type": "boolean" }
+            "bins": { "type": "array", "items": { "$ref": "#/definitions/NumericBin" } }
           }
         },
         {
@@ -820,8 +819,7 @@
           "properties": {
             "kind": { "const": "categorical" },
             "categories": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
-            "otherCount": { "type": "integer", "minimum": 0 },
-            "sampled": { "type": "boolean" }
+            "otherCount": { "type": "integer", "minimum": 0 }
           }
         },
         {
@@ -831,8 +829,7 @@
           "properties": {
             "kind": { "const": "boolean" },
             "trueCount": { "type": "integer", "minimum": 0 },
-            "falseCount": { "type": "integer", "minimum": 0 },
-            "sampled": { "type": "boolean" }
+            "falseCount": { "type": "integer", "minimum": 0 }
           }
         },
         {
@@ -842,8 +839,7 @@
           "properties": {
             "kind": { "const": "datetime" },
             "min": { "type": ["string", "null"] },
-            "max": { "type": ["string", "null"] },
-            "sampled": { "type": "boolean" }
+            "max": { "type": ["string", "null"] }
           }
         }
       ]
@@ -878,16 +874,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"],
-      "dependencies": {
-        "duplicateRowsSampleSize": {
-          "properties": { "duplicateRows": { "type": "integer" } }
-        }
-      },
       "properties": {
         "missingCells": { "type": "integer", "minimum": 0 },
         "missingRows": { "type": "integer", "minimum": 0 },
         "duplicateRows": { "type": ["integer", "null"], "minimum": 0 },
-        "duplicateRowsSampleSize": { "type": "integer", "minimum": 1 },
         "missingValuesByColumn": {
           "type": "array",
           "items": {
@@ -2963,8 +2953,7 @@
         "viewRequestId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "values": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
-        "hasMore": { "type": "boolean" },
-        "sampleSize": { "type": "integer", "minimum": 1 }
+        "hasMore": { "type": "boolean" }
       }
     },
     "StepPreviewResponse": {

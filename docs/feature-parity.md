@@ -731,7 +731,7 @@ semantics. An active R terminal has no source document for generated-code insert
 In **2.6**, base data.frame and tibble columns can retain exact `clock_naive_time` and `clock_sys_time` values at
 millisecond, microsecond or nanosecond precision. Parquet local timestamps keep their timezone-free meaning;
 nanosecond timestamps preserve adjacent ticks, nulls and the full signed 64-bit range. UTC-adjusted values display
-with `Z`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. These columns
+with `+00:00`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. These columns
 support base R and dplyr cleaning, including Rename, Select/Drop/Clone Columns, Filter/Sort
 Rows, Drop Missing Rows and duplicate handling, with matching generated R. CSV keeps exact ISO text and Parquet
 keeps timestamp precision and civil/instant meaning.
@@ -764,10 +764,9 @@ this finite scope on current and minimum R; the catalog also checks live/generat
 qualification remains separate.
 
 Sessions honor the opening and ordinary request timeout settings; invalid values use defaults and fractions round
-upward to whole milliseconds. Exports retain their separate 30-minute default. Large R profiles count every finite
-value in numeric histograms and retain exact categorical counts within the [documented memory bounds](architecture.md#viewing-and-profiling).
-Larger categorical distributions and duplicate estimates label their sampled population. Large numeric columns retain
-exact distinct counts through 10,000 values; higher cardinalities and large numeric medians remain unavailable. An oversized page returns a request error; a smaller page remains
+upward to whole milliseconds. Exports retain their separate 30-minute default. R profiles, duplicate counts and value
+choices are [exact at every size](architecture.md#viewing-and-profiling), including distinct counts, top values and
+numeric medians. An oversized page returns a request error; a smaller page remains
 available without restarting the standalone runtime.
 
 Local R file sessions let grid pages run between batches of large column profiles and Dataset statistics.

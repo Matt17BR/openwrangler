@@ -374,14 +374,14 @@ The existing local Linux VS Code Clone lifecycle chooses dplyr through the libra
 checks its applied plan and package code, then closes it and continues Undo in the original editor. It runs in the
 default/core profile; other editors, platforms and focused operation profiles retain their existing journeys. The
 native catalog owns the complete per-library operation matrix.
-The existing frame profiling owner checks complete numeric bin membership and bounded categorical counts, including
-filtered populations, both sampled fallback limits and sparse columns that remain exact. It also checks bounded exact
-numeric distinct counts, integer64 identity, duration signed zero and abandonment at the cardinality limit. Text
+The existing frame profiling owner checks complete numeric bin membership and exact categorical counts, medians,
+duplicate counts and value choices above the direct-profile threshold, including filtered populations, high
+cardinalities, periodic data and sparse columns. It also checks integer64 identity and duration signed zero. Text
 checks cover small and threshold-sized profiles as well as large chunks, including equivalent encodings, exact
-statistics, first-error order, source/RNG preservation and bounded conversion width. The R decoder owner verifies
-exact large histograms and bounded distinct counts with omitted top values, retaining the
-population, type, sampling and count limits. The existing kernel transport profile case decodes actual large R
-integer, double and duration summaries, including missing values and signed zero, through TypeScript. Its small
+statistics, first-error order, source preservation and bounded conversion width. The R decoder owner requires exact
+distinct counts with their top values and bounds histogram, categorical and duplicate counts by the population. The
+existing kernel transport profile case decodes actual large R integer, double and duration summaries, including
+missing values, signed zero, exact top values and medians, through TypeScript. Its small
 integer64 fixture checks exact typed bounds; large integer64 arithmetic and distinct counts stay with frame profiling.
 The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
 Managed file profiling extends these owners with synchronous/continued result equality, fresh native-binding checks

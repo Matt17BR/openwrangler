@@ -207,7 +207,7 @@ export function createReleasedRInteractiveTerminalSupport({
     assert.equal(afterExports.sessionId, sessionId);
     assert.equal(afterExports.metadata.revision, active.metadata.revision);
     assert.equal(afterExports.metadata.steps.length, 0);
-    await assertReleasedSessionPage(testing, afterExports, "3400001", "jupyter-r-interactive-post-export-page");
+    await assertReleasedSessionPage(testing, afterExports, "3400001.0", "jupyter-r-interactive-post-export-page");
     recordAcceptanceProgress("jupyter-r:interactive:export-complete");
   }
 

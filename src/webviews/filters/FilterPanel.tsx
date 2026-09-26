@@ -507,12 +507,6 @@ export function FilterPanel({
         </div>
 
         <div className="valueList">
-          {columnValueResponse?.sampleSize !== undefined && (
-            <small className="mutedText" role="status">
-              Counts shown are from a {columnValueResponse.sampleSize.toLocaleString()}-row sample. Exact search is
-              subject to the engine&apos;s scan limit.
-            </small>
-          )}
           {(columnValueResponse?.values ?? []).map((item) => {
             const selectionValue = valueCountSelectionValue(item);
             // A saved raw selection remains visible and removable in the active-filter controls.
@@ -541,13 +535,7 @@ export function FilterPanel({
               </label>
             );
           })}
-          {columnValueResponse?.hasMore && (
-            <small>
-              {columnValueResponse.sampleSize === undefined
-                ? "More values available. Refine the search to narrow results."
-                : "More values may be available."}
-            </small>
-          )}
+          {columnValueResponse?.hasMore && <small>More values available. Refine the search to narrow results.</small>}
           {!columnValuesSupported && (
             <small className="mutedText" role="status">
               Value lists are unavailable. Use a predicate instead.

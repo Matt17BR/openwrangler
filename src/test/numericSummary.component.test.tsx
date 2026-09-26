@@ -39,7 +39,7 @@ describe("SummaryPanel numeric sum", () => {
     expect(value).toHaveClass("exactNumericExtremum");
   });
 
-  it("shows an unavailable sum without implying that sampled distribution values were aggregated", () => {
+  it("shows an unavailable sum as n/a", () => {
     renderSummary({ ...summaries[0], numeric: {} });
     expect(screen.getByText("Sum").nextElementSibling).toHaveTextContent("n/a");
   });

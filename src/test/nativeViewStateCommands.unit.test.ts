@@ -2060,23 +2060,6 @@ describe("native state and presentation commands", () => {
     ]);
   });
 
-  it("labels sampled duplicate statistics in the native Summary view", () => {
-    const sampled = exportableSnapshot("sampled-summary", "sampled.csv", 0);
-    sampled.metadata.stats = {
-      missingCells: 0,
-      missingRows: 0,
-      duplicateRows: 4,
-      duplicateRowsSampleSize: 50_000,
-      missingValuesByColumn: [{ column: "value", count: 0 }]
-    };
-    register(sampled);
-
-    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual([
-      "Duplicate rows (sample of 50,000)",
-      "4"
-    ]);
-  });
-
   it("shows unavailable duplicate counts alongside exact missing statistics in the native Summary view", () => {
     const partial = exportableSnapshot("partial-summary", "partial.parquet", 0);
     partial.metadata.stats = {
