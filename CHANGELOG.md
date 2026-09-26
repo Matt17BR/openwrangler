@@ -39,9 +39,11 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Sorting a large Pandas dataframe by one number, Boolean, datetime or duration column shows the first pages much sooner. On an 11.7-million-row file the first sorted page now takes about 0.1 seconds instead of 1.5.
 - R profiles take about a third less time. Profiling every column of an 11.7-million-row file now takes about 12 seconds instead of 17, with the same exact counts, medians and histograms.
 - R opens Parquet files with repeated text values about twice as fast. An 11.7-million-row file now opens in about 3 seconds instead of 6, and its first full profile finishes about 1.5 seconds sooner.
+- Data Sources and the R variable picker list every R dataframe, including grouped and rowwise tibbles, collapse grouped and indexed frames and other `data.frame` subclasses. Each opens as an R data.table, tibble or data.frame without its grouping or index, and the R variable keeps them. Custom Code can return any of them.
 
 ### Fixed
 
+- A data.table that has been filtered, which gives it an automatic index, now opens. Previously it failed with "the dataframe has unsupported attributes: index".
 - Histogram ranges and bin labels now show exact edges. The first and last edges match the column's Min and Max, and inner edges are no longer rounded to 5 significant digits, so a column starting at `-406,851` no longer reads as starting at `-406,850`. Bin labels use "to" instead of a hyphen, so negative ranges read clearly.
 - A dataframe or file with saved cleaning steps now reopens in Editing and restores them, even when the start mode is Viewing. Previously the panel stopped with instructions to change the start-mode setting and reopen.
 - Scrolling views with millions of rows no longer skips rows. A mouse-wheel notch moves about three rows and Page Down moves one screen, however large the view.

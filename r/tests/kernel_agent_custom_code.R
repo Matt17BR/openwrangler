@@ -177,6 +177,32 @@ local({
   invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
 })
 
+# Custom Code results that subclass a dataframe publish as their closest flavor.
+local({
+  source_env <- new.env(parent = baseenv()); source_env$frame <- data.frame(id = 1:3, group = c("b", "a", "a"))
+  local_agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_env)
+  on.exit(local_agent$dispose())
+  session <- "abcdabcd-abcd-4bcd-8bcd-abcdabcdabcd"
+  cases <- list(
+    list(code = "result <- dplyr::group_by(tibble::as_tibble(df), group)", expected = tibble::as_tibble(source_env$frame)),
+    list(code = "result <- dplyr::rowwise(tibble::as_tibble(df))", expected = tibble::as_tibble(source_env$frame)),
+    list(
+      code = "result <- base::structure(df, class = base::c(\"foreign_frame\", \"data.frame\"), origin = \"test\")",
+      expected = source_env$frame
+    )
+  )
+  for (case in cases) {
+    invisible(dispatch_with(local_agent, "openSession", list(sessionId = session, variableName = "frame", page = page_window())))
+    preview <- dispatch_with(local_agent, "previewStep", list(sessionId = session, revision = 0L,
+      step = custom_step("subclass-result", case$code), page = page_window()))
+    assert_identical(preview$kind, "stepPreview", paste(case$code, "did not preview"))
+    generated <- new.env(parent = baseenv()); generated$frame <- source_env$frame
+    eval(parse(text = preview$code), generated)
+    assert_identical(generated$open_wrangler_result, case$expected, paste(case$code, "did not generate its closest dataframe flavor"))
+    invisible(dispatch_with(local_agent, "closeSession", list(sessionId = session)))
+  }
+})
+
 # Deliberate Custom Code calls keep caller S3 dispatch; built-in isolation is not a global override.
 local({
   methods <- get(".__S3MethodsTable__.", asNamespace("base"), inherits = FALSE)
@@ -448,7 +474,6 @@ custom_output_error_cases <- list(
   ),
   list(label = "non-frame Custom Code result", code = "result <- 1:3"),
   list(label = "zero-column Custom Code result", code = "result <- df[, FALSE, drop = FALSE]"),
-  list(label = "grouped Custom Code result", code = "result <- dplyr::group_by(tibble::as_tibble(df), row_id)"),
   list(
     label = "private-name Custom Code result",
     code = paste(

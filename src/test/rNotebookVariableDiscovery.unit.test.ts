@@ -99,9 +99,6 @@ describe("R notebook variable discovery", () => {
     expect(code).toContain('minimum = "1.0"');
     expect(code).toContain('package = "rlang"');
     expect(code).toContain('minimum = "0.4.5"');
-    expect(code).toContain('identical(.ow_classes, c("data.table", "data.frame"))');
-    expect(code).toContain('identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))');
-    expect(code).toContain('identical(.ow_classes, "data.frame")');
     expect(code).toContain(".GlobalEnv");
     expect(code.toLowerCase()).not.toContain("python");
   });
@@ -124,6 +121,7 @@ grouped_frame <- structure(
   class = c("grouped_df", "tbl_df", "tbl", "data.frame"),
   groups = data.frame(value = 5L, .rows = I(list(1L)))
 )
+parquet_frame <- structure(data.frame(value = 6L), class = c("tbl", "data.frame"))
 delayedAssign(
   "lazy_frame",
   { .ow_forced <<- TRUE; data.frame(value = 2L) },
@@ -137,7 +135,7 @@ makeActiveBinding(
   },
   .GlobalEnv
 )
-.ow_source_before <- serialize(list(ordinary_frame, readr_frame, grouped_frame), NULL, version = 3L)
+.ow_source_before <- serialize(list(ordinary_frame, readr_frame, grouped_frame, parquet_frame), NULL, version = 3L)
 .ow_caller_functions <- list(
   local = function(...) stop("caller local must not run", call. = FALSE),
   get = function(...) stop("caller get must not run", call. = FALSE),
@@ -152,7 +150,7 @@ exists <- .ow_caller_functions$exists
           encoding: "utf8",
           input: `${setup}
 ${code}
-stopifnot(identical(serialize(list(ordinary_frame, readr_frame, grouped_frame), NULL, version = 3L), .ow_source_before))
+stopifnot(identical(serialize(list(ordinary_frame, readr_frame, grouped_frame, parquet_frame), NULL, version = 3L), .ow_source_before))
 for (.ow_name in names(.ow_caller_functions)) {
   stopifnot(identical(base::get(.ow_name, envir = .GlobalEnv, inherits = FALSE), .ow_caller_functions[[.ow_name]]))
 }
@@ -173,11 +171,13 @@ cat("__CALLER_AND_SOURCE_OK__\\n")
       expect(discovery).toEqual({
         truncated: false,
         variables: [
+          { name: "grouped_frame", backend: "r", dataframeFlavor: "r.tibble" },
           { name: "ordinary_frame", backend: "r", dataframeFlavor: "r.data.frame" },
+          { name: "parquet_frame", backend: "r", dataframeFlavor: "r.data.frame" },
           { name: "readr_frame", backend: "r", dataframeFlavor: "r.tibble" }
         ]
       });
-      const selected = discovery.variables[0];
+      const selected = discovery.variables.find((variable) => variable.name === "ordinary_frame");
       if (!selected) throw new Error("Expected the native ordinary R dataframe.");
       const verified = await verifyRNotebookVariableSelection(document, discovery, selected);
       const binding = claimVerifiedRNotebookVariableSelection(document, verified);

@@ -97,9 +97,14 @@ export function createReleasedRVariableDiscovery({
       ["orders_table", "data.table"]
     ];
     if (coverage.focusedEditing === "none") {
-      variables.push(["collapse_frame", "data.frame"], ["collapse_tibble", "tibble"], ["collapse_table", "data.table"]);
+      variables.push(
+        ["collapse_frame", "data.frame"],
+        ["collapse_tibble", "tibble"],
+        ["collapse_table", "data.table"],
+        ["collapse_grouped", "data.frame"],
+        ["collapse_indexed", "data.frame"]
+      );
     }
-    const unsupportedVariables = coverage.focusedEditing === "none" ? ["collapse_grouped", "collapse_indexed"] : [];
     for (const [name, flavor] of variables) {
       const row = sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
       await row.waitFor({ state: "visible", timeout: 90_000 });
@@ -107,13 +112,6 @@ export function createReleasedRVariableDiscovery({
         (await row.innerText()).replace(/\s+/gu, " "),
         new RegExp(`${name}.*R · ${flavor}`, "u"),
         `Data sources must label ${name} with its native R dataframe flavor.`
-      );
-    }
-    for (const name of unsupportedVariables) {
-      assert.equal(
-        await sources.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
-        0,
-        `Data sources must omit unsupported ${name}.`
       );
     }
 
@@ -134,19 +132,21 @@ export function createReleasedRVariableDiscovery({
         await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
       }
       picker = await activateReleasedNotebookVariableAction(workbench, notebook);
+      // The picker renders only the rows that fit, so each name is filtered into view.
+      const input = picker.locator(".quick-input-box input:visible").first();
       for (const [name, flavor] of variables) {
-        const row = await releasedJupyterQuickPickRow(picker, name);
+        await input.fill(name);
+        const deadline = Date.now() + 10_000;
+        let row: Locator | undefined;
+        do {
+          row = await releasedJupyterQuickPickRow(picker, name);
+          if (row) break;
+          await workbench.waitForTimeout(50);
+        } while (Date.now() < deadline);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
           (await row.innerText()).replace(/\s+/gu, " "),
           new RegExp(`R · ${flavor}.*Live notebook session`, "u")
-        );
-      }
-      for (const name of unsupportedVariables) {
-        assert.equal(
-          await releasedJupyterQuickPickRow(picker, name),
-          undefined,
-          `The real R variable picker must omit unsupported ${name}.`
         );
       }
       await workbench.keyboard.press("Escape");

@@ -624,10 +624,10 @@ function dataframeFlavor(metadata: unknown): RDataframeFlavor | undefined {
     return undefined;
   }
   const classes = new Set(metadata.class);
+  if (!classes.has("data.frame")) return undefined;
   if (classes.has("data.table")) return "r.data.table";
-  if (classes.has("tbl_df") || classes.has("tbl")) return "r.tibble";
-  if (classes.has("data.frame")) return "r.data.frame";
-  return undefined;
+  if (classes.has("tbl_df")) return "r.tibble";
+  return "r.data.frame";
 }
 
 function validateDirectory(stats: BigIntStats, label: string): BigIntStats {

@@ -191,8 +191,8 @@ orders and shows the changed data, cleaning history, and generated R before appl
 Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
 See the [operation and command reference](reference.md) for the current R operation and export support.
 
-Frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the matching base-frame, tibble, and data-table paths.
-Grouped `GRP_df` and indexed `indexed_frame` objects are not supported. R notebooks work on Windows; direct document
+Every R dataframe opens, including grouped and indexed dplyr and collapse frames, which open without their grouping or
+index. R notebooks work on Windows; direct document
 runs currently require macOS or Linux.
 
 ## DuckDB nested and temporal values

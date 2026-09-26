@@ -1707,6 +1707,11 @@ are checked by the emitted loader itself, so live and generated failures give th
 
 #### Frame and source ownership
 
+Every value for which `is.data.frame()` is true is discoverable and opens as its closest flavor: data.table when it
+inherits `data.table`, tibble when it inherits `tbl_df`, and base `data.frame` otherwise. Other classes and frame
+attributes, such as dplyr groups, readr specs, collapse `GRP_df` groups and data.table secondary indices, are not part
+of the opened frame or generated results. collapse `indexed_frame` values are unindexed first. The source keeps them.
+
 The producer and host independently validate canonical frame classes, column IDs, row names, typed values and
 bounded metadata. Factors, ordered factors, Date, POSIXct, difftime and integer64 retain explicit native metadata.
 Top-level clock naive/sys time columns have a separate `clock_datetime` kind with explicit millisecond, microsecond
@@ -1729,8 +1734,7 @@ available when clock columns are not inputs or grouping/identifier keys.
 
 Plain-double `NA`, `NaN` and both infinities remain distinct. Non-finite classed temporal values, fractional Dates,
 reserved integer missing-value sentinels used as values, recursive containers, unsupported attributes and malformed names
-are refused. Ordinary `collapse::qDF()`, `qTBL()` and `qDT()` outputs use the three supported frame paths;
-`GRP_df` and `indexed_frame` do not.
+are refused.
 
 Display text is independent of `OutDec`, the process time zone and the platform's `strftime`. It matches the
 Python engines: doubles show Python's shortest round-trip repr, years before 1000 keep four digits, and datetimes use
@@ -2106,9 +2110,8 @@ unit or integer64 precision loss is refused. Integer64-to-integer retains intege
 
 Standalone generated plans run in a fresh `baseenv()`-parented implementation environment and validate the source
 before copying. Formula, Format Datetime and categorical helpers avoid caller-defined operator or S3 dispatch.
-Custom Code retains ordinary R dispatch and may call packages installed in its captured R environment. Its result may
-change between admitted base `data.frame`, tibble and `data.table` classes, with the existing normalization of readr
-frames. Output class, column, identity, metadata and allocation validation still precede publication. The original
+Custom Code retains ordinary R dispatch and may call packages installed in its captured R environment. Its result may be
+any dataframe and is published as its closest flavor, like an opened source. Output class, column, identity, metadata and allocation validation still precede publication. The original
 source flavor remains immutable; the active result, committed state and retained step inputs carry their own flavors
 through Preview, replacement, Apply, Discard, Undo, Redo and inspection. Built-in steps preserve their input flavor.
 Generated code prepares data.table append primitives when a Custom Code result first needs them.

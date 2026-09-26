@@ -748,7 +748,7 @@ does not exercise incidental language-server coexistence during discovery, repla
 profiles retain the default LSP setting. The `value-operations`, `categorical-operations` and `pivot-wider` notebook
 selectors also omit the collapse and Rcpp roots, collapse residents and their discovery assertions. They retain real
 tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
-including native flavor labels and unsupported grouped/indexed exclusions; literate preparation retains its structural
+including native flavor labels for grouped and indexed collapse frames; literate preparation retains its structural
 probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
 Local Linux VS Code default/core preparation also includes dplyr 1.2.1 for its library-switch check, using the existing
 June 1 supplemental snapshot. Other notebook profiles, terminal/document preparation and remote runs do not add it.
