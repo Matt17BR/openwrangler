@@ -153,7 +153,7 @@ Copy or save the displayed code; cleaned-data export uses all applied steps and 
     <td width="50%"><a href="images/readme/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges" src="images/readme/gallery/notebook-pyspark-detail.png" width="820"></a></td>
   </tr>
   <tr>
-    <td>Experimental DuckDB relations are view-only and do not require dataframe conversion.</td>
+    <td>Experimental DuckDB relations stay native and never convert to another dataframe library.</td>
     <td>Local PySpark 4.2.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles.</td>
   </tr>
 </table>

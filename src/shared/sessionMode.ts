@@ -58,9 +58,6 @@ export function sessionModeDescription(metadata: SessionMetadata): string {
   if (metadata.backend === "pyspark") {
     return "Open Wrangler supports read-only exploration of live PySpark dataframes. Cleaning steps, generated code, and data export are not available. Filters and sorts change only the current view.";
   }
-  if (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") {
-    return "Open Wrangler supports read-only exploration of live DuckDB notebook relations. Cleaning steps, code insertion, and data export are not available. Filters and sorts change only the current view.";
-  }
   if (isDuckDBTableSource(metadata.source)) {
     return "Explore this DuckDB table through a read-only connection. Close all viewers of this database before writing to it. Cleaning steps, generated code, and data export are not available. Computed columns may change between queries.";
   }
@@ -87,9 +84,6 @@ export function cleaningUnavailableReason(metadata: SessionMetadata): string {
   }
   if (metadata.backend === "pyspark") {
     return "Live PySpark dataframes are viewing only in Open Wrangler; cleaning steps are not available.";
-  }
-  if (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") {
-    return "Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available.";
   }
   if (isDuckDBTableSource(metadata.source)) {
     return "DuckDB database tables are viewing only in Open Wrangler; cleaning steps are not available.";
@@ -119,9 +113,6 @@ function viewingModeBlockedReason(metadata: SessionMetadata): string | undefined
 
 function isPermanentlyReadOnly(metadata: SessionMetadata): boolean {
   return (
-    metadata.backend === "pyspark" ||
-    isDuckDBTableSource(metadata.source) ||
-    (metadata.backend === "duckdb" && metadata.source.kind === "notebookVariable") ||
-    metadata.source.kind === "notebookOutput"
+    metadata.backend === "pyspark" || isDuckDBTableSource(metadata.source) || metadata.source.kind === "notebookOutput"
   );
 }

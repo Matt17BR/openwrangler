@@ -909,6 +909,11 @@ class DataFrameEngine(ABC):
 
         return None
 
+    def assert_editing_available(self, frame: Any) -> None:
+        """Refuse cleaning and exports when the source's owner cannot safely run them now."""
+
+        return None
+
     def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
         """Require an engine-portable dataframe result with visible data columns."""
 

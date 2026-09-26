@@ -1354,6 +1354,17 @@ interface ReleasedDuckDbRecoverySession {
   readonly viewState: GridViewState;
 }
 
+function assertViewingDuckDbRelationCapabilities(capabilities: SessionMetadata["capabilities"], context: string): void {
+  const { supportedOperations = [], ...flags } = capabilities;
+  assert.deepEqual(
+    flags,
+    { editable: false, lazy: false, cancel: false, exportCsv: false, exportParquet: false, notebookInsert: true },
+    context
+  );
+  assert.equal(supportedOperations.includes("sortRows"), true, context);
+  assert.equal(supportedOperations.includes("customCode"), false, context);
+}
+
 const {
   assertReleasedRPrivateLibrary,
   assertReleasedRRuntimeBinding,
@@ -2576,8 +2587,7 @@ async function exerciseReleasedJupyterExtension(
         name: "duckdb_relation",
         type: "_duckdb.DuckDBPyRelation",
         backend: "duckdb",
-        firstValue: "3400001",
-        notebookInsert: false
+        firstValue: "3400001"
       } as const;
       await dispatchReleasedJupyterVariableAction(workbench, notebook, duckdbRelation, `${phase}:duckdb-variables`);
       const duckdbVariablesRelation = await waitForReleasedVariableSession(
@@ -2589,8 +2599,8 @@ async function exerciseReleasedJupyterExtension(
       );
       assert.equal(
         duckdbVariablesRelation.metadata.mode,
-        "viewing",
-        "A DuckDB relation opened from Jupyter Variables must stay viewing-only."
+        "editing",
+        "A DuckDB relation opened from Jupyter Variables must follow the Editing start mode."
       );
       assert.deepEqual(duckdbVariablesRelation.metadata.shape, { rows: 100_000, columns: 4 });
       await assertReleasedSessionPage(
@@ -2599,6 +2609,42 @@ async function exerciseReleasedJupyterExtension(
         "3400001",
         "released-jupyter-duckdb-variables-native-page"
       );
+      const duckdbSortPreview = await testing.request({
+        kind: "previewStep",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: duckdbVariablesRelation.metadata.revision,
+        step: {
+          id: "released-jupyter-duckdb-sort",
+          kind: "sortRows",
+          params: {
+            rules: [
+              {
+                column: columnReference(duckdbVariablesRelation.metadata, "order_id"),
+                direction: "desc",
+                nulls: "last"
+              }
+            ]
+          }
+        },
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(duckdbSortPreview.kind, "stepPreview");
+      if (duckdbSortPreview.kind !== "stepPreview") throw new Error("The native DuckDB sort did not preview.");
+      const duckdbSorted = await testing.request({
+        kind: "applyDraft",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: duckdbSortPreview.revision,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(duckdbSorted.kind, "planUpdated");
+      if (duckdbSorted.kind !== "planUpdated") throw new Error("The native DuckDB sort did not apply.");
+      assert.equal(duckdbSorted.page.rows[0]?.values[0]?.display, "3500000");
+      assert.match(duckdbSorted.code, /def clean_data\(df\):/u);
+      assert.equal(duckdbSorted.code.includes("pandas"), false, "DuckDB cleaning code must stay native.");
       await disposePackagedSessionPanel(
         testing,
         duckdbVariablesRelation.sessionId,
@@ -2774,7 +2820,7 @@ async function exerciseReleasedJupyterExtension(
       "The portable DuckDB table must remain a bounded inline preview before its live action is used."
     );
 
-    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
     try {
       const duckdbRendererButton = await waitForNotebookRendererButton(
         workbench,
@@ -2792,8 +2838,7 @@ async function exerciseReleasedJupyterExtension(
             name: "duckdb_relation",
             type: "_duckdb.DuckDBPyRelation",
             backend: "duckdb",
-            firstValue: "3400001",
-            notebookInsert: false
+            firstValue: "3400001"
           },
           "the complete connection-private DuckDB relation opened from its primary inline action",
           `${phase}:duckdb-inline`
@@ -2804,19 +2849,14 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(
         duckdbRelation.metadata.mode,
         "viewing",
-        "A live DuckDB relation must stay viewing-only even when notebook sessions default to editing."
+        "A live DuckDB relation must follow the Viewing start mode."
       );
       assert.deepEqual(duckdbRelation.metadata.shape, { rows: 100_000, columns: 4 });
       assert.deepEqual(duckdbRelation.metadata.filteredShape, duckdbRelation.metadata.shape);
-      assert.deepEqual(duckdbRelation.metadata.capabilities, {
-        editable: false,
-        lazy: false,
-        cancel: false,
-        exportCsv: false,
-        exportParquet: false,
-        notebookInsert: false,
-        supportedOperations: []
-      });
+      assertViewingDuckDbRelationCapabilities(
+        duckdbRelation.metadata.capabilities,
+        "The inline DuckDB relation must offer Editing without enabling cleaning in Viewing."
+      );
       await assertReleasedSessionPage(testing, duckdbRelation, "3400001", "released-jupyter-duckdb-native-page");
       await synchronizedSessionApp(
         workbench,
@@ -2950,8 +2990,7 @@ async function exerciseReleasedJupyterExtension(
           name: "duckdb_relation",
           type: "_duckdb.DuckDBPyRelation",
           backend: "duckdb",
-          firstValue: "3400001",
-          notebookInsert: false
+          firstValue: "3400001"
         },
         "the exact DuckDB relation reopened from the Open Wrangler notebook toolbar"
       );
@@ -6511,15 +6550,10 @@ async function exerciseReleasedJupyterRestartReplay(
   );
   assert.equal(duckdbReplayed.metadata.backend, "duckdb");
   assert.equal(duckdbReplayed.metadata.mode, "viewing");
-  assert.deepEqual(duckdbReplayed.metadata.capabilities, {
-    editable: false,
-    lazy: false,
-    cancel: false,
-    exportCsv: false,
-    exportParquet: false,
-    notebookInsert: false,
-    supportedOperations: []
-  });
+  assertViewingDuckDbRelationCapabilities(
+    duckdbReplayed.metadata.capabilities,
+    "The recovered DuckDB relation must keep its Viewing capabilities."
+  );
   assert.deepEqual(duckdbReplayed.metadata.filterModel, duckdb.filterModel);
   assert.deepEqual(duckdbReplayed.metadata.filteredShape, { rows: 25_000, columns: 4 });
   assert.deepEqual(
@@ -9335,15 +9369,10 @@ async function captureReleasedJupyterDuckDbRelation(
     assert.deepEqual(active.metadata.filterModel, filterModel);
     assert.deepEqual(active.metadata.steps, []);
     assert.equal(active.metadata.draftStep, undefined);
-    assert.deepEqual(active.metadata.capabilities, {
-      editable: false,
-      lazy: false,
-      cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false,
-      supportedOperations: []
-    });
+    assertViewingDuckDbRelationCapabilities(
+      active.metadata.capabilities,
+      "The DuckDB notebook screenshot requires the Viewing relation session."
+    );
     // Cursor can reload the webview when the screenshot theme changes. Require
     // the exact session grid and a current host handshake before publishing
     // screenshot-only presentation state; an immediate synchronization here
@@ -9376,7 +9405,8 @@ async function captureReleasedJupyterDuckDbRelation(
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "DUCKDB");
-    assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING ONLY");
+    assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING");
+    assert.equal(await app.getByRole("button", { name: "Switch to Editing" }).count(), 1);
     const toolbarBox = await app.locator(".toolbar").boundingBox();
     const allBadges = app.locator("[data-session-badge]");
     assert.equal(await allBadges.count(), 2, "The DuckDB notebook scene must expose only its mode and backend badges.");
