@@ -258,10 +258,11 @@ describe("file launch command", () => {
   it("opens an exact selected DuckDB table from any local filename in viewing mode", async () => {
     const { context } = register();
     const uri = vscode.Uri.file('/workspace/quarter "data"');
-    const table = { schema: " sales.$(add) ", name: ' "orders"\\$(add)\n ' };
+    const table = { schema: " sales.$(add) ", name: ' "orders"\\$(add)\n ', kind: "table" as const };
+    const view = { schema: "main", name: "recent", kind: "view" as const };
     fileMocks.defaultBackend = "pandas";
     fileMocks.showOpenDialog.mockResolvedValue([uri]);
-    fileMocks.discoverTables.mockResolvedValue({ tables: [table], isCurrent: () => true });
+    fileMocks.discoverTables.mockResolvedValue({ tables: [table, view], isCurrent: () => true });
     await command("openWrangler.openDuckDBTable")();
     expect(fileMocks.discoverTables).toHaveBeenCalledWith(
       { kind: "file", label: 'quarter "data"', path: uri.fsPath, uri: uri.toString(), importOptions: undefined },
@@ -272,8 +273,14 @@ describe("file launch command", () => {
     expect(fileMocks.showQuickPick.mock.calls[0]?.[0]).toEqual([
       {
         label: String.raw`" \"orders\"\\\u0024(add)\n "`,
-        description: String.raw`Schema: " sales.\u0024(add) "`,
+        description: String.raw`Table · Schema: " sales.\u0024(add) "`,
         table
+      },
+      {
+        label: "recent",
+        description: "View · Schema: main",
+        detail: "Runs the view once and shows a fixed copy of its rows.",
+        table: view
       }
     ]);
     expect(fileMocks.createPanel).toHaveBeenCalledWith(
@@ -299,7 +306,7 @@ describe("file launch command", () => {
     let current = true;
     fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/analytics")]);
     fileMocks.discoverTables.mockResolvedValue({
-      tables: [{ schema: "main", name: "orders" }],
+      tables: [{ schema: "main", name: "orders", kind: "table" }],
       isCurrent: () => current
     });
     await command("openWrangler.openDuckDBTable")();
@@ -333,7 +340,7 @@ describe("file launch command", () => {
     let current = true;
     fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/analytics")]);
     fileMocks.discoverTables.mockResolvedValue({
-      tables: [{ schema: "main", name: "orders" }],
+      tables: [{ schema: "main", name: "orders", kind: "table" }],
       isCurrent: () => current
     });
     fileMocks.showQuickPick.mockImplementationOnce(async (items) => {
@@ -355,7 +362,9 @@ describe("file launch command", () => {
     fileMocks.showOpenDialog.mockResolvedValue([vscode.Uri.file("/workspace/empty")]);
     fileMocks.discoverTables.mockResolvedValue({ tables: [], isCurrent: () => true });
     await command("openWrangler.openDuckDBTable")();
-    expect(fileMocks.showInformationMessage).toHaveBeenLastCalledWith(expect.stringContaining("no user tables"));
+    expect(fileMocks.showInformationMessage).toHaveBeenLastCalledWith(
+      "This DuckDB database has no user tables or views."
+    );
     expect(fileMocks.showQuickPick).not.toHaveBeenCalled();
     expect(fileMocks.createPanel).not.toHaveBeenCalled();
   });
@@ -372,7 +381,7 @@ describe("file launch command", () => {
     const pending = command("openWrangler.openDuckDBTable")();
     await vi.waitFor(() => expect(fileMocks.discoverTables).toHaveBeenCalledOnce());
     for (const subscription of context.subscriptions) subscription.dispose();
-    finish({ tables: [{ schema: "main", name: "orders" }], isCurrent: () => true });
+    finish({ tables: [{ schema: "main", name: "orders", kind: "table" }], isCurrent: () => true });
     await pending;
     expect(fileMocks.showQuickPick).not.toHaveBeenCalled();
     expect(fileMocks.createPanel).not.toHaveBeenCalled();

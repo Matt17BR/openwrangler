@@ -256,14 +256,13 @@ export const registerFileCommands = (
           return;
         }
         if (discovered.tables.length === 0) {
-          await vscode.window.showInformationMessage(
-            "This DuckDB database has no user tables. Views are not supported."
-          );
+          await vscode.window.showInformationMessage("This DuckDB database has no user tables or views.");
           return;
         }
         const choices = discovered.tables.map((table) => ({
           label: formatQuickPickName(table.name),
-          description: `Schema: ${formatQuickPickName(table.schema)}`,
+          description: `${table.kind === "view" ? "View" : "Table"} · Schema: ${formatQuickPickName(table.schema)}`,
+          detail: table.kind === "view" ? "Runs the view once and shows a fixed copy of its rows." : undefined,
           table
         }));
         const choice = await vscode.window.showQuickPick(

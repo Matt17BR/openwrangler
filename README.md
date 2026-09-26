@@ -188,16 +188,17 @@ describes supported frame classes, operations and export limits.
 
 ## Supported dataframes
 
-In **2.6**, use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its base tables with the grid,
-filters and profiles. Multiple tables can stay open. Close all its viewers before writing to the database.
-Views, SQL editing, cleaning and exports are unavailable for this entry point. Computed columns can change between queries.
+Use **Open Wrangler: Open DuckDB Table** to choose a local database and explore its tables and views with the grid,
+filters and profiles. A view runs once when opened, and the viewer shows a fixed copy of its rows. Multiple tables and
+views can stay open. Close all its viewers before writing to the database. SQL editing, cleaning and exports are
+unavailable for this entry point. Computed table columns can change between queries.
 
 | Dataframe or source                               | View    | Cleaning and generated code         | Data export                |
 | ------------------------------------------------- | ------- | ----------------------------------- | -------------------------- |
 | Pandas files and live dataframes                  | Yes     | Pandas Python                       | CSV / Parquet              |
 | Polars files and live dataframes                  | Yes     | Polars Python                       | CSV / Parquet              |
 | DuckDB CSV / TSV / Parquet / JSONL (experimental) | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
-| DuckDB database tables (experimental, **2.6**)    | Yes     | Unavailable                         | Unavailable                |
+| DuckDB database tables and views (experimental)   | Yes     | Unavailable                         | Unavailable                |
 | DuckDB notebook relations                         | Yes     | Unavailable                         | Unavailable                |
 | Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
 | R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |

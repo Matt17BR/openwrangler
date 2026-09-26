@@ -7,6 +7,7 @@ const MAX_OUTPUT_BYTES = 256 * 1024;
 export interface DuckDBTableName {
   readonly schema: string;
   readonly name: string;
+  readonly kind: "table" | "view";
 }
 
 export interface DuckDBTableDiscoveryRequest {
@@ -59,9 +60,10 @@ export function decodeDuckDBTableNames(value: string): readonly DuckDBTableName[
       entry === null ||
       typeof entry !== "object" ||
       Array.isArray(entry) ||
-      Object.keys(entry).length !== 2 ||
+      Object.keys(entry).length !== 3 ||
       !Object.prototype.hasOwnProperty.call(entry, "schema") ||
-      !Object.prototype.hasOwnProperty.call(entry, "name")
+      !Object.prototype.hasOwnProperty.call(entry, "name") ||
+      (entry.kind !== "table" && entry.kind !== "view")
     )
       return invalid();
     for (const name of [entry.schema, entry.name]) {
@@ -79,7 +81,7 @@ export function decodeDuckDBTableNames(value: string): readonly DuckDBTableName[
     const identity = JSON.stringify([entry.schema, entry.name]);
     if (seen.has(identity)) return invalid();
     seen.add(identity);
-    tables.push(Object.freeze({ schema: entry.schema, name: entry.name }));
+    tables.push(Object.freeze({ schema: entry.schema, name: entry.name, kind: entry.kind }));
   }
   return Object.freeze(tables);
 }

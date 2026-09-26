@@ -94,6 +94,7 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
+_VIEW_SNAPSHOT = '"open_wrangler_view_snapshot"'
 
 
 @dataclass
@@ -380,7 +381,8 @@ class DuckDBEngine(DataFrameEngine):
     released before that connection closes. Every terminal read replays the
     self-contained SQL on a fresh connection for delimited and columnar files.
     Database tables instead retain one private read-only connection and
-    serialize each complete native query and fetch scope.
+    serialize each complete native query and fetch scope. A selected view is
+    materialized once into that connection's temporary catalog.
     """
 
     name = "duckdb"
@@ -594,12 +596,15 @@ class DuckDBEngine(DataFrameEngine):
         self._open_database(path, allow_spill=False)
         try:
             with self._tracked_connection() as connection:
+                bound = MAX_DATABASE_NAME_CHARACTERS + 1
                 rows = connection.execute(
-                    f"SELECT system.main.left(schema_name, {MAX_DATABASE_NAME_CHARACTERS + 1}) AS schema_name, "
-                    f"system.main.left(table_name, {MAX_DATABASE_NAME_CHARACTERS + 1}) AS table_name "
-                    "FROM system.main.duckdb_tables() "
-                    "WHERE NOT internal AND NOT temporary ORDER BY schema_name, table_name "
-                    f"LIMIT {MAX_DATABASE_TABLES + 1}"
+                    f"SELECT system.main.left(schema_name, {bound}) AS schema_name, "
+                    f"system.main.left(table_name, {bound}) AS object_name, 'table' AS kind "
+                    "FROM system.main.duckdb_tables() WHERE NOT internal AND NOT temporary "
+                    f"UNION ALL SELECT system.main.left(schema_name, {bound}), "
+                    f"system.main.left(view_name, {bound}), 'view' "
+                    "FROM system.main.duckdb_views() WHERE NOT internal AND NOT temporary "
+                    f"ORDER BY schema_name, object_name LIMIT {MAX_DATABASE_TABLES + 1}"
                 ).fetchall()
             return validated_database_tables(rows)
         except Exception:
@@ -614,17 +619,30 @@ class DuckDBEngine(DataFrameEngine):
             table = validate_database_name(options["duckdbTable"])
         except ValueError as error:
             raise EngineError(str(error)) from error
+        import duckdb
+
         self._open_database(path)
+        relation = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+        selected = f"schema_name = {_sql_literal(schema)} AND "
         try:
             with self._tracked_connection() as connection:
                 matches = connection.execute(
-                    "SELECT schema_name, table_name FROM system.main.duckdb_tables() "
-                    f"WHERE NOT internal AND NOT temporary AND schema_name = {_sql_literal(schema)} "
-                    f"AND table_name = {_sql_literal(table)} LIMIT 2"
+                    "SELECT 'table' FROM system.main.duckdb_tables() WHERE NOT internal AND NOT temporary AND "
+                    f"{selected}table_name = {_sql_literal(table)} "
+                    "UNION ALL SELECT 'view' FROM system.main.duckdb_views() WHERE NOT internal AND NOT temporary AND "
+                    f"{selected}view_name = {_sql_literal(table)} LIMIT 2"
                 ).fetchall()
-                if matches != [(schema, table)]:
-                    raise EngineError("The selected DuckDB base table is no longer available. Choose a table again.")
-            return self._relation_from_sql(f"SELECT * FROM {_quote_ident(schema)}.{_quote_ident(table)}")
+                if matches == [("view",)]:
+                    # A view is evaluated once, so volatile or expensive definitions
+                    # cannot change rows or repeat their cost between queries.
+                    try:
+                        connection.execute(f"CREATE TEMP TABLE {_VIEW_SNAPSHOT} AS SELECT * FROM {relation}")
+                    except duckdb.Error as error:
+                        raise EngineError(f"DuckDB could not run the selected view: {error}") from error
+                    relation = f"temp.main.{_VIEW_SNAPSHOT}"
+                elif matches != [("table",)]:
+                    raise EngineError("The selected DuckDB table or view is no longer available. Choose it again.")
+            return self._relation_from_sql(f"SELECT * FROM {relation}")
         except Exception:
             self.close()
             raise

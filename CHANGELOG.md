@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ## [Unreleased]
 
+### Added
+
+- Open DuckDB Table also lists views. A view runs once when opened, and the viewer shows a fixed copy of its rows.
+
 ### Changed
 
 - DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.

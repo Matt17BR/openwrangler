@@ -1353,7 +1353,7 @@ describe("PythonBridge dependency installation", () => {
       vi.mocked(discoverDuckDBTableNames).mockImplementationOnce(async (request) => {
         signal = request.signal;
         await closed.promise;
-        return [{ schema: "main", name: "orders" }];
+        return [{ schema: "main", name: "orders", kind: "table" as const }];
       });
       vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
       const cancellation = new vscode.CancellationTokenSource();
@@ -3663,9 +3663,9 @@ describe("PythonBridge environment resource selection", () => {
     };
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
-    vi.mocked(discoverDuckDBTableNames).mockResolvedValue([{ schema: "main", name: "orders" }]);
+    vi.mocked(discoverDuckDBTableNames).mockResolvedValue([{ schema: "main", name: "orders", kind: "table" as const }]);
     const result = await bridge.discoverDuckDBTables(source);
-    expect(result).toMatchObject({ tables: [{ schema: "main", name: "orders" }] });
+    expect(result).toMatchObject({ tables: [{ schema: "main", name: "orders", kind: "table" as const }] });
     if (!result || "kind" in result) throw new Error("Expected a discovered catalog");
     expect(result.isCurrent()).toBe(true);
     expect(vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.slice(0, 2)).toEqual([
@@ -3856,7 +3856,7 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [] });
-    let finish!: (tables: readonly { schema: string; name: string }[]) => void;
+    let finish!: (tables: readonly { schema: string; name: string; kind: "table" | "view" }[]) => void;
     vi.mocked(discoverDuckDBTableNames).mockReturnValue(
       new Promise((resolve) => {
         finish = resolve;
@@ -3871,7 +3871,7 @@ describe("PythonBridge environment resource selection", () => {
     const signal = vi.mocked(discoverDuckDBTableNames).mock.calls[0]![0].signal!;
     cancellation.cancel();
     expect(signal.aborted).toBe(true);
-    finish([{ schema: "main", name: "orders" }]);
+    finish([{ schema: "main", name: "orders", kind: "table" as const }]);
     await expect(pending).resolves.toBeUndefined();
     cancellation.dispose();
   });

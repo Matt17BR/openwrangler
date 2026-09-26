@@ -10,6 +10,7 @@ MAX_DATABASE_TABLES = 4_096
 MAX_DATABASE_NAME_CHARACTERS = 1_024
 MAX_DATABASE_NAME_BYTES = 65_536
 MAX_DATABASE_DISCOVERY_BYTES = 256 * 1_024
+DATABASE_OBJECT_KINDS = frozenset({"table", "view"})
 
 
 def validate_database_name(value: Any) -> str:
@@ -24,21 +25,21 @@ def validate_database_name(value: Any) -> str:
 
 def validated_database_tables(rows: list[tuple[Any, ...]]) -> list[dict[str, str]]:
     if len(rows) > MAX_DATABASE_TABLES:
-        raise ValueError("The DuckDB database contains too many tables to list.")
+        raise ValueError("The DuckDB database contains too many tables and views to list.")
     tables: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     total_bytes = 0
     for row in rows:
-        if len(row) != 2:
+        if len(row) != 3 or row[2] not in DATABASE_OBJECT_KINDS:
             raise ValueError("DuckDB returned invalid table metadata.")
-        schema, name = (validate_database_name(value) for value in row)
+        schema, name = (validate_database_name(value) for value in row[:2])
         total_bytes += len(schema.encode("utf-8")) + len(name.encode("utf-8"))
         if total_bytes > MAX_DATABASE_NAME_BYTES:
             raise ValueError("The DuckDB database returned too much table-name data.")
         if (schema, name) in seen:
             raise ValueError("The DuckDB database returned duplicate table names.")
         seen.add((schema, name))
-        tables.append({"schema": schema, "name": name})
+        tables.append({"schema": schema, "name": name, "kind": row[2]})
     if (
         len(json.dumps(tables, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
         > MAX_DATABASE_DISCOVERY_BYTES

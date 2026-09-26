@@ -16228,7 +16228,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           "try:",
           "    connection.execute('CREATE SCHEMA \"decoy schema\"')",
           "    connection.execute('CREATE SCHEMA \"selected schema\"')",
-          '    connection.execute("CREATE TABLE \\"decoy schema\\".\\"$(add)\\" AS SELECT \'decoy\' AS label, 99 AS value")',
+          '    connection.execute("CREATE VIEW \\"decoy schema\\".\\"$(add)\\" AS SELECT \'decoy\' AS label, 99 AS value")',
           "    connection.execute(\"CREATE TABLE \\\"selected schema\\\".\\\"$(add)\\\" AS SELECT * FROM (VALUES ('selected-one', 7), ('selected-two', 11), ('selected-three', 9)) source(label, value)\")",
           "finally:",
           "    connection.close()",
@@ -16326,7 +16326,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         const choices = picker.locator(".quick-input-list [role='option']");
         const selectedTable = choices
           .filter({ has: workbench.locator(".label-name").filter({ hasText: /^"\\u0024\(add\)"$/u }) })
-          .filter({ hasText: "Schema: selected schema" });
+          .filter({ hasText: "Table · Schema: selected schema" });
         await selectedTable.waitFor({ state: "visible", timeout: 10_000 });
         assert.equal(
           await choices
@@ -16335,6 +16335,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
             .count(),
           2
         );
+        assert.equal(await choices.filter({ hasText: "View · Schema: decoy schema" }).count(), 1);
         await selectedTable.click({ timeout: 10_000 });
         await withBoundedAcceptancePromise(opening, 10_000, "the DuckDB table command to finish");
         if (failures.length > 0) throw failures[0];
