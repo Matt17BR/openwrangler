@@ -19,7 +19,13 @@ import {
   viewColumnNameUnavailableReason
 } from "../../shared/filterModel";
 import { setGridColumnWidth, type GridViewState } from "../../shared/viewState";
-import { createRowScrollModel, gridRowHeight, logicalRowForScrollTop, scrollTopForLogicalRow } from "./rowScrollModel";
+import {
+  createRowScrollModel,
+  gridRowHeight,
+  logicalRowForScrollTop,
+  type RowScrollModel,
+  scrollTopForLogicalRow
+} from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import type { GridCellCoordinate } from "./gridClipboard";
 import type { ProfileValueMode } from "../profileValueMode";
@@ -828,11 +834,75 @@ export function DataGrid({
       scroller.scrollTop = scrollTop;
       update();
     };
+    // A compressed canvas scales native scroll distances by its compression
+    // ratio, so native wheel and key scrolling would skip rows.
+    const moveCompressedViewport = (model: RowScrollModel, rows: number): void => {
+      const target = programmaticViewportTarget.current;
+      const current =
+        target && Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance
+          ? target.firstVisibleRow
+          : logicalRowForScrollTop(model, scroller.scrollTop);
+      interruptColumnReveal();
+      const firstVisibleRow = Math.max(0, Math.min(current + rows, Math.max(0, model.totalRows - 1)));
+      const scrollTop = scrollTopForLogicalRow(model, firstVisibleRow);
+      programmaticViewportTarget.current = { firstVisibleRow, scrollTop, scrollLeft: scroller.scrollLeft };
+      scroller.scrollTop = scrollTop;
+      update();
+    };
+    let pendingWheelRows = 0;
+    const scrollWheel = (event: WheelEvent): void => {
+      const model = createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight);
+      if (!model.compressed || event.ctrlKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+        pendingWheelRows = 0;
+        interruptColumnReveal();
+        return;
+      }
+      event.preventDefault();
+      const unit =
+        event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? scroller.clientHeight
+          : event.deltaMode === WheelEvent.DOM_DELTA_LINE
+            ? gridRowHeight
+            : 1;
+      if (event.deltaX !== 0) scroller.scrollLeft += event.deltaX * unit;
+      pendingWheelRows += (event.deltaY * unit) / gridRowHeight;
+      const rows = Math.trunc(pendingWheelRows);
+      pendingWheelRows -= rows;
+      if (rows !== 0) moveCompressedViewport(model, rows);
+    };
+    const scrollKeys = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      const model = createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight);
+      if (!model.compressed) return;
+      const element = event.target instanceof Element ? event.target : undefined;
+      const onScroller = element === scroller;
+      // Grid cells navigate rows themselves; editable fields and menus keep their keys.
+      if (
+        !onScroller &&
+        element?.closest("[data-grid-row], input, textarea, select, [contenteditable='true'], [role='menu']")
+      )
+        return;
+      const pageRows = Math.max(1, Math.floor(scroller.clientHeight / gridRowHeight) - 1);
+      const rows =
+        event.key === "PageDown" || (onScroller && event.key === " " && !event.shiftKey)
+          ? pageRows
+          : event.key === "PageUp" || (onScroller && event.key === " " && event.shiftKey)
+            ? -pageRows
+            : onScroller && event.key === "ArrowDown"
+              ? 1
+              : onScroller && event.key === "ArrowUp"
+                ? -1
+                : 0;
+      if (rows === 0) return;
+      event.preventDefault();
+      moveCompressedViewport(model, rows);
+    };
     update();
     const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(rebaseAfterResize);
     resizeObserver?.observe(scroller);
     scroller.addEventListener("scroll", update, { passive: true });
-    scroller.addEventListener("wheel", interruptColumnReveal, { passive: true });
+    scroller.addEventListener("wheel", scrollWheel, { passive: false });
+    scroller.addEventListener("keydown", scrollKeys);
     scroller.addEventListener("pointerdown", interruptColumnReveal, { passive: true });
     scroller.addEventListener("touchstart", interruptColumnReveal, { passive: true });
     window.addEventListener("blur", suspendViewportUpdates);
@@ -841,7 +911,8 @@ export function DataGrid({
     return () => {
       resizeObserver?.disconnect();
       scroller.removeEventListener("scroll", update);
-      scroller.removeEventListener("wheel", interruptColumnReveal);
+      scroller.removeEventListener("wheel", scrollWheel);
+      scroller.removeEventListener("keydown", scrollKeys);
       scroller.removeEventListener("pointerdown", interruptColumnReveal);
       scroller.removeEventListener("touchstart", interruptColumnReveal);
       window.removeEventListener("blur", suspendViewportUpdates);

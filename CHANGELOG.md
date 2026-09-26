@@ -35,6 +35,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - A dataframe or file with saved cleaning steps now reopens in Editing and restores them, even when the start mode is Viewing. Previously the panel stopped with instructions to change the start-mode setting and reopen.
+- Scrolling views with millions of rows no longer skips rows. A mouse-wheel notch moves about three rows and Page Down moves one screen, however large the view.
 - Pandas opens large files faster and with less memory. With pandas 3, adding Open Wrangler's row identity no longer copies every column when a file opens or a cleaning step applies; an 11.7-million-row Parquet file now opens in about 3 seconds instead of 7.
 - Native R shows values like the Python engines: doubles use their shortest round-trip digits (`0.1`, `100.0`, `1e-07`), datetimes omit zero fractions and show their UTC offset, durations no longer show 17-digit noise such as `9.9999999999999995e-07 secs`, and Parquet timestamps keep their time zone. On Linux, R dates before year 1000 no longer fail to open, and Cast accepts them as on other platforms.
 - Value choices and top values show the grid's text in Pandas, Polars and DuckDB, including datetimes and single-precision floats such as `0.1`. Polars datetime cells now match the other engines, without trailing zero fractions.
