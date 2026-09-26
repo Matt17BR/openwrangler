@@ -9839,6 +9839,28 @@ fractional_date <- data.frame(value = as.Date("2026-01-01") + 0.5)
 fractional_date_capture <- openwrangler_r_frame_contract$capture_frame(fractional_date)
 assert_error(openwrangler_r_frame_contract$materialize_page(fractional_date_capture), "fractional Date")
 
+page_rows_by <- function(builder, capture, rows) {
+  frame <- get("read_capture_frame", contract_environment)(capture, validated = TRUE)
+  schema <- get("plain_metadata_storage", contract_environment)(capture$descriptor$schema)
+  row_names <- if (identical(capture$descriptor$frameSemantics$rowNames, "explicit")) attr(frame, "row.names", exact = TRUE)
+  get(builder, contract_environment)(
+    capture, frame, schema, rows, seq_along(schema), list(rowOffset = 0L, columnOffset = 0L), row_names,
+    get("new_payload_budget", contract_environment)(), get("ensure_integer64_bindings", contract_environment)()
+  )
+}
+labeled_frame <- base_frame
+rownames(labeled_frame) <- c("first", "caf\u00e9", "</third>")
+for (capture in list(base_capture, openwrangler_r_frame_contract$capture_frame(labeled_frame))) {
+  for (rows in list(1:3, c(3L, 1L))) {
+    prepared_rows <- page_rows_by("prepared_page_rows", capture, rows)
+    assert_true(!is.null(prepared_rows), "A flat R page did not use whole-column preparation")
+    assert_identical(prepared_rows, page_rows_by("per_cell_page_rows", capture, rows),
+      "Whole-column R page rows differ from per-cell rows")
+  }
+}
+assert_identical(page_rows_by("prepared_page_rows", fractional_date_capture, 1L), NULL,
+  "A rejected R cell did not defer to the per-cell page path")
+
 assert_error(
   openwrangler_r_frame_contract$materialize_page(base_capture, row_limit = 1001L),
   "invalid-range"
