@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +129,31 @@ def test_value_choices_spell_grid_text_and_agree_across_engines(tmp_path: Path) 
     assert listed["text", "i"] == [("i", 1)]
     fraction = [("2024-01-01T00:00:01.500000", 1)]
     assert listed["when", "T00:00:01"] == listed["when", " 00:00:01"] == fraction
+
+
+def test_float32_statistics_use_float64_like_every_engine(tmp_path: Path) -> None:
+    path = tmp_path / "narrow.parquet"
+    values = [3.4e38, 1.0, 2.0, 0.5, 1.0 / 3.0]
+    pq.write_table(pa.table({"narrow": pa.array(values, pa.float32())}), path)
+    widened = pa.array(values, pa.float32()).to_pylist()
+    expected = {
+        "mean": pytest.approx(statistics.fmean(widened), rel=1e-15),
+        "median": statistics.median(widened),
+        "std": pytest.approx(statistics.stdev(widened), rel=1e-12),
+        "sum": pytest.approx(math.fsum(widened), rel=1e-15),
+    }
+    numerics = [PolarsEngine().summaries(pl.DataFrame({"narrow": pl.Series(values, dtype=pl.Float32)}))[0]["numeric"]]
+    for backend in ("pandas", "polars", "duckdb"):
+        manager = SessionManager()
+        opened = manager.open_session({"kind": "file", "path": str(path)}, backend=backend)
+        session_id, revision = opened["metadata"]["sessionId"], opened["metadata"]["revision"]
+        try:
+            ids = [column["id"] for column in opened["metadata"]["schema"]]
+            numerics.append(manager.get_summary(session_id, revision, EMPTY, ids)["summaries"][0]["numeric"])
+        finally:
+            manager.close_session(session_id, revision)
+    for numeric in numerics:
+        assert {key: numeric.get(key) for key in expected} == expected
 
 
 def test_in_memory_profile_ties_follow_first_occurrence() -> None:
