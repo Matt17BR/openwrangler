@@ -1063,6 +1063,19 @@ local({
     nanoparquet::write_parquet(frame, path)
     assert_identical(load_file(list(path = path, format = "parquet"), maximum_columns = maximum_columns), frame, "Native Parquet empty/null/factor metadata changed")
   }
+  # A 70,000-row group makes low-cardinality text load through dictionary codes; stored dictionaries still load as factors.
+  rows <- 70000L
+  labels <- rep_len(c("caf\u00e9", "", "plain", NA), rows)
+  identifiers <- sprintf("id-%06d", seq_len(rows))
+  category <- factor(rep_len(c("y", "x"), rows), levels = c("x", "y"))
+  dictionary_path <- file.path(root, "dictionary-text.parquet")
+  arrow::write_parquet(arrow::Table$create(label = labels, identifier = identifiers, category = arrow::Array$create(category)), dictionary_path, chunk_size = rows)
+  altrep <- options(arrow.use_altrep = TRUE)
+  loaded <- load_file(list(path = dictionary_path, format = "parquet"), maximum_columns = maximum_columns)
+  assert_identical(getOption("arrow.use_altrep"), TRUE, "Parquet loading did not restore the caller's Arrow conversion option")
+  options(altrep)
+  assert_identical(loaded, data.frame(label = labels, identifier = identifiers, category = category), "Dictionary-coded Parquet text changed values, missing cells or column types")
+  assert_identical(Encoding(loaded$label[[1L]]), "UTF-8", "Dictionary-coded Parquet text lost its UTF-8 marking")
 })
 
 source("r/tests/kernel_agent_viewing.R", local = FALSE)
