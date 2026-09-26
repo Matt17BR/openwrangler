@@ -531,18 +531,145 @@ def _pandas_contiguous_text(frame: Any) -> Any:
     return result
 
 
+_PANDAS_LEADING_ROW_LIMIT = 16_384
+
+
+class _PandasNumericOrder:
+    """Stable order of one native numeric key, whose leading rows are found without sorting every row."""
+
+    __slots__ = ("values", "missing", "ascending", "nulls")
+
+    def __init__(self, values: Any, missing: Any, ascending: bool, nulls: Literal["first", "last"]) -> None:
+        self.values = values
+        self.missing = missing
+        self.ascending = ascending
+        self.nulls = nulls
+
+    def complete(self) -> Any:
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        order = pc.call_function(
+            "array_sort_indices",
+            [pa.array(self.values, mask=self.missing)],
+            pc.ArraySortOptions(
+                order="ascending" if self.ascending else "descending",
+                null_placement="at_start" if self.nulls == "first" else "at_end",
+            ),
+        )
+        return order.to_numpy().astype(np.intp, copy=False)
+
+    def leading(self, count: int) -> Any:
+        import numpy as np
+
+        if self.missing is None:
+            values = self.values
+            present = None
+            missing = np.empty(0, dtype=np.intp)
+        else:
+            present = np.flatnonzero(~self.missing)
+            values = self.values[present]
+            missing = np.flatnonzero(self.missing)
+        head = missing[:count] if self.nulls == "first" else missing[:0]
+        wanted = min(count - len(head), len(values))
+        if wanted == len(values):
+            chosen = np.arange(len(values))
+        elif wanted == 0:
+            chosen = np.empty(0, dtype=np.intp)
+        elif self.ascending:
+            chosen = np.flatnonzero(values <= np.partition(values, wanted - 1)[wanted - 1])
+        else:
+            chosen = np.flatnonzero(values >= np.partition(values, len(values) - wanted)[len(values) - wanted])
+        # Every row tied with the boundary value stays a candidate, so ties keep their source order.
+        candidates = values[chosen]
+        order = np.lexsort((chosen, candidates)) if self.ascending else np.lexsort((-chosen, candidates))[::-1]
+        leading = chosen[order[:wanted]]
+        if present is not None:
+            leading = present[leading]
+        tail = missing[: count - len(head) - wanted] if self.nulls == "last" else missing[:0]
+        return np.concatenate((head, leading, tail))
+
+
+def _pandas_numeric_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> _PandasNumericOrder | None:
+    """A stable order for NumPy numeric, Boolean and temporal keys; other storage uses the general sort."""
+    import numpy as np
+
+    dtype = series.dtype
+    if not isinstance(dtype, np.dtype) or dtype.kind not in "biufmM":
+        return None
+    key = _pandas_row_key(series)
+    dtype = key.dtype
+    if (
+        not isinstance(dtype, np.dtype)
+        or dtype.kind not in "biufmM"
+        or dtype.kind == "f"
+        and dtype.itemsize not in (4, 8)
+    ):
+        return None
+    values = key.to_numpy(copy=False)
+    if dtype.kind in "mM":
+        missing = np.isnat(values)
+        values = values.view(np.int64)
+    elif dtype.kind == "f":
+        missing = np.isnan(values)
+    else:
+        missing = None
+        if dtype.kind == "b":
+            values = values.view(np.uint8)
+    return _PandasNumericOrder(values, missing if missing is not None and missing.any() else None, ascending, nulls)
+
+
 class _PandasRowView:
-    """Selected rows of a source frame; reads take only the rows and columns they need."""
+    """Selected rows of a source frame; reads take only the rows and columns they need.
 
-    __slots__ = ("source", "positions", "positional", "_frame", "_index", "_window_source")
+    A view sorted by one native numeric key keeps that order lazy: leading pages select only their rows, and
+    reads that need every position sort once.
+    """
 
-    def __init__(self, source: Any, positions: Any, positional: bool) -> None:
+    __slots__ = (
+        "source",
+        "positional",
+        "_positions",
+        "_selected",
+        "_order",
+        "_leading",
+        "_frame",
+        "_index",
+        "_window_source",
+    )
+
+    def __init__(
+        self,
+        source: Any,
+        positions: Any,
+        positional: bool,
+        *,
+        selected: Any = None,
+        order: _PandasNumericOrder | None = None,
+    ) -> None:
         self.source = _pandas_prepare_dictionary_rows(source)
-        self.positions = positions
         self.positional = positional
+        self._positions = positions
+        self._selected = selected
+        self._order = order
+        self._leading = None
         self._frame = None
         self._index = None
         self._window_source = None
+
+    @property
+    def positions(self) -> Any:
+        if self._positions is None:
+            assert self._order is not None
+            order = self._order.complete()
+            self._positions = order if self._selected is None else self._selected[order]
+        return self._positions
+
+    def row_count(self) -> int:
+        if self._positions is not None:
+            return len(self._positions)
+        return len(self.source) if self._selected is None else len(self._selected)
 
     def frame(self) -> Any:
         if self._frame is None:
@@ -556,9 +683,7 @@ class _PandasRowView:
         if self._frame is not None:
             return self._frame.index
         if self._index is None:
-            self._index = (
-                pd.RangeIndex(len(self.positions)) if self.positional else self.source.index.take(self.positions)
-            )
+            self._index = pd.RangeIndex(self.row_count()) if self.positional else self.source.index.take(self.positions)
         return self._index
 
     def rows(self, start: int, stop: int, columns: list[int]) -> Any:
@@ -566,13 +691,24 @@ class _PandasRowView:
             return self._frame.iloc[start:stop, columns]
         if self._window_source is None:
             self._window_source = _pandas_contiguous_text(self.source)
-        return _pandas_take_rows(self._window_source.iloc[:, columns], self.positions[start:stop])
+        return _pandas_take_rows(self._window_source.iloc[:, columns], self._leading_positions(stop)[start:stop])
+
+    def _leading_positions(self, stop: int) -> Any:
+        if self._positions is not None or stop > _PANDAS_LEADING_ROW_LIMIT:
+            return self.positions
+        assert self._order is not None
+        if self._leading is None or len(self._leading) < min(stop, self.row_count()):
+            # Grow geometrically so scrolling through the first pages selects rows only a few times.
+            previous = 0 if self._leading is None else len(self._leading)
+            order = self._order.leading(min(_PANDAS_LEADING_ROW_LIMIT, max(stop, 1_024, 2 * previous)))
+            self._leading = order if self._selected is None else self._selected[order]
+        return self._leading
 
     def unordered(self) -> Any:
         """Selected rows in source order, for aggregates that ignore row order and labels."""
         if self._frame is not None:
             return self._frame
-        if len(self.positions) == len(self.source):
+        if self.row_count() == len(self.source):
             return self.source
         return _pandas_take_rows(self.source, self.unsorted().positions)
 
@@ -580,6 +716,9 @@ class _PandasRowView:
         """The same rows in source order."""
         import numpy as np
 
+        if self._positions is None:
+            selected = np.arange(len(self.source)) if self._selected is None else self._selected
+            return _PandasRowView(self.source, selected, self.positional)
         selected = np.zeros(len(self.source), dtype=bool)
         selected[self.positions] = True
         return _PandasRowView(self.source, np.flatnonzero(selected), self.positional)
@@ -1230,7 +1369,7 @@ class PandasEngine(DataFrameEngine):
 
     def shape(self, frame: Any) -> SessionDataShape:
         if isinstance(frame, _PandasRowView):
-            return {"rows": len(frame.positions), "columns": len(self._visible_positions(frame.source))}
+            return {"rows": frame.row_count(), "columns": len(self._visible_positions(frame.source))}
         df = self.normalize(frame)
         return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
 
@@ -1318,7 +1457,13 @@ class PandasEngine(DataFrameEngine):
                             if positions is None
                             else _pandas_take_rows(df.iloc[:, [position]], positions).iloc[:, 0]
                         )
-                        order = _pandas_sort_order(series, ascending, nulls)
+                        numeric = _pandas_numeric_order(series, ascending, nulls)
+                        if numeric is None:
+                            order = _pandas_sort_order(series, ascending, nulls)
+                        elif len(resolved_rules) == 1:
+                            return _PandasRowView(df, None, positional_row_axis, selected=positions, order=numeric)
+                        else:
+                            order = numeric.complete()
                     positions = order if positions is None else positions[order]
         return df if positions is None else _PandasRowView(df, positions, positional_row_axis)
 
@@ -1413,7 +1558,7 @@ class PandasEngine(DataFrameEngine):
         return {
             "offset": offset,
             "limit": limit,
-            "totalRows": (int(df.shape[0]) if view is None else len(view.positions))
+            "totalRows": (int(df.shape[0]) if view is None else view.row_count())
             if total_rows is None
             else int(total_rows),
             "columnIds": column_ids,

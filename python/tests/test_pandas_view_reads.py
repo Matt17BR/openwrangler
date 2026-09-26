@@ -8,12 +8,15 @@ import pandas as pd
 import pytest
 
 from openwrangler_runtime.engines.pandas_engine import (
+    _PANDAS_LEADING_ROW_LIMIT,
     PandasEngine,
     _pandas_contiguous_text,
     _pandas_distinct_text_condition,
+    _pandas_numeric_order,
     _pandas_sort_order,
     _pandas_text_condition,
     _pandas_text_sort_ranks,
+    _PandasNumericOrder,
     _PandasRowView,
 )
 
@@ -37,6 +40,7 @@ def _frame(index: pd.Index) -> pd.DataFrame:
             "number": [3.0, np.nan, 1.5, 3.0, -0.0, 0.0, None, 2.5, 3.0, 1.5],
             "sparse": pd.arrays.SparseArray([0, 0, 1, 0, 2, 0, 0, 1, 0, 0]),
             "when": pd.to_datetime(["2024-01-02"] * 5 + [None] + ["2023-12-31"] * 4),
+            "flag": [True, False, True, True, False, False, True, False, True, True],
         }
     )
     frame.index = index
@@ -74,6 +78,11 @@ MODELS = {
         ],
     },
     "text-sort-only": {"filters": [], "sort": [{"column": "arrow_text", "direction": "desc", "nulls": "first"}]},
+    "number-sort-only": {"filters": [], "sort": [{"column": "number", "direction": "desc", "nulls": "last"}]},
+    "filtered-date-sort": {
+        "filters": [_predicate("flag", "boolean", "equals", True)],
+        "sort": [{"column": "when", "direction": "asc", "nulls": "first"}],
+    },
 }
 
 
@@ -103,6 +112,59 @@ def test_pandas_row_views_read_exactly_like_their_materialized_rows(index_name: 
     for column in frame.columns:
         same(lambda target, column=column: engine.column_values(target, column, "b"))
         same(lambda target, column=column: engine.column_values(target, column))
+
+
+def _numeric_keys() -> dict[str, pd.Series]:
+    generator = np.random.default_rng(20260926)
+    size = 3_000
+    small = generator.integers(-3, 4, size)
+    floats = generator.choice([-np.inf, -1.5, -0.0, 0.0, 2.25, np.inf, np.nan], size)
+    times = pd.Series(pd.to_datetime(generator.integers(0, 5, size), unit="D"))
+    times[generator.random(size) < 0.1] = pd.NaT
+    return {
+        "int8": pd.Series(small.astype(np.int8)),
+        "int64": pd.Series(small * 2**61),
+        "uint64": pd.Series(small.astype(np.uint64) + np.uint64(2**63)),
+        "float32": pd.Series(floats.astype(np.float32)),
+        "float64": pd.Series(floats),
+        "all-missing": pd.Series(np.full(size, np.nan)),
+        "bool": pd.Series(small > 0),
+        "datetime": times,
+        "timedelta": times - pd.Timestamp(0),
+    }
+
+
+@pytest.mark.parametrize("name", list(_numeric_keys()))
+def test_pandas_numeric_orders_match_the_stable_pandas_sort(name: str) -> None:
+    series = _numeric_keys()[name]
+    for ascending in (True, False):
+        for nulls in ("first", "last"):
+            numeric = _pandas_numeric_order(series, ascending, nulls)
+            assert numeric is not None
+            expected = _pandas_sort_order(series, ascending, nulls)
+            np.testing.assert_array_equal(numeric.complete(), expected)
+            missing = int(series.isna().sum())
+            for count in sorted({0, 1, 7, 200, missing, missing + 1, len(series) - 1, len(series), len(series) + 5}):
+                np.testing.assert_array_equal(numeric.leading(count), expected[:count])
+
+
+def test_pandas_leading_sorted_pages_select_rows_without_sorting_every_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PandasEngine()
+    size = _PANDAS_LEADING_ROW_LIMIT + 1_000
+    frame = pd.DataFrame({"value": np.arange(size) % 97 * 0.5, "row": np.arange(size)})
+    model = {"filters": [], "sort": [{"column": "value", "direction": "desc", "nulls": "last"}]}
+    expected = engine.apply_filter_model(frame, model)
+    view = engine.filter_view(frame, model)
+
+    def complete(_order: _PandasNumericOrder) -> Any:
+        raise AssertionError("A leading page sorted every row.")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_PandasNumericOrder, "complete", complete)
+        assert engine.shape(view) == engine.shape(expected)
+        for offset in (0, 200, 5_000, _PANDAS_LEADING_ROW_LIMIT - 200):
+            assert engine.page(view, offset, 200) == engine.page(expected, offset, 200)
+    assert engine.page(view, size - 200, 200) == engine.page(expected, size - 200, 200)
 
 
 @pytest.mark.parametrize(
