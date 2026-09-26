@@ -498,6 +498,14 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     return result
 
 
+def _pandas_copy_on_write() -> bool:
+    import pandas as pd
+
+    if int(pd.__version__.split(".", 1)[0]) >= 3:
+        return True
+    return pd.get_option("mode.copy_on_write") is True
+
+
 def _pandas_contiguous_text(frame: Any) -> Any:
     import pandas as pd
     import pyarrow as pa
@@ -1232,7 +1240,8 @@ class PandasEngine(DataFrameEngine):
         df = self.normalize(frame)
         if self._row_id_column(df) is not None:
             return df
-        result = df.copy()
+        # Copy-on-Write already isolates a shallow copy from the caller's frame.
+        result = df.copy(deep=not _pandas_copy_on_write())
         result[f"{INTERNAL_ROW_ID_PREFIX}{token}"] = np.arange(len(result), dtype=np.int64)
         return result
 
