@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- R · data.table and R · collapse can clean dataframes with precise timestamps, with the same operations as R · base and R · dplyr. Previously they only viewed and exported them.
 - Switching engines happens in the same tab and replays the cleaning steps and draft, for files (between Python and R and between R libraries) and for live R dataframes (between R libraries), which no longer open an editing copy. The engine picker says when a step can't move or the new engine has other saved work for the file, and a dialog offers the choices. Switching a file back restores the previous engine's work. A live R dataframe asks first only when the switch would run Custom Code again in its R session. Changing R import options also stays in the same tab.
 - Engine switches and import-option changes show their progress with a Cancel button. The previous data stays dimmed until the new engine is ready, and the engine badge shows the engine being opened.
 - **Copy column** works on columns longer than the clipboard holds. It copies the leading values that fit in 100,000 cells or 4 MiB, reads **Copy first N values**, and says how many values it copied. The footer button copies the focused cell's column when no header is selected.

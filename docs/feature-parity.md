@@ -741,11 +741,11 @@ POSIXct grid text, copied cells, profiles and Convert Type to text round to micr
 display error from native R's truncating format. Source values keep their original precision. Explicit Format Datetime
 and existing One Hot column names retain their native formatting.
 
-Selecting data.table or collapse still opens these Parquet files with exact viewing, filters, sorts, profiles and
-export. Cleaning is unavailable while they contain clock columns; use the engine picker to switch to base R or dplyr. Actual data.table frames and nested values containing clock records remain unsupported.
+All four R libraries open, view, clean and export these Parquet files with the same operations. Actual data.table
+frames and nested values containing clock records remain unsupported.
 
-Format Datetime, Convert Type, Fill, Group By, pivots and By Example do not support clock columns. In base/dplyr,
-other operations remain available when clock columns are not inputs or grouping/identifier keys.
+Format Datetime, Convert Type, Fill, Group By, pivots and By Example do not support clock columns. Other operations
+remain available when clock columns are not inputs or grouping/identifier keys.
 
 In **2.6**, ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
 Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records

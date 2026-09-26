@@ -5154,18 +5154,9 @@ openwrangler_r_kernel_agent <- local({
   }
 
   apply_step <- function(frame_contract, capture, step, source_environment, variable_name, library) {
-    if (library %in% c("data.table", "collapse") && any(vapply(capture$descriptor$schema,
-        function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))) {
-      abort("unsupported_library", "Precise native R timestamps can be viewed with this library. Open a copy with base or dplyr to clean this dataframe.", TRUE)
-    }
     source <- get("snapshot", envir = capture, inherits = FALSE)
     if (identical(step$kind, "customCode")) {
-      result <- evaluate_custom_code(frame_contract, capture, step, source_environment, variable_name)
-      if (library %in% c("data.table", "collapse") && any(vapply(result$capture$descriptor$schema,
-          function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))) {
-        abort("unsupported_library", "Precise native R timestamps require base or dplyr cleaning. Reopen this dataframe with base or dplyr.", TRUE)
-      }
-      return(result)
+      return(evaluate_custom_code(frame_contract, capture, step, source_environment, variable_name))
     }
     if (step$kind %in% c("sortRows", "filterRows")) {
       view <- if (identical(step$kind, "sortRows")) {
@@ -7845,7 +7836,7 @@ openwrangler_r_kernel_agent <- local({
       "      .ow_column <- base::.subset2(.ow_columns, .ow_position)",
       "      if (.ow_clock_helpers$clock_is_column(.ow_column)) {",
       "        if (.ow_clock_helpers$clock_validate(.ow_column, \"Custom Code precise timestamp\", FALSE) != .ow_row_count) base::stop(\"Open Wrangler Custom Code returned a column with the wrong row count\", call. = FALSE)",
-      "        if (base::identical(.ow_flavor, \"r.data.table\") || .ow_library %in% c(\"data.table\", \"collapse\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble with base or dplyr cleaning\", call. = FALSE)",
+      "        if (base::identical(.ow_flavor, \"r.data.table\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble\", call. = FALSE)",
       "        .ow_clock_budget <- .ow_nested_helpers$budget(.ow_operation_bytes)",
       "        .ow_nested_helpers$charge(.ow_column, base::list(kind = \"clock_datetime\"), .ow_position, .ow_clock_budget)",
       "        .ow_operation_bytes <- .ow_clock_budget$used",
@@ -8708,7 +8699,7 @@ openwrangler_r_kernel_agent <- local({
       if (needs_clock_helpers) c(
         "    if (.ow_clock_helpers$clock_is_column(.ow_column)) {",
         "      if (.ow_clock_helpers$clock_validate(.ow_column, .ow_column_label) != .ow_source_row_count) base::stop(\"Open Wrangler precise timestamp length does not match the source rows\", call. = FALSE)",
-        "      if (base::identical(.ow_source_flavor, \"r.data.table\") || .ow_library %in% c(\"data.table\", \"collapse\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble with base or dplyr cleaning\", call. = FALSE)",
+        "      if (base::identical(.ow_source_flavor, \"r.data.table\")) base::stop(\"Precise native R timestamps require a base data.frame or tibble\", call. = FALSE)",
         "      for (.ow_class in base::class(.ow_column)) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_class) + 1L, \"source clock-class metadata\")",
         "      return(base::invisible(NULL))",
         "    }"

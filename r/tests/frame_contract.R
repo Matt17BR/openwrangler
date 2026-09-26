@@ -280,7 +280,7 @@ local({
     }
     reference <- list(id = "r:c:1", name = "civil")
     query <- list(filters = list(), sorts = list(list(column = reference, direction = "desc", nulls = "last")))
-    for (library in c("base", "dplyr")) {
+    for (library in c("base", "dplyr", "data.table", "collapse")) {
       sorted <- fc$transform_rows(capture, query, library)$frame
       assert_identical(sorted$id, c(7L, 4L, 3L, 6L, 2L, 1L, 5L), "clock order lost adjacent ticks, sign, nulls or stable ties")
       cloned <- fc$clone_column_at(source, 2L, "civil", "copy", library)
@@ -320,9 +320,6 @@ local({
     assert_identical(summary$nullCount, 1L, "clock INT64_MIN became a missing value")
     assert_identical(summary$visualization, list(kind = "datetime", min = text[[1L]], max = text[[7L]]), "clock extrema lost exact ordering")
     assert_identical(serialize(source, NULL, version = 3L), source_before, "clock operations mutated their source")
-    for (unsupported in c("data.table", "collapse")) {
-      assert_error(fc$clone_column_at(source, 2L, "civil", "copy", unsupported), "base or dplyr")
-    }
     assert_error(fc$cast_column_at(source, 2L, "civil", "string"), "cannot convert")
     assert_error(fc$format_datetime_column_at(source, 2L, "civil", "%Y", "year"), "Date or POSIXct")
     assert_error(fc$fill_missing_directional_at(source, 2L, "civil", 1L, "id", "asc", "last", "forward"), "clock timestamp targets")
