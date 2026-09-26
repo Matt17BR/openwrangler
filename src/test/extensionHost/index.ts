@@ -5515,6 +5515,8 @@ async function selectReleasedDuckDBConnection(workbench: Page, notebook: vscode.
   assert.ok(row, "The fixture's explicit DuckDB connection must be offered without selecting the default.");
   await row.click();
   await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  // Where the picker closed, the pointer can open a notebook path hover over the toolbar's overflow button.
+  await workbench.mouse.move(Math.floor(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * 0.75), 40);
   assertExactOpenNotebookDocument(notebook, "after selecting the DuckDB relation's connection");
 }
 
