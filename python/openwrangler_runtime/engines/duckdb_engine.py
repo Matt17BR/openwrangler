@@ -516,6 +516,30 @@ class DuckDBEngine(DataFrameEngine):
         except Exception as error:
             raise EngineError(f"DuckDB capture failed: {error}") from error
 
+    def assert_editing_available(self, frame: Any) -> None:
+        source = self.normalize(frame)
+        if not isinstance(source, DuckDBNotebookPlan) or source.owner.connection is None:
+            return
+        import duckdb
+
+        # Any failed statement, including BEGIN, aborts an open caller transaction,
+        # and DuckDB has no savepoints. Autocommit gives each statement a new ID.
+        with _DUCKDB_NOTEBOOK_RELATION_LOCK:
+            connection = source.owner.connection
+            if source.owner.closed or connection is None:
+                raise EngineError("The live DuckDB notebook relation is closed.")
+            try:
+                first, second = (connection.sql("SELECT system.main.txid_current()").fetchone()[0] for _ in range(2))
+            except duckdb.TransactionException:
+                first = second = None
+            except duckdb.Error as error:
+                raise EngineError(f"The relation's DuckDB connection is unavailable: {error}") from error
+            if first == second:
+                raise EngineError(
+                    "Commit or roll back the open transaction on this relation's DuckDB connection, then try again. "
+                    "Open Wrangler does not clean or export notebook data inside your transaction."
+                )
+
     def clone_session_source(self, frame: Any) -> Any:
         if not isinstance(frame, DuckDBNotebookPlan) or frame.owner.connection is None:
             return frame
@@ -1413,8 +1437,6 @@ class DuckDBEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             return self._assign(frame, params["newName"], _quote_ident(column))
         if kind == "extractStructFields":
-            if isinstance(frame, DuckDBNotebookPlan):
-                raise EngineError("DuckDB notebook relations are viewing-only.")
             try:
                 projection = _duckdb_struct_field_projection(
                     self._columns(frame), frame.types, bound_column_name(params["column"], kind), params["fields"]
@@ -2265,7 +2287,7 @@ class DuckDBEngine(DataFrameEngine):
         import duckdb
 
         if isinstance(frame, DuckDBNotebookPlan):
-            raise EngineError("DuckDB notebook relations are viewing-only.")
+            raise EngineError("Custom Code is not available for DuckDB notebook relations.")
         checkpoint: _DuckDBCheckpoint | None = None
         accepted = False
         result: Any = None
@@ -3534,7 +3556,13 @@ def _write_relation_export(
             if changed:
                 relation = relation.project(", ".join(expressions))
         if isinstance(path, ExportWriterPath):
-            from .duckdb_export_filesystem import registered_duckdb_export_writer
+            try:
+                from .duckdb_export_filesystem import registered_duckdb_export_writer
+            except ImportError as error:
+                raise EngineError(
+                    "DuckDB export needs the fsspec package in this Python environment. "
+                    "Install fsspec, then export again."
+                ) from error
 
             with (
                 path.open_binary_writer() as writer,

@@ -128,8 +128,10 @@ connection. Regenerate exported scripts to receive the new capture behavior. See
 
 _Bring the cleaning function back into the notebook that opened the dataframe._
 
-DuckDB notebook relations and local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits
-in the table below. Their notebook sessions do not offer cleaning or export.
+Local PySpark DataFrames support viewing, filters, sorts and profiles, with the limits in the table below. Their
+notebook sessions do not offer cleaning or export. DuckDB notebook relations support native cleaning, generated code
+and export, except Custom Code. Commit or roll back an open transaction on the relation's connection before cleaning
+or exporting.
 In **2.6**, Polars live notebook LazyFrames and lazy Custom Code results retain their complete native output to keep
 row identities stable across pages. These results must fit memory, including old and new results retained during a
 cleaning preview.
@@ -201,7 +203,7 @@ unavailable for this entry point. Computed table columns can change between quer
 | Polars files and live dataframes                  | Yes     | Polars Python                       | CSV / Parquet              |
 | DuckDB CSV / TSV / Parquet / JSONL (experimental) | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
 | DuckDB database tables and views (experimental)   | Yes     | Unavailable                         | Unavailable                |
-| DuckDB notebook relations                         | Yes     | Unavailable                         | Unavailable                |
+| DuckDB notebook relations                         | Yes     | Supported operations, DuckDB Python | CSV / Parquet              |
 | Local PySpark Classic / Connect notebooks         | Bounded | Unavailable                         | Unavailable                |
 | R base data.frame, tibble, data.table             | Yes     | Supported operations, native R      | CSV / Parquet, with limits |
 
@@ -235,7 +237,7 @@ The [reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/referenc
 Browse the [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) and
 [accessibility and keyboard guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/accessibility.md).
 The [product roadmap](https://github.com/Matt17BR/openwrangler/blob/main/docs/product-roadmap.md) tracks unscheduled
-proposals such as matching renamed columns when reusing a plan, DuckDB notebook cleaning, and two-input workflows.
+proposals such as two-input workflows.
 For contributions, see [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md).
 Report bugs in [GitHub Issues](https://github.com/Matt17BR/openwrangler/issues), or follow
 [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md) for vulnerability reports.

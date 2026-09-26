@@ -180,7 +180,7 @@ during loading or file preflight.
 
 The complete operation list and parameters are in the [generated catalog](reference.md#transformation-operations).
 Extract Struct Fields copies known scalar fields from a Struct column into new columns in Polars editing sessions,
-DuckDB file sessions and native R. Enter each exact field name and its output name; the parent column and rows stay intact.
+DuckDB files and notebook relations, and native R. Enter each exact field name and its output name; the parent column and rows stay intact.
 For example, extract `city` from an `address` Struct as `customer_city`. Missing parents produce missing outputs.
 Choose up to 64 fields, with the [native type and naming limits](architecture.md#engine-boundaries-and-capabilities).
 Pandas does not support this operation. R accepts the flat records described in the [native R scope](#native-r-support).
@@ -211,12 +211,12 @@ Functions deliberately used by the input relation retain their caller-defined be
 
 Dense Rank appends ranks from a numeric column without reordering rows. For `[20, 10, 20, missing]`, ascending ranks
 are `[2, 1, 2, missing]`; descending ranks are `[1, 2, 1, missing]`. It ranks the cleaning input independently of viewing
-filters and sorts. Pandas, Polars, DuckDB file sessions and native R support the same value rules; native integer
+filters and sorts. Pandas, Polars, DuckDB and native R support the same value rules; native integer
 storage and capacity limits remain engine-specific. General window and partitioned ranking operations are unavailable.
 
 Mark Duplicates adds a Boolean column for reviewing repeated selected keys without removing any records. For keys
 `[a, a, b]`, it produces `[true, true, false]`. Hidden matching rows still count because the operation uses the complete
-cleaning input. Pandas, Polars, DuckDB file sessions and native R preserve their existing duplicate-key semantics,
+cleaning input. Pandas, Polars, DuckDB and native R preserve their existing duplicate-key semantics,
 including supported missing and classed values. Select at least one comparison column and a fresh output name.
 
 Min-max Scale preserves ratios for finite extremes and exact numeric ranges in live and generated code for the Python
@@ -229,10 +229,10 @@ Clone the column first to keep its text values, then convert the clone.
 
 To create an integer year, month or day column, select the typed temporal column in Format Datetime, enter `%Y`,
 `%m` or `%d` and give the output a new name. Convert that output to Integer. Missing values remain missing. These
-composed workflows support Pandas, Polars, DuckDB file sessions and native R within their existing temporal limits.
+composed workflows support Pandas, Polars, DuckDB and native R within their existing temporal limits.
 Format an already zoned column directly, without first converting it to Date or Datetime. Pandas, Polars and R use
-the column's timezone; R uses UTC when none is recorded. DuckDB file sessions use UTC, while standalone generated
-code uses the caller connection's timezone. A stored DuckDB instant does not retain its original named zone.
+the column's timezone; R uses UTC when none is recorded. DuckDB file sessions use UTC, while notebook relations and
+standalone generated code use the caller connection's timezone. A stored DuckDB instant does not retain its original named zone.
 
 Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
 code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
@@ -517,8 +517,9 @@ Spark preserves that view's paging state through failed or superseded replacemen
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
 Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
 successfully saved state, as the storage warning explains.
-Saved cleaning steps and drafts require Editing mode. A Viewing open preserves saved work. For sources that support
-Editing, it explains how to change the start-mode setting, close the panel and reopen the same dataframe.
+Saved cleaning steps and drafts require Editing mode. When a Viewing open finds saved work on a source that supports
+Editing, Open Wrangler reopens it in Editing and restores the work. A Viewing-only source keeps the saved work and
+explains that it cannot be restored there.
 If a saved cleaning plan cannot replay, Open Wrangler asks before discarding it to reopen original data. Dismissing
 the prompt keeps the saved steps and draft for another attempt; an explicit reset starts a new plan.
 Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.
@@ -885,28 +886,32 @@ Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit co
 Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
 output.
 
-| Surface                                      | Availability       | Status      | Current evidence                                        | Limit or missing proof                              |
-| -------------------------------------------- | ------------------ | ----------- | ------------------------------------------------------- | --------------------------------------------------- |
-| CSV and TSV file sessions                    | Yes                | Partial     | Native lazy reader and packaged import slices           | Complete import-option and cross-platform matrix    |
-| Parquet file sessions                        | Yes                | Partial     | Native typed pages and source invalidation              | Large-scale and repeated cross-platform matrix      |
-| JSONL file sessions                          | Yes                | Partial     | Native malformed-input and packaged import              | Installed malformed/import-state interaction matrix |
-| Excel file sessions                          | No                 | Unavailable | Explicit unsupported diagnostic                         | Use Pandas or Polars                                |
-| Local database base-table browsing           | Viewing only       | Partial     | Native owners and installed Linux/macOS/Windows pickers | No views; shared native resources between viewers   |
-| Notebook variables and inline MIME rendering | Viewing only       | Partial     | Native relation package slices                          | No cleaning, code insertion, or data export         |
-| Grid pages, typed cells, filters, and sorts  | Yes                | Partial     | Native rich-type and query contracts                    | Large-scale mixed-data and cross-platform matrix    |
-| Summaries, statistics, and distinct values   | Yes                | Partial     | Native fixed-size profile contracts                     | Repeated large-data resource evidence               |
-| Supported cleaning operations                | File sessions only | Partial     | Exact direct live/generated catalog equality            | Complete installed catalog and semantic-edge matrix |
-| Draft preview, diff, apply, and history      | File sessions only | Partial     | Runtime and representative packaged lifecycle           | Complete edit/discard/undo interaction matrix       |
-| Executable generated DuckDB code             | File sessions only | Partial     | Direct equality and packaged copy/script slice          | Edited-code execution acceptance                    |
-| CSV and Parquet cleaned-data export          | File sessions only | Partial     | Native export and publication failure tests             | Cross-platform installed destination matrix         |
-| Runtime crash/reload/session replay          | Yes                | Partial     | Backend-keyed replay and injected recovery              | Repeated cross-platform failure matrix              |
-| Runtime performance benchmark                | Diagnostic         | Partial     | Direct and stdio smoke                                  | No strict DuckDB release threshold                  |
+| Surface                                      | Availability     | Status      | Current evidence                                        | Limit or missing proof                              |
+| -------------------------------------------- | ---------------- | ----------- | ------------------------------------------------------- | --------------------------------------------------- |
+| CSV and TSV file sessions                    | Yes              | Partial     | Native lazy reader and packaged import slices           | Complete import-option and cross-platform matrix    |
+| Parquet file sessions                        | Yes              | Partial     | Native typed pages and source invalidation              | Large-scale and repeated cross-platform matrix      |
+| JSONL file sessions                          | Yes              | Partial     | Native malformed-input and packaged import              | Installed malformed/import-state interaction matrix |
+| Excel file sessions                          | No               | Unavailable | Explicit unsupported diagnostic                         | Use Pandas or Polars                                |
+| Local database table and view browsing       | Viewing only     | Partial     | Native owners and installed Linux/macOS/Windows pickers | Shared native resources between viewers             |
+| Notebook variables and inline MIME rendering | Yes              | Partial     | Native relation catalog and installed sort slice        | No Custom Code                                      |
+| Grid pages, typed cells, filters, and sorts  | Yes              | Partial     | Native rich-type and query contracts                    | Large-scale mixed-data and cross-platform matrix    |
+| Summaries, statistics, and distinct values   | Yes              | Partial     | Native fixed-size profile contracts                     | Repeated large-data resource evidence               |
+| Supported cleaning operations                | Files, relations | Partial     | Exact direct live/generated catalog equality            | Complete installed catalog and semantic-edge matrix |
+| Draft preview, diff, apply, and history      | Files, relations | Partial     | Runtime and representative packaged lifecycle           | Complete edit/discard/undo interaction matrix       |
+| Executable generated DuckDB code             | Files, relations | Partial     | Direct equality and packaged copy/script slice          | Edited-code execution acceptance                    |
+| CSV and Parquet cleaned-data export          | Files, relations | Partial     | Native export and publication failure tests             | Cross-platform installed destination matrix         |
+| Runtime crash/reload/session replay          | Yes              | Partial     | Backend-keyed replay and injected recovery              | Repeated cross-platform failure matrix              |
+| Runtime performance benchmark                | Diagnostic       | Partial     | Direct and stdio smoke                                  | No strict DuckDB release threshold                  |
 
 DuckDB file imports support CSV, TSV, Parquet, and JSONL. A multibyte quote character is incompatible and fails
 before runtime startup. CSV export is UTF-8 with single-byte delimiter and quote syntax. DuckDB rejects schemas whose
 identifiers differ only by case. Notebook `DuckDBPyRelation` values are captured on their explicitly selected originating
-connection for serialized viewing only. Closing releases Open Wrangler's references and never closes the user's
-connection. See the [capture requirements and costs](#sessions-and-generated-code).
+connection. They support viewing, native cleaning, generated code, code insertion and CSV or Parquet export on that
+connection; Custom Code remains file-only. Cleaning and exports use the rows captured at opening, while generated code
+reads the relation again, so volatile values such as `random()` can differ. Commit or roll back an open transaction on
+that connection before cleaning or exporting. Closing releases Open Wrangler's references and never closes the user's
+connection. See the [capture requirements and costs](#sessions-and-generated-code). Source evidence:
+test:python/tests/test_duckdb_engine.py.
 
 **Open Wrangler: Open DuckDB Table** chooses a local database and one table or view without SQL. It supports viewing,
 filters, sorts and profiles through a retained read-only connection. Multiple tables and views from the same database

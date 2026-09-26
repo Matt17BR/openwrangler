@@ -224,7 +224,7 @@ describe("notebook variable discovery", () => {
       expect.objectContaining({
         label: "duck_relation",
         description: "DuckDB · DuckDBPyRelation",
-        detail: "_duckdb.DuckDBPyRelation · Live viewing-only session"
+        detail: "_duckdb.DuckDBPyRelation · Live notebook session"
       }),
       expect.objectContaining({
         label: "pandas_current_frame",

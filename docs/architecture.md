@@ -1467,14 +1467,20 @@ paths. BIGNUM addition and subtraction also retain native behavior.
 
 CSV, TSV, JSONL, and Parquet file sessions support native viewing and the DuckDB operations in the
 [cleaning support guide](feature-parity.md#cleaning-operations), with matching live and generated code. DuckDB file editing remains experimental; Excel is unsupported. Database tables retain the read-only
-connection described above. Notebook relations remain viewing-only, including when a caller requests editing.
+connection described above. Notebook relations follow the requested start mode and support the same native
+operations as files except Custom Code, which would need its own capture on the caller's connection.
 Opening requires an explicit choice of their originating global connection variable or DuckDB's default connection.
 The host pins the notebook and kernel before this picker and retains the choice in the immutable source descriptor.
 The runtime resolves the relation and selected connection together, verifies native affinity and captures rows once
 with their ordinal. Private connections must be exposed as notebook variables; another connection to the same
-database is not interchangeable. Subsequent viewing queries use the retained native result and compact SQL on that
-exact connection. Closing a viewer releases its references without closing, committing or rolling back the caller's
-connection. Closing the caller connection makes the viewer unavailable.
+database is not interchangeable. Subsequent viewing queries, cleaning steps and exports use the retained native result
+and compact SQL on that exact connection, so they operate on the rows captured at opening. Generated code reads the
+relation again, so volatile expressions can produce different values there. Before each cleaning step or export, the
+runtime compares two autocommit transaction IDs on the caller's connection. Equal IDs mean the caller has an open or
+aborted transaction, and the request fails with a message asking the user to commit or roll back first. The probe
+cannot abort that transaction itself, whereas a failed `BEGIN` would. Closing a viewer releases its references
+without closing, committing or rolling back the caller's connection. Closing the caller connection makes the viewer
+unavailable.
 
 Native capture and query helpers use collision-checked temporary aliases and remove only the catalog identity they
 created, after consuming the result. Notebook requests remain serialized. Native execution can invalidate an unread
@@ -2314,9 +2320,10 @@ executor across every activation, discovery, picker, execution, and focus-restor
 Persisted state is keyed by both source identity and confirmed backend. The cleaning section contains validated
 committed steps, at most one draft, and its confirmed base-view receipt. The viewing section independently contains
 the confirmed filter/sort model and bounded presentation state such as stable-ID widths, selection, and viewport.
-Opening in Viewing with saved steps or a draft returns `viewing_mode_unavailable` before replay and preserves saved
-work. For editing-capable sources, the error identifies the start-mode setting and instructs the user to close the
-panel and reopen the same dataframe in Editing. Viewing-only sources receive no unsupported mode-change guidance.
+Opening in Viewing with saved steps or a draft closes the Viewing runtime before replay. For editing-capable
+sources, the establisher reopens once in Editing, with a fresh `requestedSessionId` when the original carried one, and
+restores through the normal replay path; an Editing request never triggers another reopen. Viewing-only sources return
+`viewing_mode_unavailable` and preserve saved work.
 Malformed or stale viewing state falls back to an empty view without dropping valid cleaning. If cleaning replay
 fails, the failed runtime closes and Open Wrangler asks before discarding saved steps and the draft to reopen original data.
 Dismissal preserves the saved plan for a later retry. An accepted reset requires a valid original session, its exact

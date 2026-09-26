@@ -2004,10 +2004,15 @@ describe("native state and presentation commands", () => {
     registered.setActiveSession({
       ...liveViewing,
       sessionId: "duckdb-viewing",
-      metadata: { ...liveViewing.metadata, sessionId: "duckdb-viewing", backend: "duckdb" }
+      metadata: {
+        ...liveViewing.metadata,
+        sessionId: "duckdb-viewing",
+        backend: "duckdb",
+        capabilities: { ...liveViewing.metadata.capabilities, notebookInsert: true }
+      }
     });
     expect(posted.at(-1)).toMatchObject({
-      code: "# live_frame\n# Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available.",
+      code: "# live_frame\n# Switch to Editing in the dataframe toolbar to add cleaning steps.",
       editable: false,
       bufferInvalid: false,
       runtimeIdentity: { dataframeFlavor: "duckdb", codeDialect: "python.duckdb" }
@@ -2020,7 +2025,7 @@ describe("native state and presentation commands", () => {
 
     await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
     expect(nativeMocks.showInformationMessage).toHaveBeenLastCalledWith(
-      "Live DuckDB notebook relations are viewing only in Open Wrangler; cleaning steps are not available."
+      "Switch to Editing in the dataframe toolbar to add cleaning steps."
     );
     expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
   });

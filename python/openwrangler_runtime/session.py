@@ -540,7 +540,7 @@ class SessionManager:
                     "viewing"
                     if (
                         not engine.capabilities.supports_editing
-                        or (engine.name == "duckdb" and (source_kind != "file" or is_duckdb_table_source(source)))
+                        or (engine.name == "duckdb" and is_duckdb_table_source(source))
                     )
                     else mode or ("editing" if source.get("kind") == "file" else "viewing")
                 ),
@@ -1949,6 +1949,7 @@ class SessionManager:
             raise EngineError("This session is in viewing mode. Change it to editing before adding steps.")
         if not session.engine.capabilities.supports_editing:
             raise EngineError(f"The {session.backend} backend does not support editing.")
+        session.engine.assert_editing_available(session.original)
 
     @staticmethod
     def _assert_bound_history(session: Session) -> None:
@@ -1968,9 +1969,7 @@ class SessionManager:
     def _capabilities(self, session: Session) -> dict[str, bool | list[str]]:
         source_kind = session.source.kind
         engine_capabilities = session.engine.capabilities
-        source_supports_editing = not (
-            session.backend == "duckdb" and (source_kind != "file" or is_duckdb_table_source(session.source.metadata))
-        )
+        source_supports_editing = not (session.backend == "duckdb" and is_duckdb_table_source(session.source.metadata))
         editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,
@@ -1980,6 +1979,7 @@ class SessionManager:
                 if engine_capabilities.supports_editing
                 and source_supports_editing
                 and (definition.kind != "extractStructFields" or session.backend in {"polars", "duckdb"})
+                and (definition.kind != "customCode" or session.backend != "duckdb" or source_kind == "file")
                 and (definition.kind != "explodeList" or session.backend == "polars")
             ],
             "lazy": session.engine.is_lazy(session.display_frame, session.source.metadata),

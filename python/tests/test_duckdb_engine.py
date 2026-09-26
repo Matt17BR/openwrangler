@@ -7052,15 +7052,18 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         )
         session_id = opened["metadata"]["sessionId"]
         assert opened["metadata"]["backend"] == "duckdb"
-        assert opened["metadata"]["mode"] == "viewing"
-        assert opened["metadata"]["capabilities"] == {
-            "editable": False,
+        assert opened["metadata"]["mode"] == "editing"
+        capabilities = opened["metadata"]["capabilities"]
+        assert {key: value for key, value in capabilities.items() if key != "supportedOperations"} == {
+            "editable": True,
             "lazy": False,
             "cancel": False,
-            "exportCsv": False,
-            "exportParquet": False,
-            "notebookInsert": False,
-            "supportedOperations": [],
+            "exportCsv": True,
+            "exportParquet": True,
+            "notebookInsert": source_kind == "notebookVariable",
+        }
+        assert set(capabilities["supportedOperations"]) == {
+            item["kind"] for item in operation_catalog() if item["kind"] not in {"customCode", "explodeList"}
         }
         assert opened["metadata"]["shape"] == {"rows": 4, "columns": 3}
         view = {"logic": "and", "filters": [], "sort": []}
@@ -7124,35 +7127,50 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
         assert summary["numeric"]["min"] == 7.0
         assert summary["numeric"]["max"] == 13.0
 
-        with pytest.raises(EngineError, match="viewing mode"):
-            manager.preview_step(
-                session_id,
-                0,
-                step(
-                    "sortRows",
-                    rules=[
-                        {
-                            "column": {"id": "c:source:0", "name": "order_id"},
-                            "direction": "asc",
-                            "nulls": "last",
-                        }
-                    ],
-                ),
-                0,
-                10,
-            )
-        with pytest.raises(EngineError, match="viewing mode"):
-            manager.export_data(session_id, 0, str(tmp_path / "must-not-export.csv"), export_options("csv"))
+        sort_by_order = step(
+            "sortRows",
+            rules=[{"column": {"id": "c:source:0", "name": "order_id"}, "direction": "asc", "nulls": "last"}],
+        )
+        preview = manager.preview_step(session_id, 0, sort_by_order, 0, 10)
+        applied = manager.apply_draft(session_id, preview["revision"], 0, 10)
+        revision = applied["revision"]
+        captured_tokens = {row["values"][0]["raw"]: row["values"][2]["raw"] for row in full_page["rows"]}
+        committed = manager.get_page(session_id, revision, 0, 10, view)["page"]
+        assert [(row["values"][0]["raw"], row["values"][2]["raw"]) for row in committed["rows"]] == sorted(
+            captured_tokens.items()
+        )
+        output = tmp_path / "sorted.csv"
+        assert (
+            manager.export_data(
+                session_id, revision, str(output), export_options("csv"), reserve_export_target(output)
+            )["kind"]
+            == "dataExported"
+        )
+        assert output.read_text().splitlines() == [
+            "order_id,city,token",
+            *(
+                f"{order},{city},{captured_tokens[order]}"
+                for order, city in [(7, "Milan"), (9, "Paris"), (11, "Berlin"), (13, "Berlin")]
+            ),
+        ]
+        # Generated code reads the relation again, so its volatile uuid() column is fresh.
+        scope: dict[str, Any] = {}
+        exec(applied["code"], scope)
+        generated = scope["clean_data"](relation).fetchall()
+        assert [row[:2] for row in generated] == [(7, "Milan"), (9, "Paris"), (11, "Berlin"), (13, "Berlin")]
+        assert {str(row[2]) for row in generated}.isdisjoint(captured_tokens.values())
+        with pytest.raises(EngineError, match="Custom Code is not available for DuckDB notebook relations"):
+            manager.preview_step(session_id, revision, step("customCode", code="result = df"), 0, 10)
 
         cloned = manager.open_session(
             source,
             backend="duckdb",
-            mode="viewing",
+            mode="editing",
             page_size=4,
-            clone_from={"sessionId": session_id, "revision": 0},
+            clone_from={"sessionId": session_id, "revision": revision},
         )
         clone_id = cloned["metadata"]["sessionId"]
-        assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+        assert manager.close_session(session_id, revision) == {"kind": "sessionClosed", "sessionId": session_id}
         assert owner.closed is True
         assert manager.get_page(clone_id, 0, 0, 4, view)["page"]["rows"] == full_page["rows"]
         assert vars(__main__)["duck_orders"] is relation
@@ -7171,6 +7189,231 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
     finally:
         manager.close_all()
         connection.close()
+
+
+def notebook_relation_source(monkeypatch: pytest.MonkeyPatch, relation: Any, connection: Any) -> dict[str, Any]:
+    monkeypatch.setattr(__main__, "notebook_rel", relation, raising=False)
+    monkeypatch.setattr(__main__, "notebook_conn", connection, raising=False)
+    return {
+        "kind": "notebookVariable",
+        "label": "notebook_rel",
+        "variableName": "notebook_rel",
+        "duckdbConnection": {"kind": "variable", "name": "notebook_conn"},
+    }
+
+
+def test_duckdb_notebook_session_operations_match_generated_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_conversion_guards(monkeypatch)
+    group, text, tags, value, other, day = (
+        {"id": f"c:source:{index}", "name": name}
+        for index, name in enumerate(["group", "text", "tags", "value", "other", "date"])
+    )
+    record = {"id": "c:source:6", "name": "record"}
+    label_a = typed_selection_value("a", "string")
+    label_b = typed_selection_value("b", "string")
+    plans = [
+        [
+            step("sortRows", rules=[{"column": value, "direction": "desc", "nulls": "last"}]),
+            step(
+                "filterRows",
+                filterModel={
+                    "logic": "and",
+                    "filters": [
+                        {
+                            "column": text,
+                            "type": "string",
+                            "logic": "and",
+                            "predicates": [{"kind": "predicate", "operator": "contains", "value": "alpha"}],
+                        }
+                    ],
+                    "sort": [],
+                },
+            ),
+            step("fillMissingValues", column=value, replacement={"kind": "median"}),
+            step("dropMissingRows", columns=[value], how="any"),
+            step("dropDuplicates", columns=[value, other], keep="first"),
+        ],
+        [
+            step(
+                "conditionalColumn",
+                column=value,
+                columnType="float",
+                predicate={"kind": "predicate", "operator": "gte", "value": "2"},
+                newColumn="above_two",
+                resultType="boolean",
+                trueValue=True,
+                falseValue=False,
+                missingValue=None,
+            ),
+            step("markDuplicates", columns=[value], newColumn="is_duplicate"),
+            step("cloneColumn", column=value, newName="value_copy"),
+            step("formula", leftColumn=other, operator="multiply", value=10, newColumn="score"),
+            step("textLength", column=text, newColumn="text_length"),
+            step("castColumn", column=other, dtype="float"),
+            step("renameColumn", column=group, newName="category"),
+            step("extractStructFields", column=record, fields=[{"field": "size", "newColumn": "size"}]),
+            step("dropColumns", columns=[tags, day, record]),
+            step(
+                "selectColumns",
+                columns=[
+                    {"id": "c:source:0", "name": "category"},
+                    text,
+                    value,
+                    other,
+                    {"id": "c:step:duckdb-cloneColumn:0", "name": "value_copy"},
+                    {"id": "c:step:duckdb-textLength:0", "name": "text_length"},
+                    {"id": "c:step:duckdb-extractStructFields:0", "name": "size"},
+                ],
+            ),
+        ],
+        [
+            step("stripText", column=text, newColumn="clean"),
+            step("findReplace", column=text, find="-", replacement=" ", newColumn="replaced"),
+            step("splitText", column=text, delimiter="-", index=1, newColumn="suffix"),
+            step("splitTextColumns", column=text, delimiter="-", newColumns=["text_part", "text_remainder"]),
+            step("extractRegexGroup", column=text, pattern="([A-Za-z]+)-", group=1, newColumn="regex_word"),
+            step("lowerText", column=text, newColumn="lower"),
+            step("upperText", column=text, newColumn="upper"),
+            step("capitalizeText", column=text, newColumn="capitalized"),
+            step("oneHotEncode", columns=[group], prefixSeparator="_", dropOriginal=False),
+            step("multiLabelBinarize", column=tags, delimiter="|", prefix="tag_", dropOriginal=False),
+            step("minMaxScale", column=value, newColumn="scaled"),
+            step("denseRank", column=value, direction="asc", newColumn="ranked"),
+            step("roundNumber", column=value, decimals=0, newColumn="rounded"),
+            step("floorNumber", column=value, newColumn="floored"),
+            step("ceilNumber", column=value, newColumn="ceiled"),
+            step("formatDatetime", column=day, format="%Y/%m", newColumn="month"),
+        ],
+        [step("pivotLonger", columns=[group, text], labelColumn="measure", valueColumn="reading")],
+        [
+            step("selectColumns", columns=[other, group, value]),
+            step(
+                "pivotWider",
+                namesFrom=group,
+                valuesFrom=value,
+                outputs=[{"key": label_a, "name": "group_a_value"}, {"key": label_b, "name": "group_b_value"}],
+            ),
+        ],
+        [
+            step(
+                "groupBy",
+                keys=[group],
+                aggregations=[
+                    {"column": value, "operation": "sum", "alias": "total"},
+                    {"column": other, "operation": "mean", "alias": "average"},
+                    {"column": text, "operation": "count", "alias": "texts"},
+                    {"column": tags, "operation": "nUnique", "alias": "tag_sets"},
+                ],
+            )
+        ],
+        [
+            step(
+                "byExample",
+                sourceColumns=[group, other],
+                newColumn="label",
+                examples=[{"inputs": ["a", 2], "output": "a-2"}, {"inputs": ["b", 4], "output": "b-4"}],
+            )
+        ],
+    ]
+    covered = {operation["kind"] for plan in plans for operation in plan}
+    assert covered == {item["kind"] for item in operation_catalog()} - {"customCode", "explodeList"}
+    with duckdb.connect() as connection:
+        connection.execute(
+            "CREATE TABLE private_source AS SELECT *, {'size': other * 2} AS record FROM ("
+            + source_relation().sql_query()
+            + ")"
+        )
+        relation = connection.table("private_source")
+        source = notebook_relation_source(monkeypatch, relation, connection)
+        manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+        try:
+            for plan in plans:
+                opened = manager.open_session(source, backend="duckdb", mode="editing", page_size=10)
+                session_id = opened["metadata"]["sessionId"]
+                revision = 0
+                code = ""
+                for operation in plan:
+                    preview = manager.preview_step(session_id, revision, operation, 0, 10)
+                    applied = manager.apply_draft(session_id, preview["revision"], 0, 10)
+                    revision, code = applied["revision"], applied["code"]
+                session = manager.sessions[session_id]
+                engine = session.engine
+                assert isinstance(engine, DuckDBEngine)
+                row_id = duckdb_runtime._quote_ident(engine._row_id_column(session.committed))
+                live = engine._terminal_rows(session.committed, f"SELECT * EXCLUDE ({row_id}) FROM ow")
+                scope: dict[str, Any] = {}
+                exec(code, scope)
+                generated = scope["clean_data"](relation).fetchall()
+                assert len(live) == len(generated)
+                for live_row, generated_row in zip(live, generated, strict=True):
+                    assert [None if isinstance(item, float) and isnan(item) else item for item in live_row] == [
+                        None if isinstance(item, float) and isnan(item) else item for item in generated_row
+                    ]
+                manager.close_session(session_id, revision)
+        finally:
+            manager.close_all()
+        assert connection.sql("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall() == []
+        assert connection.table("private_source").count("*").fetchone() == (4,)
+
+
+@pytest.mark.parametrize("state", ["open", "aborted"])
+def test_duckdb_notebook_editing_waits_for_the_caller_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: str
+) -> None:
+    with duckdb.connect() as connection:
+        connection.execute(
+            "CREATE TABLE orders AS SELECT CAST(170141183460469231731687303715884105727 AS HUGEINT) AS big"
+        )
+        connection.execute("CREATE TABLE journal(note VARCHAR)")
+        source = notebook_relation_source(monkeypatch, connection.table("orders"), connection)
+        manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+        try:
+            opened = manager.open_session(source, backend="duckdb", mode="editing", page_size=10)
+            session_id = opened["metadata"]["sessionId"]
+            clone = step("cloneColumn", column={"id": "c:source:0", "name": "big"}, newName="copy")
+            connection.execute("BEGIN TRANSACTION")
+            connection.execute("INSERT INTO journal VALUES ('caller work')")
+            if state == "aborted":
+                with pytest.raises(duckdb.ConversionException):
+                    connection.execute("SELECT CAST('x' AS INTEGER)")
+            output = tmp_path / "orders.parquet"
+            for attempt in (
+                lambda: manager.preview_step(session_id, 0, clone, 0, 10),
+                lambda: manager.export_data(
+                    session_id, 0, str(output), export_options("parquet"), reserve_export_target(output)
+                ),
+            ):
+                with pytest.raises(EngineError, match="Commit or roll back the open transaction"):
+                    attempt()
+            if state == "open":
+                assert connection.sql("SELECT * FROM journal").fetchall() == [("caller work",)]
+                connection.execute("COMMIT")
+                assert connection.sql("SELECT * FROM journal").fetchall() == [("caller work",)]
+            else:
+                connection.execute("ROLLBACK")
+            assert manager.preview_step(session_id, 0, clone, 0, 10)["kind"] == "stepPreview"
+        finally:
+            manager.close_all()
+
+
+def test_duckdb_notebook_export_names_a_missing_fsspec_package(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    with duckdb.connect() as connection:
+        source = notebook_relation_source(monkeypatch, connection.sql("SELECT 1 AS id"), connection)
+        manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+        try:
+            opened = manager.open_session(source, backend="duckdb", mode="editing", page_size=10)
+            monkeypatch.setitem(sys.modules, "openwrangler_runtime.engines.duckdb_export_filesystem", None)
+            output = tmp_path / "out.csv"
+            with pytest.raises(EngineError, match="DuckDB export needs the fsspec package in this Python environment"):
+                manager.export_data(
+                    opened["metadata"]["sessionId"],
+                    0,
+                    str(output),
+                    export_options("csv"),
+                    reserve_export_target(output),
+                )
+        finally:
+            manager.close_all()
 
 
 @pytest.mark.parametrize("mode", ["rows", "metadata", "multiple", "binding_error", "execution_error", "source_removed"])

@@ -121,7 +121,7 @@ describe("SessionModeControl", () => {
     }
   });
 
-  it("explains read-only PySpark and DuckDB live sessions", () => {
+  it("explains read-only PySpark sessions and offers Editing for DuckDB relations", () => {
     const onSwitch = vi.fn();
     const pyspark = render(
       <SessionModeControl
@@ -141,20 +141,12 @@ describe("SessionModeControl", () => {
     expect(screen.getByText(/Cleaning steps, generated code, and data export are not available/u)).toBeVisible();
     pyspark.unmount();
 
-    render(
-      <SessionModeControl
-        metadata={{
-          ...metadata,
-          backend: "duckdb",
-          capabilities: { ...metadata.capabilities, notebookInsert: false, supportedOperations: [] }
-        }}
-        busy={false}
-        onSwitch={onSwitch}
-      />
-    );
-    fireEvent.click(screen.getByText("Viewing only").closest("summary")!);
-    expect(screen.getByText(/live DuckDB notebook relations/u)).toBeVisible();
-    expect(screen.getByText(/code insertion, and data export are not available/u)).toBeVisible();
+    render(<SessionModeControl metadata={{ ...metadata, backend: "duckdb" }} busy={false} onSwitch={onSwitch} />);
+    const action = screen.getByRole("button", { name: "Switch to Editing" });
+    fireEvent.click(action);
+    expect(onSwitch).toHaveBeenCalledWith("editing", action);
+    fireEvent.click(screen.getByText("viewing").closest("summary")!);
+    expect(screen.getByText(/Switch to Editing to build a cleaning plan/u)).toBeVisible();
   });
 
   it.each(["data.table", "collapse"] as const)("explains exact timestamp cleaning limits for %s", (rLibrary) => {

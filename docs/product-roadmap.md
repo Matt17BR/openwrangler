@@ -78,8 +78,6 @@ unselected. The implemented improvements do not establish that direction or auth
 These proposals remain unscheduled. Further examples and practical constraints are
 welcome in their issues. Start with useful single-source operations before taking on broader source ownership.
 
-- [Apply a cleaning plan to another input](https://github.com/Matt17BR/openwrangler/issues/1385): matching-schema file reuse is available in 2.6; column mapping and broader input support remain proposals. See the [current scope](feature-parity.md#reuse-a-file-cleaning-plan).
-- [Clean a DuckDB notebook relation](https://github.com/Matt17BR/openwrangler/issues/1386): extend today's viewer with native cleaning, code and export.
 - [Join or append a second input](https://github.com/Matt17BR/openwrangler/issues/1388): a later proposal that first needs explicit source and row-growth rules.
 
 Spark remains a bounded local-notebook viewer. Broader Spark support, additional backends and remote or browser hosts

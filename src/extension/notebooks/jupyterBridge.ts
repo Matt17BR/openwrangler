@@ -222,9 +222,7 @@ function notebookVariableQuickPickItem(variable: NotebookPickerVariable): Notebo
   const detail =
     variable.backend === "pyspark"
       ? "Viewing only · First page loads without counting rows · PySpark 4.2.x required"
-      : variable.backend === "duckdb"
-        ? `${variable.type} · Live viewing-only session`
-        : `${variable.type} · Live notebook session`;
+      : `${variable.type} · Live notebook session`;
   return {
     label: variable.name,
     description: `${presentation.family} · ${presentation.kind}`,
