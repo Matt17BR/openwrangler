@@ -54,6 +54,7 @@ import {
   type RendererSynchronizationIdentity
 } from "./rendererSynchronizationCoordinator";
 import { createSecureNonce } from "./secureNonce";
+import { revealSideBar } from "./sideBarReveal";
 import { decodeWebviewMessage } from "./webviewMessage";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
@@ -2271,6 +2272,7 @@ export class OpenWranglerPanel {
       OpenWranglerPanel.activePanel = this;
       if (previous) void previous.postStepInspectionCleared(false);
       void this.postStepInspectionCleared(true);
+      revealSideBar((message) => this.bridge.reportDiagnostic?.(message));
     }
     void vscode.commands.executeCommand(
       "setContext",

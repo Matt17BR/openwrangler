@@ -46,6 +46,12 @@ fresh marker for pending generated-column reveals. This boundary does not wait f
 or for later layout changes. Further renderer acknowledgements do not repeat the open action. Discarding the draft,
 changing the reveal setting, or deactivating the panel does not settle an in-flight command.
 
+When a different panel becomes the active Open Wrangler panel, including the first one, the side bar opens through
+the `.open` command of the tree view that was last visible, with focus preserved. VS Code reports a collapsed view
+as hidden, so this reopens a view the user left expanded. Nothing is opened while any Open Wrangler tree view is
+visible or when `openWrangler.revealSideBar` is off. Focus moving between the panel and other workbench parts is
+not an activation.
+
 The extension host is the authority at every boundary. A webview cannot select a different source, session, kernel,
 terminal, or export destination by supplying an identifier the host did not issue and retain.
 Open Source File captures the currently active session. With no active session or reopenable source, it reports

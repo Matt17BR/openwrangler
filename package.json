@@ -979,6 +979,11 @@
           "maximum": 256,
           "description": "Number of dataframe columns fetched for each horizontal grid block."
         },
+        "openWrangler.revealSideBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Open Wrangler side bar when an Open Wrangler editor becomes active, without moving keyboard focus. Nothing changes while an Open Wrangler view is already showing."
+        },
         "openWrangler.panelRevealBehavior": {
           "type": "string",
           "enum": [
