@@ -541,8 +541,8 @@ delays full API acquisition until its natural file title action, using a control
 visible-view demand; other journeys acquire the same API normally. This fixture does not assert that all activation
 contexts have no demand-loaded owners.
 The same journey applies a Rename step through the workbench, then uses **Open Another File with This Plan** and
-the real file picker. It checks the target's distinct rows and copied plan, both files' unchanged bytes, the original
-session's retained state and ordinary cleanup. Schema, stale-owner and persistence refusal cases stay in source tests.
+the real file picker. It checks the target's distinct rows and copied plan, the read-only preview until **Keep plan**,
+both files' unchanged bytes, the original session's retained state and ordinary cleanup. Schema, stale-owner and persistence refusal cases stay in source tests.
 
 The two pure acceptance-helper checks live in [Source](../src/test/acceptanceFixtures.unit.test.ts): bounded mismatch
 diagnostics and direct-child temporary-directory ownership/cleanup. They no longer run during installed startup.

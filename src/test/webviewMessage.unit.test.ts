@@ -37,6 +37,8 @@ describe("webview message decoding", () => {
     [{ kind: "changeBackend" }, { kind: "changeBackend" }],
     [{ kind: "installRuntimeDependencies" }, { kind: "installRuntimeDependencies" }],
     [{ kind: "exportData" }, { kind: "exportData" }],
+    [{ kind: "keepCopiedPlan" }, { kind: "keepCopiedPlan" }],
+    [{ kind: "discardCopiedPlan" }, { kind: "discardCopiedPlan" }],
     [{ kind: "reconnectLiveSource" }, { kind: "reconnectLiveSource" }]
   ])("accepts the exact control shape %#", (message, expected) => {
     expect(decodeWebviewMessage(message, context())).toEqual(expected);

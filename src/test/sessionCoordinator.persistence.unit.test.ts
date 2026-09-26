@@ -2338,109 +2338,111 @@ describe("SessionCoordinator file-plan reuse", () => {
     }
   );
 
-  it.each([false, true])("keeps a copied plan private until saved with reordered input %s", async (reordered) => {
-    const fixture = await filePlanFixture(reordered);
-    const finalWrite = deferred<void>();
-    try {
-      const selected = fixture.capture();
-      const writing = deferred<void>();
-      fixture.beforeSave = async (value) => {
-        const target = value[fixture.targetKey] as { cleaning?: { steps?: unknown[] } } | undefined;
-        if (target?.cleaning?.steps) {
-          writing.resolve();
-          await finalWrite.promise;
-        }
-      };
-      const opening = selected.bridge.request(fixture.targetRequest);
-      const outcome = await Promise.race([writing.promise.then(() => "saving"), opening]);
-      expect(outcome).toBe("saving");
-      expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
-      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
-      expect(fixture.targetRequests.map((request) => request.kind)).toEqual([
-        "openSession",
-        "previewStep",
-        "applyDraft",
-        "previewStep",
-        "applyDraft",
-        "previewStep",
-        "applyDraft",
-        "getPage"
-      ]);
-      const copiedSteps: TransformStep[] = [
-        {
-          id: "rename-value",
-          kind: "renameColumn",
-          params: { column: { id: `c:source:${reordered ? 1 : 0}`, name: "value" }, newName: "amount" }
-        },
-        {
-          id: "total",
-          kind: "formula",
-          params: {
-            leftColumn: { id: `c:source:${reordered ? 1 : 0}`, name: "amount" },
-            rightColumn: { id: `c:source:${reordered ? 0 : 1}`, name: "other" },
-            operator: "add",
-            newColumn: "total"
-          }
-        },
-        { id: "floor-total", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
-      ];
-      expect(
-        fixture.targetRequests.filter((request) => request.kind === "previewStep").map((request) => request.step)
-      ).toEqual(copiedSteps);
-      finalWrite.resolve();
-      const result = await opening;
-      expect(result.kind).toBe("sessionOpened");
-      if (result.kind !== "sessionOpened") throw new Error("Expected copied plan.");
-      expect(result.metadata.source).toEqual(fixture.targetRequest.source);
-      expect(result.metadata.steps).toEqual(copiedSteps);
-      expect(result.metadata.schema.map((column) => [column.id, column.name])).toEqual([
-        ["c:source:0", reordered ? "other" : "amount"],
-        ["c:source:1", reordered ? "amount" : "other"],
-        ["c:step:total:0", "total"]
-      ]);
-      expect(
-        fixture.coordinator["sessions"].get(result.metadata.sessionId)?.sourceSchema?.map((column) => column.name)
-      ).toEqual(reordered ? ["other", "value"] : ["value", "other"]);
-      expect(result.metadata.sessionId).not.toBe(fixture.originId);
-      expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
-      expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
-      expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: copiedSteps } });
-      expect(fixture.coordinator.activeSession()?.code).toBe("# target.csv");
-      await fixture.bridge.request({
-        kind: "closeSession",
-        sessionId: fixture.originId,
-        revision: fixture.originSnapshot!.metadata.revision
-      });
-      await expect(
-        selected.bridge.request({
-          kind: "getPage",
-          sessionId: result.metadata.sessionId,
-          revision: result.metadata.revision,
-          offset: 0,
-          limit: 10,
-          columnOffset: 0,
-          columnLimit: 16,
-          viewRequestId: "independent-target",
-          filterModel: { filters: [], sort: [] }
-        })
-      ).resolves.toMatchObject({ kind: "page" });
-      expect(await readFile(fixture.originPath, "utf8")).toBe("value,other\n1.2,10\n2.3,20\n");
-      expect(await readFile(fixture.targetPath, "utf8")).toBe(
-        reordered ? "other,value\n30,4.5\n40,6.7\n" : "value,other\n4.5,30\n6.7,40\n"
-      );
-      expect(fixture.mappingRequests).toEqual([]);
-    } finally {
-      finalWrite.resolve();
-      await fixture.close();
+  it.each([false, true])(
+    "shows a copied plan without saving it until kept, with reordered input %s",
+    async (reordered) => {
+      const fixture = await filePlanFixture(reordered);
+      try {
+        const selected = fixture.capture();
+        const result = await selected.bridge.request(fixture.targetRequest);
+        expect(fixture.targetRequests.map((request) => request.kind)).toEqual([
+          "openSession",
+          "previewStep",
+          "applyDraft",
+          "previewStep",
+          "applyDraft",
+          "previewStep",
+          "applyDraft",
+          "getPage"
+        ]);
+        const copiedSteps: TransformStep[] = [
+          {
+            id: "rename-value",
+            kind: "renameColumn",
+            params: { column: { id: `c:source:${reordered ? 1 : 0}`, name: "value" }, newName: "amount" }
+          },
+          {
+            id: "total",
+            kind: "formula",
+            params: {
+              leftColumn: { id: `c:source:${reordered ? 1 : 0}`, name: "amount" },
+              rightColumn: { id: `c:source:${reordered ? 0 : 1}`, name: "other" },
+              operator: "add",
+              newColumn: "total"
+            }
+          },
+          { id: "floor-total", kind: "floorNumber", params: { column: { id: "c:step:total:0", name: "total" } } }
+        ];
+        expect(
+          fixture.targetRequests.filter((request) => request.kind === "previewStep").map((request) => request.step)
+        ).toEqual(copiedSteps);
+        if (result.kind !== "sessionOpened") throw new Error(JSON.stringify(result));
+        const targetId = result.metadata.sessionId;
+        expect(result.metadata.source).toEqual(fixture.targetRequest.source);
+        expect(result.metadata.steps).toEqual(copiedSteps);
+        expect(result.metadata.schema.map((column) => [column.id, column.name])).toEqual([
+          ["c:source:0", reordered ? "other" : "amount"],
+          ["c:source:1", reordered ? "amount" : "other"],
+          ["c:step:total:0", "total"]
+        ]);
+        expect(fixture.coordinator["sessions"].get(targetId)?.sourceSchema?.map((column) => column.name)).toEqual(
+          reordered ? ["other", "value"] : ["value", "other"]
+        );
+        expect(targetId).not.toBe(fixture.originId);
+        expect(fixture.coordinator.activeSession()?.sessionId).toBe(targetId);
+        expect(selected.bridge.getSessionPresentation?.(targetId)).toMatchObject({ copiedPlanPending: true });
+        await selected.bridge.updateViewState?.(targetId, {
+          columnWidths: new Map([["c:source:0", 180]]),
+          viewport: { firstVisibleRow: 1, scrollLeft: 0 }
+        });
+        expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+        expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
+        expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+
+        await expect(selected.bridge.keepCopiedPlan!(targetId)).resolves.toBeUndefined();
+        expect(fixture.stored[fixture.targetKey]).toMatchObject({
+          cleaning: { steps: copiedSteps },
+          view: { viewport: { firstVisibleRow: 1 } }
+        });
+        expect(selected.bridge.getSessionPresentation?.(targetId)).not.toHaveProperty("copiedPlanPending");
+        await expect(selected.bridge.keepCopiedPlan!(targetId)).resolves.toBeUndefined();
+        expect(fixture.coordinator.activeSession()?.code).toBe("# target.csv");
+        await fixture.bridge.request({
+          kind: "closeSession",
+          sessionId: fixture.originId,
+          revision: fixture.originSnapshot!.metadata.revision
+        });
+        await expect(
+          selected.bridge.request({
+            kind: "getPage",
+            sessionId: targetId,
+            revision: result.metadata.revision,
+            offset: 0,
+            limit: 10,
+            columnOffset: 0,
+            columnLimit: 16,
+            viewRequestId: "independent-target",
+            filterModel: { filters: [], sort: [] }
+          })
+        ).resolves.toMatchObject({ kind: "page" });
+        expect(await readFile(fixture.originPath, "utf8")).toBe("value,other\n1.2,10\n2.3,20\n");
+        expect(await readFile(fixture.targetPath, "utf8")).toBe(
+          reordered ? "other,value\n30,4.5\n40,6.7\n" : "value,other\n4.5,30\n6.7,40\n"
+        );
+        expect(fixture.mappingRequests).toEqual([]);
+      } finally {
+        await fixture.close();
+      }
     }
-  });
+  );
 
   it("copies a plan onto a renamed column after the user matches it", async () => {
     const fixture = await filePlanFixture();
     try {
       fixture.targetColumnNames = ["other", "price"];
       fixture.chooseColumnMapping = async ({ unmatched, candidates }) => new Map([[unmatched[0].id, candidates[0].id]]);
-      const result = await fixture.capture().bridge.request(fixture.targetRequest);
+      const selected = fixture.capture();
+      const result = await selected.bridge.request(fixture.targetRequest);
       expect(fixture.mappingRequests).toEqual([
         {
           unmatched: [expect.objectContaining({ id: "c:source:0", name: "value" })],
@@ -2467,6 +2469,8 @@ describe("SessionCoordinator file-plan reuse", () => {
         fixture.steps[2]
       ];
       expect(result.metadata.steps).toEqual(copiedSteps);
+      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+      await expect(selected.bridge.keepCopiedPlan!(result.metadata.sessionId)).resolves.toBeUndefined();
       expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: copiedSteps } });
       expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
     } finally {
@@ -2521,7 +2525,6 @@ describe("SessionCoordinator file-plan reuse", () => {
     "target runtime unavailable",
     "target runtime replacement",
     "runtime refusal",
-    "persistence failure",
     "cancellation",
     "detached cancellation",
     "retired origin"
@@ -2546,11 +2549,6 @@ describe("SessionCoordinator file-plan reuse", () => {
       if (failure === "page source drift") fixture.targetPageSourceDrift = true;
       if (failure === "unsupported operation") fixture.targetUnsupported = true;
       if (failure === "target runtime unavailable") fixture.targetRuntimeOwnerCurrent = false;
-      if (failure === "persistence failure")
-        fixture.beforeSave = async (value) => {
-          if ((value[fixture.targetKey] as { cleaning?: unknown } | undefined)?.cleaning)
-            throw new Error("Workspace state write unavailable.");
-        };
       fixture.beforeTargetPreview = async () => {
         if (failure === "target runtime replacement") fixture.targetRuntimeOwnerCurrent = false;
         if (failure === "runtime refusal")
@@ -2579,7 +2577,7 @@ describe("SessionCoordinator file-plan reuse", () => {
         );
       } else expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
       expect(fixture.targetRequests.filter((request) => request.kind === "applyDraft")).toHaveLength(
-        failure === "incomplete plan" || failure === "page source drift" || failure === "persistence failure" ? 3 : 0
+        failure === "incomplete plan" || failure === "page source drift" ? 3 : 0
       );
       expect(fixture.mappingRequests.map(({ unmatched, candidates }) => [unmatched, candidates])).toEqual(
         failure.includes("mapping")
@@ -2607,13 +2605,6 @@ describe("SessionCoordinator file-plan reuse", () => {
           recoverable: true,
           ...(expected[1] ? { message: expected[1] } : {})
         });
-      if (failure === "persistence failure")
-        expect(result).toMatchObject({
-          kind: "error",
-          code: "persistence_unavailable",
-          recoverable: true,
-          message: "Open Wrangler could not save the copied plan. Retry after workspace storage is available."
-        });
       if (failure === "target runtime replacement")
         expect(result).toMatchObject({
           kind: "error",
@@ -2634,47 +2625,139 @@ describe("SessionCoordinator file-plan reuse", () => {
     }
   });
 
-  it.each(["cancellation", "file replacement", "target runtime replacement"] as const)(
-    "keeps a durable copied plan after late %s without publishing its runtime",
+  it("closes a copied plan when its target gains saved work during replay", async () => {
+    const fixture = await filePlanFixture();
+    try {
+      const selected = fixture.capture();
+      fixture.beforeTargetPreview = async () => {
+        fixture.stored = { ...fixture.stored, [fixture.targetKey]: { unknownWork: true } };
+        return undefined;
+      };
+      await expect(selected.bridge.request(fixture.targetRequest)).resolves.toMatchObject({
+        kind: "error",
+        code: "file_plan_target_changed",
+        message: "The target's saved state changed before the plan could be shown. Choose another file."
+      });
+      expect(fixture.stored[fixture.targetKey]).toEqual({ unknownWork: true });
+      expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+      expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
+      expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("refuses changes to a copied plan until it is kept", async () => {
+    const fixture = await filePlanFixture();
+    try {
+      const selected = fixture.capture();
+      const opened = await selected.bridge.request(fixture.targetRequest);
+      if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+      const { sessionId, revision } = opened.metadata;
+      const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 16 };
+      const refused = {
+        kind: "error",
+        code: "copied_plan_pending",
+        recoverable: true,
+        message: "Keep the copied plan before changing it. Nothing is saved for this file until you keep it."
+      };
+      const step: TransformStep = {
+        id: "round-other",
+        kind: "roundNumber",
+        params: { column: { id: "c:source:1", name: "other" } }
+      };
+      const previews = () => fixture.targetRequests.filter((request) => request.kind === "previewStep").length;
+      await expect(
+        selected.bridge.request({ kind: "previewStep", sessionId, revision, step, ...window })
+      ).resolves.toMatchObject(refused);
+      await expect(
+        selected.bridge.request({ kind: "undoStep", sessionId, revision, ...window })
+      ).resolves.toMatchObject(refused);
+      await expect(
+        selected.bridge.rewriteCleaningPlan!(sessionId, revision, "rename-value", "deleteStep", window)
+      ).resolves.toMatchObject(refused);
+      await expect(
+        selected.bridge.reconfigureFileSession!(sessionId, revision, {
+          ...fixture.targetRequest.source,
+          importOptions: { delimiter: ";" }
+        })
+      ).resolves.toMatchObject(refused);
+      expect(fixture.bridge.captureActiveFilePlan!(async () => undefined)).toMatchObject({
+        kind: "error",
+        code: "file_plan_unavailable",
+        message: "Keep the copied plan before using it on another file."
+      });
+      expect(previews()).toBe(3);
+      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+
+      await expect(selected.bridge.keepCopiedPlan!(sessionId)).resolves.toBeUndefined();
+      await expect(
+        selected.bridge.request({ kind: "previewStep", sessionId, revision, step, ...window })
+      ).resolves.toMatchObject({ kind: "stepPreview" });
+      expect(previews()).toBe(4);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it.each(["saved elsewhere", "storage failure"] as const)(
+    "leaves a copied plan pending when keeping it fails: %s",
     async (failure) => {
       const fixture = await filePlanFixture();
-      const cancellation = new vscode.CancellationTokenSource();
       try {
         const selected = fixture.capture();
-        fixture.beforeSave = async (value) => {
-          if ((value[fixture.targetKey] as { cleaning?: unknown } | undefined)?.cleaning) {
-            if (failure === "cancellation") cancellation.cancel();
-            else if (failure === "target runtime replacement") fixture.targetRuntimeOwnerCurrent = false;
-            else {
-              await rename(fixture.targetPath, join(fixture.directory, "retired-target.csv"));
-              await writeFile(fixture.targetPath, "value\n9\n");
-            }
-          }
-        };
-        await expect(
-          selected.bridge.request(fixture.targetRequest, { cancellation: cancellation.token })
-        ).resolves.toMatchObject(
-          failure === "cancellation"
-            ? { kind: "cancelled" }
-            : {
-                kind: "error",
-                code:
-                  failure === "target runtime replacement"
-                    ? "file_plan_target_runtime_changed"
-                    : "file_plan_target_changed"
+        const opened = await selected.bridge.request(fixture.targetRequest);
+        if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+        const sessionId = opened.metadata.sessionId;
+        if (failure === "saved elsewhere")
+          fixture.stored = { ...fixture.stored, [fixture.targetKey]: { unknownWork: true } };
+        else
+          fixture.beforeSave = async (value) => {
+            if (Object.hasOwn(value, fixture.targetKey)) throw new Error("Workspace state write unavailable.");
+          };
+
+        await expect(selected.bridge.keepCopiedPlan!(sessionId)).resolves.toMatchObject(
+          failure === "saved elsewhere"
+            ? {
+                code: "file_plan_target_changed",
+                message:
+                  "target.csv now has other saved Open Wrangler work, so the copied plan was not saved. Discard this copy to keep that work."
               }
+            : { code: "persistence_unavailable" }
         );
-        expect(fixture.stored[fixture.targetKey]).toMatchObject({ cleaning: { steps: fixture.steps } });
-        expect(fixture.coordinator.activeSession()?.sessionId).toBe(fixture.originId);
-        expect(fixture.coordinator.diagnostics().sessionCount).toBe(1);
-        expect(fixture.coordinator.sessionSnapshot(fixture.originId)).toEqual(fixture.originSnapshot);
-        expect(fixture.targetRequests.filter((request) => request.kind === "closeSession")).toHaveLength(1);
+        expect(fixture.stored[fixture.targetKey]).toEqual(
+          failure === "saved elsewhere" ? { unknownWork: true } : undefined
+        );
+        expect(selected.bridge.getSessionPresentation?.(sessionId)).toMatchObject({ copiedPlanPending: true });
+        expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
       } finally {
-        cancellation.dispose();
         await fixture.close();
       }
     }
   );
+
+  it("saves nothing when a copied plan is closed before it is kept", async () => {
+    const fixture = await filePlanFixture();
+    try {
+      const selected = fixture.capture();
+      const opened = await selected.bridge.request(fixture.targetRequest);
+      if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+      await expect(
+        selected.bridge.request({
+          kind: "closeSession",
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision
+        })
+      ).resolves.toMatchObject({ kind: "sessionClosed" });
+      expect(Object.hasOwn(fixture.stored, fixture.targetKey)).toBe(false);
+      expect(fixture.stored[fixture.originKey]).toEqual(fixture.savedOrigin);
+      await expect(selected.bridge.keepCopiedPlan!(opened.metadata.sessionId)).resolves.toMatchObject({
+        code: "unknown_session"
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
 });
 
 async function filePlanFixture(reordered = false, backend: "polars" | "r" = "polars") {

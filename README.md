@@ -98,7 +98,8 @@ plan's original column names and types, even when their order changes. If a colu
 which column in the new file replaces it and shows the complete match before copying the plan. It opens a separate
 Editing session using the same engine and import options. This supports Pandas, Polars, DuckDB and native R file plans without Custom Code or an
 unfinished draft. Choose a file that is not already open in Open Wrangler and has no saved work for those import
-options. Both source files remain unchanged.
+options. The new tab opens as a read-only preview, and nothing is saved for that file until you choose **Keep plan**.
+Keeping the plan lets you change its steps; **Discard** closes the preview. Both source files remain unchanged.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/main/docs/images/readme/gallery/applied-step-inspection.png"><img alt="Applied Formula-step inspection with projected_revenue highlighted, Edit and Delete controls, and Code Preview labeled Inspecting step 2 of 2" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/gallery/applied-step-inspection-detail.png" width="960"></a>
 

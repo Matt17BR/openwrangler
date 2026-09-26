@@ -146,6 +146,9 @@ export function App() {
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
+  const [copiedPlanPending, setCopiedPlanPending] = useState(false);
+  const [keepingCopiedPlan, setKeepingCopiedPlan] = useState(false);
+  const copiedPlanPendingRef = useRef(false);
   const [stepInspection, setStepInspection] = useState<StepInspectionResponse | undefined>();
   const [pendingStepInspection, setPendingStepInspection] = useState<PendingStepInspection | undefined>();
   const [stepInspectionTarget, setStepInspectionTarget] = useState<PendingStepInspection | undefined>();
@@ -438,6 +441,7 @@ export function App() {
       flushGridViewState();
       suspendProfiling();
       if (
+        copiedPlanPendingRef.current ||
         importOptionsUiBusyRef.current ||
         foregroundRequest.current ||
         pendingStepInspectionRef.current?.reason === "projection" ||
@@ -523,6 +527,7 @@ export function App() {
             : selectedStep !== undefined && canStartOperation(currentMetadata, selectedStep.kind);
       if (
         !currentMetadata ||
+        copiedPlanPendingRef.current ||
         (expectedSessionId !== undefined && expectedSessionId !== currentMetadata.sessionId) ||
         (expectedRevision !== undefined && expectedRevision !== currentMetadata.revision) ||
         !canOpen
@@ -682,6 +687,7 @@ export function App() {
   const sendPlanAction = useCallback(
     (action: "applyDraft" | "discardDraft" | "undoStep" | "redoStep", returnTarget?: HTMLButtonElement) => {
       const current = metadataRef.current;
+      if (copiedPlanPendingRef.current) return;
       if (action === "redoStep" && (current?.mode !== "editing" || current.draftStep || current.canRedo !== true))
         return;
       const redoViewRequestId = action === "redoStep" ? nextViewRequestId() : undefined;
@@ -729,7 +735,12 @@ export function App() {
   const deleteStep = useCallback(
     (stepId: string) => {
       const currentMetadata = metadataRef.current;
-      if (!currentMetadata?.steps.some((step) => step.id === stepId) || !beginMutation()) return;
+      if (
+        copiedPlanPendingRef.current ||
+        !currentMetadata?.steps.some((step) => step.id === stepId) ||
+        !beginMutation()
+      )
+        return;
       const columnWindow = desiredColumnWindow.current;
       vscode.postMessage({
         kind: "rewriteCleaningPlan",
@@ -788,6 +799,9 @@ export function App() {
 
   useEffect(() => {
     const installPresentation = (presentation: Omit<SessionPresentation, "code">) => {
+      copiedPlanPendingRef.current = presentation.copiedPlanPending === true;
+      setCopiedPlanPending(presentation.copiedPlanPending === true);
+      setKeepingCopiedPlan(false);
       setDiff(presentation.draft?.diff);
       setRemainingMissingCells(presentation.draft?.remainingMissingCells);
       setDraftBefore(presentation.draft ? { schema: presentation.draft.beforeSchema } : undefined);
@@ -799,6 +813,9 @@ export function App() {
       clearProfileOwners: boolean
     ) => {
       resetGridViewState();
+      copiedPlanPendingRef.current = false;
+      setCopiedPlanPending(false);
+      setKeepingCopiedPlan(false);
       storePendingStepInspection(undefined);
       storeStepInspection(undefined);
       storeStepInspectionTarget(undefined);
@@ -2108,7 +2125,9 @@ export function App() {
   const sourceLabel = metadata ? sourceDisplayLabel(metadata.source) : undefined;
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
-  const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
+  const importOptionsDisabled =
+    loading || mutationPending || projectionLoading || importOptionsPending || copiedPlanPending;
+  const copiedPlanTitle = copiedPlanPending ? "Keep the copied plan before changing it." : undefined;
   // A terminal open error has already settled the host request. Generic grid
   // loading state can outlive a replaced Cursor renderer, so it must not leave
   // the only recovery action permanently disabled. The host revalidates the
@@ -2237,10 +2256,17 @@ export function App() {
                   className="toolbarPrimaryButton"
                   data-operation-focus-fallback
                   data-cleaning-plan-focus-fallback
-                  disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
+                  disabled={
+                    loading ||
+                    projectionLoading ||
+                    importOptionsPending ||
+                    copiedPlanPending ||
+                    !canStartOperation(metadata)
+                  }
                   aria-describedby={projectionStatusId}
                   title={
                     projectionActionTitle ??
+                    copiedPlanTitle ??
                     (metadata.draftStep
                       ? "Apply or discard the current draft before adding another step."
                       : !canStartOperation(metadata)
@@ -2267,10 +2293,10 @@ export function App() {
                         <button
                           type="button"
                           className="secondaryButton"
-                          disabled={loading || projectionLoading || importOptionsPending}
+                          disabled={loading || projectionLoading || importOptionsPending || copiedPlanPending}
                           aria-describedby={projectionStatusId}
                           aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                          title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                          title={projectionActionTitle ?? copiedPlanTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
                           onClick={() => requestOperationIntent({ action: "editLatest" })}
                         >
                           Edit latest
@@ -2279,10 +2305,10 @@ export function App() {
                           type="button"
                           className="secondaryButton"
                           data-cleaning-plan-undo
-                          disabled={loading || projectionLoading || importOptionsPending}
+                          disabled={loading || projectionLoading || importOptionsPending || copiedPlanPending}
                           aria-describedby={projectionStatusId}
                           aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                          title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                          title={projectionActionTitle ?? copiedPlanTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
                           onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
                         >
                           <span className="codicon codicon-discard" aria-hidden="true" /> Undo
@@ -2292,9 +2318,15 @@ export function App() {
                     <button
                       type="button"
                       className="secondaryButton"
-                      disabled={loading || projectionLoading || importOptionsPending || metadata.canRedo !== true}
+                      disabled={
+                        loading ||
+                        projectionLoading ||
+                        importOptionsPending ||
+                        copiedPlanPending ||
+                        metadata.canRedo !== true
+                      }
                       aria-describedby={projectionStatusId}
-                      title={projectionActionTitle ?? "Redo the next undone step"}
+                      title={projectionActionTitle ?? copiedPlanTitle ?? "Redo the next undone step"}
                       onClick={(event) => sendPlanAction("redoStep", event.currentTarget)}
                     >
                       <span className="codicon codicon-redo" aria-hidden="true" /> Redo
@@ -2429,6 +2461,40 @@ export function App() {
           )}
         </header>
 
+        {metadata && copiedPlanPending && (
+          <section className="draftReview" aria-label="Copied plan preview">
+            <div className="draftReviewHeading">
+              <span className="codicon codicon-eye" aria-hidden="true" />
+              <span className="draftReviewLabel">Copied plan preview</span>
+            </div>
+            <span>
+              Nothing is saved for {metadata.source.label} until you keep this plan. Keep it to change its steps.
+            </span>
+            <div className="cleaningActions">
+              <button
+                type="button"
+                className="secondaryButton"
+                disabled={keepingCopiedPlan}
+                onClick={() => vscode.postMessage({ kind: "discardCopiedPlan" })}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                disabled={keepingCopiedPlan || loading || projectionLoading}
+                aria-busy={keepingCopiedPlan || undefined}
+                onClick={() => {
+                  setKeepingCopiedPlan(true);
+                  flushGridViewState();
+                  vscode.postMessage({ kind: "keepCopiedPlan" });
+                }}
+              >
+                Keep plan
+              </button>
+            </div>
+          </section>
+        )}
+
         {metadata && metadata.mode === "editing" && metadata.draftStep && (
           <section className="draftReview" aria-label="Draft review">
             <div className="draftReviewHeading">
@@ -2498,6 +2564,7 @@ export function App() {
               selectedInspectionStep &&
               stepInspection &&
               metadata.mode === "editing" &&
+              !copiedPlanPending &&
               !metadata.draftStep &&
               !loading &&
               !projectionLoading &&

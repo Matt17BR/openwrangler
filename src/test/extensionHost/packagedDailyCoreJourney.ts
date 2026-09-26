@@ -363,6 +363,12 @@ export function createPackagedDailyCoreJourney({
       const reusedFirstCell = reusedTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
       await reusedFirstCell.waitFor({ state: "visible", timeout: 10_000 });
       assert.equal((await reusedFirstCell.innerText()).trim(), "3400001");
+      const copiedPreview = reusedTarget.frame.getByRole("region", { name: "Copied plan preview" });
+      await copiedPreview.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await reusedTarget.frame.getByRole("button", { name: "Add step" }).isDisabled(), true);
+      await copiedPreview.getByRole("button", { name: "Keep plan" }).click();
+      await copiedPreview.waitFor({ state: "hidden", timeout: 10_000 });
+      assert.equal(await reusedTarget.frame.getByRole("button", { name: "Add step" }).isEnabled(), true);
       const retainedOrigin = testing.sessionSnapshot(origin.sessionId);
       assert.ok(retainedOrigin, "Opening the target must retain the original session.");
       assert.equal(retainedOrigin.metadata.revision, origin.metadata.revision);

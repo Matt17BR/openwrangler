@@ -967,14 +967,16 @@ each original column and uses the same engine and import options. Same-name colu
 column, the command asks which selected-file column replaces it and confirms the complete mapping before replay; steps
 that rewrite a column in place keep writing to the renamed column. The target keeps its column order unless a cleaning
 step changes it. An unfinished draft, Custom Code, ambiguous column names, a target already open in Open Wrangler,
-or saved target work prevents reuse. Full replay must succeed before the new session is shown. Viewing filters and
-sorts are not copied, and both source files remain unchanged.
+or saved target work prevents reuse. Full replay must succeed before the new session is shown. It opens as a
+read-only preview that saves nothing until **Keep plan**, which also enables step changes; **Discard** closes it.
+Viewing filters and sorts are not copied, and both source files remain unchanged.
 
 Extra or missing columns, notebook inputs, recipe files and batch execution remain unavailable. DuckDB keeps its
 experimental file-editing status. Local R file support remains Preview. Source evidence: test:src/test/fileOpen.unit.test.ts;
 test:src/test/sessionCoordinator.persistence.unit.test.ts; test:src/test/planColumnTranslation.unit.test.ts;
-test:src/test/rProcessTransport.cross.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts.
-The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and late-cancellation
+test:src/test/rProcessTransport.cross.test.ts; test:src/test/sessionPersistenceStore.unit.test.ts;
+test:src/test/webviewPanel.unit.test.ts; test:src/test/appDraftState.component.test.tsx.
+The [architecture contract](architecture.md#sources-sessions-and-data-flow) records source identity and preview
 semantics. The existing daily-core journey owns the installed command, file picker and rendered target interaction.
 
 ## Deferred and unsupported scope

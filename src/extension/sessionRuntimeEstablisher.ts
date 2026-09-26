@@ -56,6 +56,8 @@ export interface RuntimeEstablishedSession extends SessionResponseState {
   recoveryRequired: boolean;
   /** Host-detached runtime work that must settle before this session may issue more work. */
   runtimeSettlementBarrier?: Promise<void>;
+  /** A copied plan shown read-only; nothing is saved for its target until the user keeps it. */
+  copiedPlanPending?: boolean;
 }
 
 export type RuntimeEstablishmentResult =
@@ -482,6 +484,28 @@ export class SessionRuntimeEstablisher {
       session.sourceProtection = await confirmSessionSourceProtection(session.sourceProtection!);
       await plan.assertTargetAvailable(request.source, session.sourceProtection);
       assertCurrent();
+      if (!isRLibraryCopy(plan)) {
+        const absent = this.persistence.checkAbsent(request.source, plan.backend, plan.rLibrary);
+        if (absent.kind !== "absent") {
+          await this.runtimeCleanup.close(session, "invalid open runtime");
+          return {
+            established: false,
+            response: protocolError(
+              absent.kind === "occupied" ? "file_plan_target_changed" : "persistence_unavailable",
+              absent.kind === "occupied"
+                ? "The target's saved state changed before the plan could be shown. Choose another file."
+                : "Open Wrangler could not read workspace storage. Retry after storage is available.",
+              true
+            )
+          };
+        }
+        session.copiedPlanPending = true;
+        return {
+          established: true,
+          session,
+          response: { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] }
+        };
+      }
       const saved = await this.persistence.commitRuntimeReplacement(
         request.source,
         persistedSessionState(session.metadata, session.viewState),

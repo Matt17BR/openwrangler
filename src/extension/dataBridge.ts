@@ -152,6 +152,8 @@ export interface OpenWranglerBridge {
   captureSessionOwner?(sessionId: string): (() => boolean) | undefined;
   /** Pins the active confirmed file plan and its target bridge factory, or returns an eligibility diagnostic. */
   captureActiveFilePlan?(chooseColumnMapping: FilePlanColumnMappingChooser): FilePlanOpenContext | ErrorResponse;
+  /** Saves a pending copied plan for its target file; resolves to an error when it could not be kept. */
+  keepCopiedPlan?(sessionId: string): Promise<ErrorResponse | undefined>;
   captureRLibraryCopy?(sessionId: string, revision: number): RLibraryCopyContext | ErrorResponse;
   prepareFileAutoFallback?(
     source: SessionSource,
