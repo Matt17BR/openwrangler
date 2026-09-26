@@ -2320,9 +2320,10 @@ executor across every activation, discovery, picker, execution, and focus-restor
 Persisted state is keyed by both source identity and confirmed backend. The cleaning section contains validated
 committed steps, at most one draft, and its confirmed base-view receipt. The viewing section independently contains
 the confirmed filter/sort model and bounded presentation state such as stable-ID widths, selection, and viewport.
-Opening in Viewing with saved steps or a draft returns `viewing_mode_unavailable` before replay and preserves saved
-work. For editing-capable sources, the error identifies the start-mode setting and instructs the user to close the
-panel and reopen the same dataframe in Editing. Viewing-only sources receive no unsupported mode-change guidance.
+Opening in Viewing with saved steps or a draft closes the Viewing runtime before replay. For editing-capable
+sources, the establisher reopens once in Editing, with a fresh `requestedSessionId` when the original carried one, and
+restores through the normal replay path; an Editing request never triggers another reopen. Viewing-only sources return
+`viewing_mode_unavailable` and preserve saved work.
 Malformed or stale viewing state falls back to an empty view without dropping valid cleaning. If cleaning replay
 fails, the failed runtime closes and Open Wrangler asks before discarding saved steps and the draft to reopen original data.
 Dismissal preserves the saved plan for a later retry. An accepted reset requires a valid original session, its exact

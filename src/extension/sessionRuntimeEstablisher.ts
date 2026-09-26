@@ -385,6 +385,14 @@ export class SessionRuntimeEstablisher {
     const restored = initialPlan
       ? await this.restoreInitialPlan(session, request, initialPlan, currentFailure, options)
       : await this.restorePersistedSession(session, request, response, currentFailure, options);
+    if ("reopenInEditing" in restored) {
+      const editingRequest: OpenSessionRequest = {
+        ...request,
+        mode: "editing",
+        ...(request.requestedSessionId === undefined ? {} : { requestedSessionId: randomUUID() })
+      };
+      return this.establish(delegate, editingRequest, options, origin, hooks, sourceProtection);
+    }
     if (!restored.established) return restored;
     let established = false;
     try {
@@ -572,7 +580,7 @@ export class SessionRuntimeEstablisher {
     response: SessionOpenedResponse,
     currentFailure: () => OpenWranglerResponse | undefined,
     options?: BridgeRequestOptions
-  ): Promise<RuntimeEstablishmentResult> {
+  ): Promise<RuntimeEstablishmentResult | { reopenInEditing: true }> {
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.persistence.load(request.source, response.metadata.backend, response.metadata.rLibrary);
     if (!persisted) return { established: true, session, response: opened };
@@ -581,12 +589,16 @@ export class SessionRuntimeEstablisher {
       const afterClose = currentFailure();
       if (afterClose) return { established: false, response: afterClose };
       const fileSource = request.source.kind === "file" || request.source.kind === "documentVariable";
-      const setting = fileSource ? "fileStartMode" : "notebookStartMode";
-      const message =
-        fileSource || canRequestLiveSessionMode(response.metadata, "editing")
-          ? `Saved cleaning steps or a draft require Editing mode. Your saved work was kept. Set openWrangler.${setting} to "editing", close this Open Wrangler panel, and reopen the same dataframe.`
-          : "This dataframe source supports Viewing only, so its saved cleaning steps or draft cannot be restored. Your saved work was kept.";
-      return { established: false, response: protocolError("viewing_mode_unavailable", message, true) };
+      if (request.mode !== "editing" && (fileSource || canRequestLiveSessionMode(response.metadata, "editing")))
+        return { reopenInEditing: true };
+      return {
+        established: false,
+        response: protocolError(
+          "viewing_mode_unavailable",
+          "This dataframe source supports Viewing only, so its saved cleaning steps or draft cannot be restored. Your saved work was kept.",
+          true
+        )
+      };
     }
     const assertCurrent = (): void => {
       if (currentFailure()) throw new Error("The saved-state opening is no longer current.");

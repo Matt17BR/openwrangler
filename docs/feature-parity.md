@@ -517,8 +517,9 @@ Spark preserves that view's paging state through failed or superseded replacemen
 Concurrent grid presentation saves preserve current sort publication and newer file-session recovery state.
 Failed recovery-storage writes retain the current selection and layout during the session. Reopening uses the last
 successfully saved state, as the storage warning explains.
-Saved cleaning steps and drafts require Editing mode. A Viewing open preserves saved work. For sources that support
-Editing, it explains how to change the start-mode setting, close the panel and reopen the same dataframe.
+Saved cleaning steps and drafts require Editing mode. When a Viewing open finds saved work on a source that supports
+Editing, Open Wrangler reopens it in Editing and restores the work. A Viewing-only source keeps the saved work and
+explains that it cannot be restored there.
 If a saved cleaning plan cannot replay, Open Wrangler asks before discarding it to reopen original data. Dismissing
 the prompt keeps the saved steps and draft for another attempt; an explicit reset starts a new plan.
 Runtime recovery refreshes the grid and profiles together, while retaining a failed operation's inputs and error.

@@ -2645,6 +2645,17 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(duckdbSorted.page.rows[0]?.values[0]?.display, "3500000");
       assert.match(duckdbSorted.code, /def clean_data\(df\):/u);
       assert.equal(duckdbSorted.code.includes("pandas"), false, "DuckDB cleaning code must stay native.");
+      const duckdbUnsorted = await testing.request({
+        kind: "undoStep",
+        ...GRID_COLUMN_WINDOW,
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: duckdbSorted.revision,
+        offset: 0,
+        limit: 10
+      });
+      assert.equal(duckdbUnsorted.kind, "planUpdated");
+      if (duckdbUnsorted.kind !== "planUpdated") throw new Error("The native DuckDB sort did not undo.");
+      assert.deepEqual(duckdbUnsorted.metadata.steps, [], "The inline Viewing open below requires no saved steps.");
       await disposePackagedSessionPanel(
         testing,
         duckdbVariablesRelation.sessionId,
