@@ -128,16 +128,10 @@ Copy or save the displayed code; cleaned-data export uses all applied steps and 
 
 ## Notebook dataframes
 
-<table>
-  <tr>
-    <td width="51%"><a href="images/readme/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling DuckDB, Pandas, and Polars variables by engine and dataframe type" src="images/readme/gallery/notebook-variable-picker-detail.png" width="602"></a></td>
-    <td width="49%"><a href="images/editor-acceptance/vscode-notebook-code-insertion-dark.png"><img alt="Generated Pandas cleaning code inserted into the originating notebook" src="images/readme/gallery/notebook-code-insertion.png" width="960"></a></td>
-  </tr>
-  <tr>
-    <td>The notebook picker labels each live variable by engine and dataframe type.</td>
-    <td>Insert generated code into the notebook that opened the dataframe.</td>
-  </tr>
-</table>
+<a href="images/readme/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling DuckDB, Pandas, and Polars variables by engine and dataframe type" src="images/readme/gallery/notebook-variable-picker-detail.png" width="602"></a>
+
+The notebook picker labels each live variable by engine and dataframe type. Generated code can be inserted into the
+notebook that opened the dataframe.
 
 <table>
   <tr>
@@ -165,8 +159,8 @@ final sort key.
 
 ## R notebooks and documents
 
-R notebook support is stable since 2.5.0 for ordinary base `data.frame`, tibble and `data.table` objects in IRkernel
-notebooks in desktop VS Code on Linux, macOS and Windows. Terminal and managed-document support remain Preview;
+R notebook support is stable for ordinary base `data.frame`, tibble and `data.table` objects in IRkernel notebooks
+in desktop VS Code on Linux, macOS and Windows. Terminal and managed-document support remain Preview;
 Cursor remains experimental. [Support by entry path](feature-parity.md#native-r-support) defines the qualified scope.
 
 <a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Data sources listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
@@ -193,8 +187,6 @@ profiles. Viewing changes do not alter the source object.
 
 Editing follows the same draft, preview, code, and apply workflow as the Python engines. This example groups regional
 orders and shows the changed data, cleaning history, and generated R before applying the step.
-
-<a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted into the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 
 Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
 See the [operation and command reference](reference.md) for the current R operation and export support.
