@@ -223,6 +223,17 @@ export function savedReferencePolicy(step: TransformStep): SavedReferencePolicy 
           rejectRepeatedIds: false
         }
       ];
+    case "replaceMatches":
+      return [
+        {
+          label: "replace columns",
+          references: step.params.columns.map((reference, index) => ({
+            label: `replace column ${index + 1}`,
+            reference
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
     case "pivotLonger":
       return [
         {

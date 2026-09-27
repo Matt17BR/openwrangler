@@ -363,6 +363,59 @@ def test_session_finds_cells_in_view_order(tmp_path: Path, backend: str) -> None
         manager.close_session(session_id, 0)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_session_reports_each_match_position_in_the_dataframe(tmp_path: Path, backend: str) -> None:
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "path": str(write_people(tmp_path))}, backend=backend, mode="editing"
+    )
+    metadata = opened["metadata"]
+    session_id = metadata["sessionId"]
+    ids = {column["name"]: column["id"] for column in metadata["schema"]}
+    names = ["alpha", "Beta", "gamma", "ALPHA", None]
+    codes = ["a1", "b2", "a3", "x", "alpha"]
+    by_code = {"logic": "and", "filters": [], "sort": [{"column": "code", "direction": "asc", "nulls": "last"}]}
+    above_six = {
+        "logic": "and",
+        "filters": [
+            {
+                "column": "score",
+                "type": "integer",
+                "logic": "and",
+                "predicates": [{"kind": "predicate", "operator": "gt", "value": 6}],
+            }
+        ],
+        "sort": [{"column": "score", "direction": "desc", "nulls": "last"}],
+    }
+    try:
+        # Sorted by code the rows are 0, 2, 4, 1, 3; above six by descending score they are 2, 0, 4, 3.
+        for model, positions in [
+            (EMPTY, [0, 0, 1, 2, 2, 3, 4]),
+            (by_code, [0, 0, 2, 2, 4, 1, 3]),
+            (above_six, [2, 2, 0, 0, 4, 3]),
+        ]:
+            found = manager.find_cells(session_id, 0, model, "a", include_position=True)
+            seen = []
+            for _ in range(found["matchCount"]):
+                match = found["match"]
+                seen.append(match["position"])
+                column = next(name for name, identifier in ids.items() if identifier == match["columnId"])
+                text = (names if column == "name" else codes)[match["position"]]
+                assert text is not None and "a" in text.lower()
+                found = manager.find_cells(
+                    session_id,
+                    0,
+                    model,
+                    "a",
+                    start={"row": match["row"], "columnId": match["columnId"]},
+                    include_position=True,
+                )
+            assert seen == positions
+        assert "position" not in manager.find_cells(session_id, 0, by_code, "a")["match"]
+    finally:
+        manager.close_session(session_id, 0)
+
+
 def test_session_reuses_matches_until_the_view_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = SessionManager()
     opened = manager.open_session(

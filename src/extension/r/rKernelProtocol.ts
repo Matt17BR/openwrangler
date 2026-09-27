@@ -121,7 +121,12 @@ export interface RKernelDatasetStatsResult {
 }
 
 export type RKernelFindOrigin = Readonly<{ row: number; column: RKernelColumnReference }>;
-export type RKernelFoundCell = Readonly<{ row: number; column: RKernelColumnReference; ordinal: number }>;
+export type RKernelFoundCell = Readonly<{
+  row: number;
+  column: RKernelColumnReference;
+  ordinal: number;
+  position?: number;
+}>;
 export type RKernelFindQuery = Omit<Extract<RKernelRequest, { kind: "findCells" }>["payload"], "sessionId">;
 export type RKernelFindResult = Readonly<{ matchCount: number; match?: RKernelFoundCell }>;
 
@@ -396,6 +401,20 @@ export interface RKernelMarkDuplicatesStep {
   }>;
 }
 
+export interface RKernelReplaceMatchesStep {
+  readonly id: string;
+  readonly kind: "replaceMatches";
+  readonly params: Readonly<{
+    columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    find: string;
+    replacement: string;
+    matchCase: boolean;
+    wholeCell: boolean;
+    spelling: "portable" | "r";
+    row?: number;
+  }>;
+}
+
 export interface RKernelDenseRankStep {
   readonly id: string;
   readonly kind: "denseRank";
@@ -605,6 +624,7 @@ export type RKernelTransformStep =
   | RKernelPivotWiderStep
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
+  | RKernelReplaceMatchesStep
   | RKernelFillMissingValuesStep
   | RKernelMarkDuplicatesStep
   | RKernelDenseRankStep
@@ -768,6 +788,7 @@ export type RKernelRequest =
         columns: readonly RKernelColumnReference[] | null;
         from: RKernelFindOrigin | null;
         includeFrom: boolean;
+        includePosition: boolean;
       }>;
     }>
   | Readonly<{
@@ -1314,13 +1335,16 @@ export function decodeRKernelResponseJson(
     );
     let match: RKernelFoundCell | undefined;
     if (record.match !== undefined) {
-      const found = exactRecord(record.match, ["row", "column", "ordinal"], "R kernel found cell");
+      const found = exactRecord(record.match, ["row", "column", "ordinal"], ["position"], "R kernel found cell");
       const ordinal = boundedInteger(found.ordinal, "response.match.ordinal", matchCount);
       if (ordinal < 1) fail("response.match.ordinal must be positive.");
       match = Object.freeze({
         row: boundedInteger(found.row, "response.match.row", R_FRAME_CONTRACT_LIMITS.rows - 1),
         column: validateColumnReference(found.column, "response.match.column"),
-        ordinal
+        ordinal,
+        ...(found.position === undefined
+          ? {}
+          : { position: boundedInteger(found.position, "response.match.position", R_FRAME_CONTRACT_LIMITS.rows - 1) })
       });
     } else if (matchCount > 0) {
       fail("R kernel Find response omitted its match.");
@@ -1693,7 +1717,18 @@ function validateRequest(request: RKernelRequest): void {
   if (record.kind === "findCells") {
     const payload = exactRecord(
       record.payload,
-      ["sessionId", "view", "query", "matchCase", "wholeCell", "direction", "columns", "from", "includeFrom"],
+      [
+        "sessionId",
+        "view",
+        "query",
+        "matchCase",
+        "wholeCell",
+        "direction",
+        "columns",
+        "from",
+        "includeFrom",
+        "includePosition"
+      ],
       "R kernel find payload"
     );
     identifier(payload.sessionId, "request.payload.sessionId");
@@ -1701,7 +1736,7 @@ function validateRequest(request: RKernelRequest): void {
     if (!isFindQuery(payload.query) || payload.query.includes("\u0000")) {
       fail("request.payload.query must be 1 to 1,024 characters of text.");
     }
-    for (const field of ["matchCase", "wholeCell", "includeFrom"] as const) {
+    for (const field of ["matchCase", "wholeCell", "includeFrom", "includePosition"] as const) {
       if (typeof payload[field] !== "boolean") fail(`request.payload.${field} must be a boolean.`);
     }
     if (payload.direction !== "next" && payload.direction !== "previous") {
@@ -2210,6 +2245,34 @@ function validateTransformStep(value: unknown): void {
     }
     if (params.newColumn !== undefined) {
       boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
+  if (step.kind === "replaceMatches") {
+    const params = exactRecord(
+      step.params,
+      ["columns", "find", "replacement", "matchCase", "wholeCell", "spelling"],
+      ["row"],
+      "R kernel Replace parameters"
+    );
+    validateRowReductionColumnReferences(params.columns, "Replace");
+    for (const [field, minimum] of [
+      ["find", 1],
+      ["replacement", 0]
+    ] as const) {
+      const text = boundedText(params[field], `request.payload.step.params.${field}`, 4096, minimum === 0);
+      if ([...text].length > 1024) fail(`R kernel Replace ${field} must contain at most 1,024 characters.`);
+    }
+    if (typeof params.matchCase !== "boolean" || typeof params.wholeCell !== "boolean") {
+      fail("R kernel Replace parameters contain an invalid flag.");
+    }
+    if (params.spelling !== "portable" && params.spelling !== "r") {
+      fail("R kernel Replace parameters must match portable or R display text.");
+    }
+    if (params.row !== undefined) {
+      boundedInteger(params.row, "request.payload.step.params.row", R_FRAME_CONTRACT_LIMITS.rows - 1);
+      if ((params.columns as readonly unknown[]).length !== 1)
+        fail("R kernel Replace of one cell requires one column.");
     }
     return;
   }

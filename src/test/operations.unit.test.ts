@@ -120,6 +120,11 @@ describe("stepReplaysOnEngine", () => {
     params: { column, fields: [{ field: "a", newColumn: "items_a" }] }
   };
   const explode: TransformStep = { id: "explode", kind: "explodeList", params: { column } };
+  const replace = (spelling: "portable" | "python" | "r"): TransformStep => ({
+    id: `replace-${spelling}`,
+    kind: "replaceMatches",
+    params: { columns: [column], find: "a", replacement: "b", matchCase: false, wholeCell: false, spelling }
+  });
 
   it.each([
     [custom, base, dplyr, true],
@@ -133,7 +138,12 @@ describe("stepReplaysOnEngine", () => {
     [explode, base, polars, true],
     [explode, polars, duckdb, false],
     [explode, polars, pandas, false],
-    [appliedStep, base, pandas, true]
+    [appliedStep, base, pandas, true],
+    [replace("portable"), polars, base, true],
+    [replace("python"), polars, pandas, true],
+    [replace("python"), duckdb, base, false],
+    [replace("r"), base, dplyr, true],
+    [replace("r"), dplyr, polars, false]
   ] as const)("replays %j from %j on %j: %s", (step, from, to, replays) => {
     expect(stepReplaysOnEngine(step, from, to)).toBe(replays);
   });

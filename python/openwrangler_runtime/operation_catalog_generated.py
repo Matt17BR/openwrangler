@@ -157,6 +157,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=("regex", "newColumn"),
     ),
     OperationDefinition(
+        kind="replaceMatches",
+        title="Replace matches",
+        group="Categorical / text",
+        required=("columns", "find", "replacement", "matchCase", "wholeCell", "spelling"),
+        optional=("row",),
+    ),
+    OperationDefinition(
         kind="stripText",
         title="Strip text",
         group="Categorical / text",

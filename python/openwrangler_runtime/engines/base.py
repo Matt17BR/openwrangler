@@ -803,6 +803,48 @@ _FIND_NUMBER_CHARACTERS = frozenset("0123456789-")
 _FIND_REAL_CHARACTERS = frozenset("0123456789-+.eEinfinityINFINITY")
 _FIND_BOOLEAN_CHARACTERS = frozenset("truefalsTRUEFALS")
 _FIND_DATETIME_CHARACTERS = frozenset("0123456789-:.+ Tt")
+# Types whose displayed text converts back to the column's own type after a replace.
+REPLACE_MATCHES_TYPES = frozenset({"string", "integer", "float", "decimal", "boolean", "date", "datetime"})
+
+
+def replace_matches_is_portable(column_type: str, find: str, match_case: bool, whole_cell: bool) -> bool:
+    """Whether every Python and R engine shows the same text in the cells this Replace can match.
+
+    Python and R spell only infinities differently among floats, and the other characters here never match them.
+    Booleans read True in Python and TRUE in R, which only a whole-cell search that ignores case treats alike.
+    """
+    if column_type in {"string", "integer", "date"}:
+        return True
+    if column_type == "float":
+        return set(find) <= set("0123456789.+-eE")
+    return column_type == "boolean" and whole_cell and not match_case
+
+
+def _open_wrangler_replace_pattern(find, match_case, temporal):
+    """A regular expression for the text Find highlights, valid in Python, Rust and RE2 syntax.
+
+    Without match case only ASCII letters fold, and in a datetime a space and the time's T match each other.
+    """
+    import re
+
+    needle = (
+        find
+        if match_case
+        else find.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+    )
+    if temporal:
+        needle = re.sub(r"(?<![A-Za-z])T(?![A-Za-z])" if match_case else r"(?<![a-z])t(?![a-z])", " ", needle)
+    parts = []
+    for character in needle:
+        if temporal and character == " ":
+            parts.append("[T ]")
+        elif not match_case and "a" <= character <= "z":
+            parts.append("[" + character + character.upper() + "]")
+        elif character in "\\.+*?()|[]{}^$":
+            parts.append("\\" + character)
+        else:
+            parts.append(character)
+    return "".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1075,6 +1117,10 @@ class DataFrameEngine(ABC):
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
         raise NotImplementedError
+
+    def view_row_position(self, frame: Any, model: Mapping[str, Any], view: Any, row: int) -> int:
+        """Return the zero-based position in ``frame`` of row ``row`` of ``view``, ``frame`` filtered by ``model``."""
+        raise EngineError(f"Find is unavailable for {self.name} dataframes.")
 
     def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
         """Mark the cells whose displayed text matches ``query``.

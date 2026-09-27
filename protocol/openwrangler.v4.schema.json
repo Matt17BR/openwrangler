@@ -145,6 +145,13 @@
       "icon": "replace-all"
     },
     {
+      "kind": "replaceMatches",
+      "title": "Replace matches",
+      "description": "Replace Find matches in chosen columns or one cell, keeping each column's type.",
+      "group": "Categorical / text",
+      "icon": "replace"
+    },
+    {
       "kind": "stripText",
       "title": "Strip text",
       "description": "Remove surrounding whitespace or selected characters.",
@@ -1043,6 +1050,7 @@
         "oneHotEncode",
         "multiLabelBinarize",
         "findReplace",
+        "replaceMatches",
         "stripText",
         "splitText",
         "splitTextColumns",
@@ -1474,6 +1482,27 @@
         "newColumn": { "type": "string", "minLength": 1 }
       }
     },
+    "ReplaceMatchesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "find", "replacement", "matchCase", "wholeCell", "spelling"],
+      "properties": {
+        "columns": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" },
+        "find": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "replacement": { "type": "string", "maxLength": 1024 },
+        "matchCase": { "type": "boolean" },
+        "wholeCell": { "type": "boolean" },
+        "spelling": {
+          "enum": ["portable", "python", "r"],
+          "description": "Whose displayed values the step matches. Portable steps change only text, integer and date columns, which every engine spells alike; python and r steps replay only on engines with that spelling."
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based position of the only row to change in the step's input. Requires exactly one column."
+        }
+      }
+    },
     "StripTextParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1851,6 +1880,7 @@
         { "$ref": "#/definitions/OneHotEncodeTransformStep" },
         { "$ref": "#/definitions/MultiLabelBinarizeTransformStep" },
         { "$ref": "#/definitions/FindReplaceTransformStep" },
+        { "$ref": "#/definitions/ReplaceMatchesTransformStep" },
         { "$ref": "#/definitions/StripTextTransformStep" },
         { "$ref": "#/definitions/SplitTextTransformStep" },
         { "$ref": "#/definitions/SplitTextColumnsTransformStep" },
@@ -2078,6 +2108,18 @@
         {
           "required": ["kind", "params"],
           "properties": { "kind": { "const": "findReplace" }, "params": { "$ref": "#/definitions/FindReplaceParams" } }
+        }
+      ]
+    },
+    "ReplaceMatchesTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "replaceMatches" },
+            "params": { "$ref": "#/definitions/ReplaceMatchesParams" }
+          }
         }
       ]
     },
@@ -2711,7 +2753,11 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "from": { "$ref": "#/definitions/GridCell" },
-        "includeFrom": { "type": "boolean" }
+        "includeFrom": { "type": "boolean" },
+        "includePosition": {
+          "type": "boolean",
+          "description": "Also report the match's zero-based row position before viewing filters and sorts."
+        }
       }
     },
     "PreviewStepRequest": {
@@ -3008,7 +3054,8 @@
       "properties": {
         "row": { "type": "integer", "minimum": 0 },
         "columnId": { "type": "string", "minLength": 1 },
-        "ordinal": { "type": "integer", "minimum": 1 }
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "position": { "type": "integer", "minimum": 0 }
       }
     },
     "FindResponse": {

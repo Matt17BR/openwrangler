@@ -322,20 +322,23 @@ export class RKernelMutationLifecycle {
         targetRowNames,
         view,
         step.kind === "castColumn"
-          ? { columnId: step.params.column.id, mode: "mayAdd" }
-          : step.kind === "minMaxScale"
-            ? {
-                columnId:
-                  step.params.newColumn === undefined || step.params.newColumn === step.params.column.name
-                    ? step.params.column.id
-                    : `c:step:${step.id}:0`,
-                mode: "mayAdd"
-              }
-            : step.kind === "splitText" || step.kind === "denseRank"
-              ? { columnId: `c:step:${step.id}:0`, mode: "mayAdd" }
-              : step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
-                ? { columnId: step.params.column.id, mode: "mayRemove" }
-                : undefined,
+          ? { columnIds: [step.params.column.id], mode: "mayAdd" }
+          : step.kind === "replaceMatches"
+            ? { columnIds: step.params.columns.map((column) => column.id), mode: "mayAdd" }
+            : step.kind === "minMaxScale"
+              ? {
+                  columnIds: [
+                    step.params.newColumn === undefined || step.params.newColumn === step.params.column.name
+                      ? step.params.column.id
+                      : `c:step:${step.id}:0`
+                  ],
+                  mode: "mayAdd"
+                }
+              : step.kind === "splitText" || step.kind === "denseRank"
+                ? { columnIds: [`c:step:${step.id}:0`], mode: "mayAdd" }
+                : step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns"
+                  ? { columnIds: [step.params.column.id], mode: "mayRemove" }
+                  : undefined,
         targetDataframeFlavor
       );
       assertMutationDiff(

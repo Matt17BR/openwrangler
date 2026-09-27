@@ -107,6 +107,7 @@ found = manager.find_cells(
     "i",
     start={"row": 0, "columnId": city_column["id"]},
     include_start=True,
+    include_position=True,
 )
 opened["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, {"logic": "and", "filters": [], "sort": []})["stats"]
 filtered_page = manager.get_page(session_id, 0, 0, 4, filter_model)
@@ -684,12 +685,13 @@ for (const [theme, suffix] of [
     {},
     {
       theme,
-      findFixture: { text: "i", response: payloads.find },
+      findFixture: { text: "i", replacement: "I", response: payloads.find },
       readiness: createWebviewSelectorReadiness({
-        description: "the open Find bar with its current and highlighted matches",
+        description: "the open Find bar with its Replace row, current match and highlighted matches",
         selectors: [
           { selector: 'td[data-find-match="current"]', count: 1 },
-          { selector: 'td[data-find-match="match"]', count: 2 }
+          { selector: 'td[data-find-match="match"]', count: 2 },
+          { selector: 'button[aria-label="Replace"][aria-disabled="false"]', count: 1 }
         ],
         emptyArrayGlobals: ["openWranglerHarnessErrors"]
       })
@@ -964,6 +966,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
               ? `{
             let opened = false;
             let typed = false;
+            let replaceOpened = false;
+            let replaceTyped = false;
             let searched = false;
             const driveFind = () => {
               const input = document.querySelector('input[aria-label="Find"]');
@@ -979,6 +983,20 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
                 typed = true;
                 Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, findFixture.text);
                 input.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+              if (findFixture.replacement !== undefined && !replaceTyped) {
+                const replacement = document.querySelector('input[aria-label="Replace with"]');
+                if (!(replacement instanceof HTMLInputElement)) {
+                  const toggle = document.querySelector('button[aria-label="Toggle Replace"]');
+                  if (!replaceOpened && toggle instanceof HTMLButtonElement) {
+                    replaceOpened = true;
+                    toggle.click();
+                  }
+                  return;
+                }
+                replaceTyped = true;
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(replacement, findFixture.replacement);
+                replacement.dispatchEvent(new Event("input", { bubbles: true }));
               }
               const next = document.querySelector('button[aria-label="Next match"]');
               if (!searched && next instanceof HTMLButtonElement && !next.disabled) {

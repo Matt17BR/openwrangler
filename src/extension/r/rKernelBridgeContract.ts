@@ -392,7 +392,7 @@ export function assertMutationContract(
   expectedKeyColumnIds: readonly string[],
   expectedRowNames: RFramePageContract["frameSemantics"]["rowNames"],
   view: RKernelViewQuery,
-  dynamicNullability?: Readonly<{ columnId: string; mode: "mayAdd" | "mayRemove" }>,
+  dynamicNullability?: Readonly<{ columnIds: readonly string[]; mode: "mayAdd" | "mayRemove" }>,
   expectedDataframeFlavor: RDataframeFlavor = session.dataframeFlavor
 ): void {
   if (dynamicNullability === undefined) {
@@ -410,22 +410,26 @@ export function assertMutationContract(
     );
     return;
   }
-  const dynamicNullableColumnId = dynamicNullability.columnId;
-  const actualTarget = contract.schema.find((column) => column.id === dynamicNullableColumnId);
-  const expectedTarget = expectedSchema.find((column) => column.id === dynamicNullableColumnId);
-  const invalidTransition =
-    !actualTarget ||
-    !expectedTarget ||
-    (dynamicNullability.mode === "mayAdd"
-      ? expectedTarget.nullable && !actualTarget.nullable
-      : !expectedTarget.nullable && actualTarget.nullable);
-  if (invalidTransition) {
-    throw new Error("The R dataframe contract returned invalid nullability for the transformed column.");
+  const actualNullability = new Map<string, boolean>();
+  for (const columnId of dynamicNullability.columnIds) {
+    const actualTarget = contract.schema.find((column) => column.id === columnId);
+    const expectedTarget = expectedSchema.find((column) => column.id === columnId);
+    const invalidTransition =
+      !actualTarget ||
+      !expectedTarget ||
+      (dynamicNullability.mode === "mayAdd"
+        ? expectedTarget.nullable && !actualTarget.nullable
+        : !expectedTarget.nullable && actualTarget.nullable);
+    if (invalidTransition) {
+      throw new Error("The R dataframe contract returned invalid nullability for the transformed column.");
+    }
+    actualNullability.set(columnId, actualTarget.nullable);
   }
   const normalized = Object.freeze(
-    expectedSchema.map((column) =>
-      column.id === dynamicNullableColumnId ? Object.freeze({ ...column, nullable: actualTarget.nullable }) : column
-    )
+    expectedSchema.map((column) => {
+      const nullable = actualNullability.get(column.id);
+      return nullable === undefined ? column : Object.freeze({ ...column, nullable });
+    })
   );
   assertSessionContract(
     session,

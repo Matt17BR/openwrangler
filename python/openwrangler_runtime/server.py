@@ -227,6 +227,7 @@ def _dispatch(
                 column_ids=request.get("columnIds"),
                 start=request.get("from"),
                 include_start=request.get("includeFrom", False),
+                include_position=request.get("includePosition", False),
             ),
             request,
         )

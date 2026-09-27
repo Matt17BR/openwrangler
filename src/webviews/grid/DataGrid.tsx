@@ -36,7 +36,9 @@ import {
   useGridFind,
   type GridFindQuery,
   type GridFindRequest,
-  type GridFindSettlement
+  type GridFindSettlement,
+  type GridReplaceAvailability,
+  type GridReplaceRequest
 } from "./useGridFind";
 import type { GridCellCoordinate } from "./gridClipboard";
 import type { ProfileValueMode } from "../profileValueMode";
@@ -78,6 +80,9 @@ interface DataGridProps {
   findRequest?: GridFindRequest;
   findUnavailableReason?: string;
   onFindCells?(query: GridFindQuery): Promise<GridFindSettlement>;
+  /** Absent hides Replace from the find bar. */
+  replace?: GridReplaceAvailability;
+  onReplace?(request: GridReplaceRequest): void;
   viewState?: GridViewState;
   viewStateRestoreVersion?: number;
   diff?: DataDiff;
@@ -134,6 +139,7 @@ const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 const findUnavailable = (): Promise<GridFindSettlement> =>
   Promise.resolve({ kind: "cancelled", targetRequestId: "find" });
+const replaceUnavailable = (): void => undefined;
 
 export function DataGrid({
   metadata,
@@ -151,6 +157,8 @@ export function DataGrid({
   findRequest,
   findUnavailableReason,
   onFindCells,
+  replace,
+  onReplace,
   viewState = defaultViewState,
   viewStateRestoreVersion = 0,
   diff,
@@ -1110,7 +1118,9 @@ export function DataGrid({
     viewKey: `${logicalViewContext}:${metadata.revision}`,
     searchableColumnIds: findableColumnIds,
     unavailableReason: onFindCells ? findUnavailableReason : (findUnavailableReason ?? "Find is unavailable here."),
+    replaceable: replace?.kind === "ready",
     findCells: onFindCells ?? findUnavailable,
+    onReplace: onReplace ?? replaceUnavailable,
     origin: () => {
       const columnId = metadata.schema[focusedCell.column]?.id;
       return columnId === undefined || logicalRowExtent === 0 ? undefined : { row: focusedCell.row, columnId };
@@ -1135,7 +1145,7 @@ export function DataGrid({
 
   return (
     <div className="dataGrid">
-      {find.open && <FindBar controller={find} schema={metadata.schema} />}
+      {find.open && <FindBar controller={find} schema={metadata.schema} {...(replace ? { replace } : {})} />}
       {page.totalRows === 0 && metadata.schema.length === 0 && (
         <div className="emptyState" role="status">
           <strong>Empty dataset</strong>

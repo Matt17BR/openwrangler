@@ -49,7 +49,7 @@ import {
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
 import { isDuckDBTableSource, isRLibrary, PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
-import { isFindQuery } from "./find";
+import { isFindQuery, isFindReplacement } from "./find";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -212,7 +212,8 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
           (columnIds) => isUniqueNonEmptyStringArray(columnIds) && columnIds.length > 0
         ) &&
         optional(candidate, "from", isGridCell) &&
-        optional(candidate, "includeFrom", isBoolean)
+        optional(candidate, "includeFrom", isBoolean) &&
+        optional(candidate, "includePosition", isBoolean)
       );
     case "previewStep":
       return (
@@ -417,14 +418,15 @@ function isFindResponse(candidate: UnknownRecord): boolean {
   if (!isNonNegativeInteger(candidate.revision) || !isNonEmptyString(candidate.viewRequestId)) return false;
   if (!isNonNegativeSafeInteger(candidate.matchCount)) return false;
   if (candidate.match === undefined) return candidate.matchCount === 0;
-  const match = exactRecord(candidate.match, ["row", "columnId", "ordinal"]);
+  const match = exactRecord(candidate.match, ["row", "columnId", "ordinal"], ["position"]);
   return (
     match !== undefined &&
     isNonNegativeSafeInteger(match.row) &&
     isNonEmptyString(match.columnId) &&
     isNonNegativeSafeInteger(match.ordinal) &&
     match.ordinal >= 1 &&
-    match.ordinal <= candidate.matchCount
+    match.ordinal <= candidate.matchCount &&
+    optional(match, "position", isNonNegativeSafeInteger)
   );
 }
 
@@ -1217,6 +1219,18 @@ export function isTransformStep(value: unknown): value is TransformStep {
         isString(params.replacement) &&
         optional(params, "regex", isBoolean) &&
         optional(params, "newColumn", isNonEmptyString)
+      );
+    }
+    case "replaceMatches": {
+      return (
+        isUniqueColumnReferenceArray(params.columns, false) &&
+        isFindQuery(params.find) &&
+        isFindReplacement(params.replacement) &&
+        isBoolean(params.matchCase) &&
+        isBoolean(params.wholeCell) &&
+        isOneOf(params.spelling, ["portable", "python", "r"]) &&
+        optional(params, "row", isNonNegativeInteger) &&
+        (params.row === undefined || params.columns.length === 1)
       );
     }
     case "stripText": {

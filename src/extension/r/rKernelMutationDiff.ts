@@ -207,6 +207,7 @@ export function inspectionDiff(
   const changedInPlace =
     step.kind === "castColumn" ||
     step.kind === "fillMissingValues" ||
+    step.kind === "replaceMatches" ||
     textTransformInPlace ||
     numericRoundingInPlace ||
     minMaxScaleInPlace ||
@@ -223,10 +224,12 @@ export function inspectionDiff(
     };
   }
 
-  const columnId = step.params.column.id;
-  const inputPosition = inputPage.page.columnIds.indexOf(columnId);
-  const outputPosition = outputPage.page.columnIds.indexOf(columnId);
-  if (inputPosition < 0 || outputPosition < 0) {
+  const targets = (step.kind === "replaceMatches" ? step.params.columns : [step.params.column]).map((column) => ({
+    column,
+    inputPosition: inputPage.page.columnIds.indexOf(column.id),
+    outputPosition: outputPage.page.columnIds.indexOf(column.id)
+  }));
+  if (targets.some((target) => target.inputPosition < 0 || target.outputPosition < 0)) {
     return {
       addedRows: 0,
       removedRows: 0,
@@ -246,18 +249,20 @@ export function inspectionDiff(
     const inputRow = inputRowsById.get(outputRow.id);
     if (!inputRow) continue;
     matchedInputIds.add(inputRow.id);
-    const before = cellValueFromR(inputRow.values[inputPosition] as RFrameCell);
-    const after = cellValueFromR(outputRow.values[outputPosition] as RFrameCell);
-    if (isDeepStrictEqual(before, after)) continue;
-    changedCells += 1;
-    if (cells.length < 500) {
-      cells.push({
-        rowNumber: outputRow.rowNumber,
-        columnId,
-        column: step.params.column.name,
-        before,
-        after
-      });
+    for (const target of targets) {
+      const before = cellValueFromR(inputRow.values[target.inputPosition] as RFrameCell);
+      const after = cellValueFromR(outputRow.values[target.outputPosition] as RFrameCell);
+      if (isDeepStrictEqual(before, after)) continue;
+      changedCells += 1;
+      if (cells.length < 500) {
+        cells.push({
+          rowNumber: outputRow.rowNumber,
+          columnId: target.column.id,
+          column: target.column.name,
+          before,
+          after
+        });
+      }
     }
   }
   const unmatchedRows =
@@ -482,7 +487,8 @@ export function assertMutationDiff(
     minMaxScaleInPlace ||
     formatDatetimeInPlace ||
     step.kind === "fillMissingValues" ||
-    step.kind === "castColumn";
+    step.kind === "castColumn" ||
+    step.kind === "replaceMatches";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
@@ -537,27 +543,33 @@ export function assertMutationDiff(
                         ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) &&
                           expectedRemoved.length === 0
                         : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
-  const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
-  const changedInput = changedInPlace
-    ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)
-    : undefined;
+  const targets = (
+    !changedInPlace ? [] : step.kind === "replaceMatches" ? step.params.columns : [step.params.column]
+  ).map((reference) => ({
+    reference,
+    position: outputPage.page.columnIds.indexOf(reference.id),
+    input: inputSchema.find((column) => column.id === reference.id && column.name === reference.name)
+  }));
+  const targetsById = new Map(targets.map((target) => [target.reference.id, target]));
   const outputRowsByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
   const cellsMatch =
-    changedInPlace && changedInput
-      ? diff.changedCells <= outputPage.page.rows.length &&
-        (projectedPosition >= 0 || (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
+    changedInPlace && targets.every((target) => target.input !== undefined)
+      ? diff.changedCells <= outputPage.page.rows.length * targets.length &&
+        (targets.every((target) => target.position >= 0) ||
+          (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
         diff.cells.every((cell) => {
+          const target = targetsById.get(cell.columnId);
           const outputRow = outputRowsByNumber.get(cell.rowNumber);
           return (
-            projectedPosition >= 0 &&
+            target?.input !== undefined &&
+            target.position >= 0 &&
             outputRow !== undefined &&
-            cell.columnId === step.params.column.id &&
-            cell.column === step.params.column.name &&
+            cell.column === target.reference.name &&
             cell.before !== null &&
             cell.after !== null &&
-            isCellCompatibleWithColumn(cell.before, changedInput) &&
+            isCellCompatibleWithColumn(cell.before, target.input) &&
             !isDeepStrictEqual(cell.before, cell.after) &&
-            isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[projectedPosition] as RFrameCell))
+            isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[target.position] as RFrameCell))
           );
         }) &&
         diff.changedCells >= diff.cells.length &&

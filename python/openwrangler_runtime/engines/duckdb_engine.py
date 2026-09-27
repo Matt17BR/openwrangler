@@ -61,6 +61,7 @@ from .base import (
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
+    _open_wrangler_replace_pattern,
     bound_column_name,
     bound_column_position,
     categorical_visualization,
@@ -1370,6 +1371,19 @@ class DuckDBEngine(DataFrameEngine):
             values.append(item)
         return values, len(rows) > limit
 
+    def view_row_position(self, frame: Any, model: Mapping[str, Any], view: Any, row: int) -> int:
+        if not model.get("filters") and not model.get("sort"):
+            return row
+        source = self.normalize(frame)
+        position = _quote_ident(_unique_internal(self._columns(source), "__ow_find_position"))
+        numbered = self._relation(source, f"SELECT *, row_number() OVER () AS {position} FROM ow")
+        located = self._terminal_rows(
+            self.apply_filter_model(numbered, model), f"SELECT {position} FROM ow LIMIT 1 OFFSET {int(row)}"
+        )
+        if not located:
+            raise EngineError("The Find match is no longer in the view. Search again.")
+        return int(located[0][0]) - 1
+
     def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
         frame = self.normalize(frame)
         visible = self._visible_columns(frame)
@@ -1656,6 +1670,25 @@ class DuckDBEngine(DataFrameEngine):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             expression = _regex_extract_expression(column, params["pattern"], params["group"])
             return self._assign(frame, params["newColumn"], expression)
+        if kind == "replaceMatches":
+            for reference in params["columns"]:
+                try:
+                    frame = _duckdb_replace_matches(
+                        frame,
+                        self._columns(frame),
+                        [str(item) for item in frame.types],
+                        bound_column_name(reference, kind),
+                        params["find"],
+                        params["matchCase"],
+                        params["replacement"],
+                        params["wholeCell"],
+                        params.get("row"),
+                        self._relation,
+                        self._terminal_rows,
+                    )
+                except ValueError as error:
+                    raise EngineError(str(error)) from error
+            return frame
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
             if kind == "stripText" and native_params.get("characters") is None:
@@ -2150,6 +2183,12 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}if bool(_ow_query(df, {query!r}).fetchone()[0]):",
                 f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {expression!r})",
+            ]
+        if kind == "replaceMatches":
+            return [
+                f"{prefix}df = _ow_replace_matches(df, {bound_column_name(reference, kind)!r}, {params['find']!r}, "
+                f"{params['matchCase']!r}, {params['replacement']!r}, {params['wholeCell']!r}, {params.get('row')!r})"
+                for reference in params["columns"]
             ]
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             native_params = {**params, "column": bound_column_name(params["column"], kind)}
@@ -3806,6 +3845,210 @@ def _duckdb_find_match(identifier: str, raw_type: str, query: FindQuery) -> str:
     return match
 
 
+def _duckdb_replace_matches_sql(value, raw_type, column, pattern, replacement, whole_cell, text):
+    """SQL for Replace in one column: the new text of ``value`` (NULL when it doesn't change), its value converted
+    from the ``text`` column, and the checks naming each text the column's type refuses."""
+    import re
+
+    def literal(item):
+        return "'" + item.replace("'", "''") + "'"
+
+    upper = raw_type.upper()
+    bounds = {
+        "TINYINT": (-(2**7), 2**7 - 1),
+        "SMALLINT": (-(2**15), 2**15 - 1),
+        "INTEGER": (-(2**31), 2**31 - 1),
+        "BIGINT": (-(2**63), 2**63 - 1),
+        "HUGEINT": (-(2**127), 2**127 - 1),
+        "UTINYINT": (0, 2**8 - 1),
+        "USMALLINT": (0, 2**16 - 1),
+        "UINTEGER": (0, 2**32 - 1),
+        "UBIGINT": (0, 2**64 - 1),
+        "UHUGEINT": (0, 2**128 - 1),
+    }
+    fraction_digits = {
+        "TIMESTAMP_S": 0,
+        "TIMESTAMP_MS": 3,
+        "TIMESTAMP": 6,
+        "TIMESTAMP_NS": 9,
+        "TIMESTAMP WITH TIME ZONE": 6,
+    }
+    decimal = re.fullmatch(r"DECIMAL\((\d+),\s*(\d+)\)", upper)
+    if not (
+        upper in {"VARCHAR", "UUID", "BOOLEAN", "FLOAT", "DOUBLE", "DATE"}
+        or upper in bounds
+        or upper in fraction_digits
+        or decimal
+        or upper.startswith("ENUM(")
+    ):
+        raise ValueError(f"Replace can't write text back into {raw_type} column {column!r}.")
+    label = value if upper == "VARCHAR" else _duckdb_display_text(value, raw_type)
+    if upper == "TIMESTAMP WITH TIME ZONE":
+        # The grid shows UTC whatever the TimeZone of the connection running the generated code.
+        wall = _duckdb_timestamp_text(f"system.main.timezone('UTC', {value})", False)
+        label = (
+            f"CASE WHEN system.main.isfinite({value}) THEN system.main.concat({wall}, '+00:00') "
+            f"ELSE CAST({value} AS VARCHAR) END"
+        )
+    if upper in {"FLOAT", "DOUBLE"}:
+        label = f"CASE WHEN system.main.isnan({value}) THEN NULL ELSE {label} END"
+    if whole_cell:
+        changed = (
+            f"CASE WHEN system.main.regexp_full_match({label}, {literal(pattern)}) THEN {literal(replacement)} END"
+        )
+    else:
+        rewrite = literal(replacement.replace("\\", "\\\\"))
+        changed = (
+            f"CASE WHEN system.main.regexp_matches({label}, {literal(pattern)}) "
+            f"THEN system.main.regexp_replace({label}, {literal(pattern)}, {rewrite}, 'g') END"
+        )
+    changed = f"CASE WHEN ({changed}) IS DISTINCT FROM ({label}) THEN {changed} END"
+
+    problems = []
+    if upper == "BOOLEAN":
+        typed = f"CASE system.main.lower({text}) WHEN 'true' THEN TRUE WHEN 'false' THEN FALSE END"
+        problems.append((f"{typed} IS NULL", "True or False"))
+    elif upper in bounds:
+        typed = f"TRY_CAST({text} AS {upper})"
+        low, high = bounds[upper]
+        problems.append((f"NOT system.main.regexp_full_match({text}, '[+-]?[0-9]+')", "a whole number"))
+        problems.append((f"{typed} IS NULL", f"a whole number from {low} to {high}"))
+    elif upper in {"FLOAT", "DOUBLE"}:
+        typed = f"TRY_CAST({text} AS {upper})"
+        number = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:[+-]?inf(?:inity)?|nan)"
+        problems.append((f"NOT system.main.regexp_full_match({text}, {literal(number)})", "a number"))
+        overflow = f"system.main.isinf({typed}) AND NOT system.main.contains(system.main.lower({text}), 'inf')"
+        problems.append((overflow, "a number this column can store"))
+    elif decimal:
+        precision, scale = int(decimal.group(1)), int(decimal.group(2))
+        typed = f"TRY_CAST({text} AS {upper})"
+        grammar = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)"
+        problems.append((f"NOT system.main.regexp_full_match({text}, {literal(grammar)})", "a decimal number"))
+        places = literal(r"\.[0-9]{" + str(scale) + r"}[0-9]*[1-9]")
+        problems.append(
+            (f"system.main.regexp_matches({text}, {places})", f"a decimal number with at most {scale} decimal places")
+        )
+        problems.append((f"{typed} IS NULL", f"a decimal number with at most {precision} digits"))
+    elif upper == "DATE":
+        shaped = f"system.main.regexp_full_match({text}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}')"
+        typed = f"TRY_CAST(CASE WHEN {shaped} THEN {text} END AS DATE)"
+        problems.append((f"{typed} IS NULL", "a date like 2024-01-31"))
+    elif upper in fraction_digits:
+        grammar = (
+            r"^([0-9]{4}-[0-9]{2}-[0-9]{2})(?:[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,9}))?)?)?"
+            r"(Z|[+-][0-9]{2}:[0-9]{2})?$"
+        )
+        parts = (
+            f"system.main.regexp_extract({text}, {literal(grammar)}, "
+            "['date', 'hour', 'minute', 'second', 'fraction', 'offset'])"
+        )
+
+        def part(name, default=""):
+            field = f"system.main.struct_extract({parts}, '{name}')"
+            return f"COALESCE(system.main.nullif({field}, ''), '{default}')" if default else field
+
+        digits = fraction_digits[upper]
+        fraction = f"system.main.rpad({part('fraction')}, 9, '0')"
+        canonical = (
+            f"system.main.concat({part('date')}, ' ', {part('hour', '00')}, ':', {part('minute', '00')}, ':', "
+            f"{part('second', '00')}, '.', " + (fraction if digits == 9 else f"system.main.left({fraction}, 6)") + ")"
+        )
+        offset = part("offset")
+        problems.append((f"{part('date')} = ''", "a date and time like 2024-01-31T09:30:00"))
+        extra = literal("^[0-9]{" + str(digits) + "}[0-9]*[1-9]")
+        problems.append(
+            (
+                f"system.main.regexp_matches({fraction}, {extra})",
+                f"a time with at most {digits} decimal places" if digits else "a time in whole seconds",
+            )
+        )
+        if upper == "TIMESTAMP WITH TIME ZONE":
+            problems.append((f"{offset} = ''", "a date and time with a UTC offset such as +00:00"))
+            zone = f"CASE WHEN {offset} = 'Z' THEN '+00:00' ELSE {offset} END"
+            typed = f"TRY_CAST(system.main.concat({canonical}, {zone}) AS TIMESTAMPTZ)"
+        else:
+            problems.append((f"{offset} <> ''", "a date and time without a UTC offset"))
+            typed = f"TRY_CAST({canonical} AS {'TIMESTAMP_NS' if digits == 9 else 'TIMESTAMP'})"
+            if digits < 6:
+                typed = f"CAST({typed} AS {upper})"
+        problems.append((f"{typed} IS NULL", "a valid date and time"))
+    elif upper.startswith("ENUM("):
+        typed = f"TRY_CAST({text} AS {raw_type})"
+        problems.append((f"{typed} IS NULL", "one of the column's categories"))
+    elif upper == "UUID":
+        typed = f"TRY_CAST({text} AS UUID)"
+        problems.append((f"{typed} IS NULL", "a UUID like 123e4567-e89b-12d3-a456-426614174000"))
+    else:
+        typed = text
+    return changed, typed, problems
+
+
+def _duckdb_replace_matches(
+    frame, columns, types, column, find, match_case, replacement, whole_cell, row, relation, rows
+):
+    """Replace the text Find matches in one column's cells, then convert each new text back to the column's type.
+
+    ``relation`` composes SQL over ``ow`` into a new relation and ``rows`` fetches a query's rows. Distinct values
+    are checked before any row changes, so a refused text names itself instead of failing during a later read.
+    """
+
+    def ident(name):
+        return '"' + name.replace('"', '""') + '"'
+
+    raw_type = types[columns.index(column)]
+    upper = raw_type.upper()
+    pattern = _open_wrangler_replace_pattern(find, match_case, upper.startswith("TIMESTAMP"))
+    value = ident(column)
+    folded = {name.casefold() for name in columns}
+    text_name = "__ow_replace_text"
+    while text_name.casefold() in folded:
+        text_name += "_"
+    text = ident(text_name)
+    if row is not None:
+        height = rows(frame, "SELECT system.main.count(*) FROM ow")[0][0]
+        if not 0 <= row < height:
+            raise ValueError(f"Replace targets row {row + 1:,}, but the dataframe has {height:,} rows.")
+        distinct = (
+            f"SELECT {value} AS value FROM (SELECT {value}, row_number() OVER () AS __ow_position FROM ow) "
+            f"AS ow_numbered WHERE __ow_position = {row + 1}"
+        )
+    elif upper in {"FLOAT", "DOUBLE"}:
+        # DISTINCT merges signed zeros, which the grid spells as 0.0 and -0.0.
+        distinct = (
+            f"SELECT DISTINCT {value} AS value FROM ow WHERE NOT ({value} = 0) UNION ALL "
+            f"SELECT CASE WHEN negative THEN CAST('-0.0' AS {upper}) ELSE CAST(0 AS {upper}) END FROM "
+            f"(SELECT DISTINCT system.main.signbit({value}) AS negative FROM ow WHERE {value} = 0) AS ow_zeros"
+        )
+    else:
+        distinct = f"SELECT DISTINCT {value} AS value FROM ow"
+    changed, typed, problems = _duckdb_replace_matches_sql(
+        '"value"', raw_type, column, pattern, replacement, whole_cell, text
+    )
+    if problems:
+        problem = " ".join(f"WHEN {condition} THEN {index}" for index, (condition, _) in enumerate(problems))
+        # The LIMIT keeps DuckDB from pushing the check below DISTINCT, which would spell every row.
+        refused = rows(
+            frame,
+            f"SELECT {text}, problem FROM (SELECT {text}, CASE {problem} END AS problem FROM "
+            f"(SELECT {changed} AS {text} FROM (SELECT * FROM ({distinct}) AS ow_distinct LIMIT {2**63 - 1}) "
+            f"AS ow_values) AS ow_changes WHERE {text} IS NOT NULL) AS ow_checked "
+            "WHERE problem IS NOT NULL ORDER BY problem LIMIT 1",
+        )
+        if refused:
+            raise ValueError(
+                f"Replacing in {column!r} gives {refused[0][0]!r}, which isn't {problems[refused[0][1]][1]}."
+            )
+    changed, typed, _ = _duckdb_replace_matches_sql(value, raw_type, column, pattern, replacement, whole_cell, text)
+    if row is not None:
+        changed = f"CASE WHEN row_number() OVER () = {row + 1} THEN {changed} END"
+    frame = relation(frame, f"SELECT *, {changed} AS {text} FROM ow")
+    return relation(
+        frame,
+        f"SELECT * EXCLUDE ({text}) REPLACE (CASE WHEN {text} IS NULL THEN {value} ELSE {typed} END AS {value}) "
+        "FROM ow",
+    )
+
+
 def _duckdb_temporal_output(expression: str, dtype: Any, depth: int = 0) -> str | None:
     """Format affected output leaves before Python fetch, without changing stored types."""
     if "TIMESTAMP_NS" not in str(dtype):
@@ -4912,6 +5155,14 @@ def _generated_helper_source() -> str:
             getsource(_registered_native_relation),
             getsource(_materialize_native_relation),
             getsource(_duckdb_struct_field_projection),
+            getsource(_duckdb_datetime_is_aware),
+            getsource(_duckdb_timestamp_ns_text),
+            getsource(_duckdb_timestamp_text),
+            getsource(_duckdb_float_text),
+            getsource(_duckdb_display_text),
+            getsource(_open_wrangler_replace_pattern),
+            getsource(_duckdb_replace_matches_sql),
+            getsource(_duckdb_replace_matches),
             *generated_view_value_helper_lines(),
         ]
     ).rstrip()
@@ -6166,6 +6417,13 @@ def _ow_multi_label(df, params):
     if not projections:
         raise ValueError("DuckDB cannot represent a dataframe with zero columns.")
     return _ow_query(df, "SELECT " + ", ".join(projections) + " FROM ow")
+
+
+def _ow_replace_matches(df, column, find, match_case, replacement, whole_cell, row):
+    return _duckdb_replace_matches(
+        df, _ow_columns(df), [str(item) for item in df.types], column, find, match_case, replacement, whole_cell,
+        row, _ow_query, lambda frame, query: _ow_query(frame, query).fetchall(),
+    )
 
 
 def _ow_text(df, kind, params):

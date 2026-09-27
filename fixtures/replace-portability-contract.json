@@ -1,0 +1,18 @@
+{
+  "description": "Whether a Replace step may replay on both Python and R engines: every engine must show the same text wherever the search can match. The webview, the Python runtime and the R kernel agent all read these cases; R has no decimal columns.",
+  "cases": [
+    { "type": "string", "find": "Inf", "matchCase": false, "wholeCell": false, "portable": true },
+    { "type": "integer", "find": "-12", "matchCase": false, "wholeCell": false, "portable": true },
+    { "type": "date", "find": "2026-01", "matchCase": false, "wholeCell": false, "portable": true },
+    { "type": "float", "find": "2.75", "matchCase": false, "wholeCell": false, "portable": true },
+    { "type": "float", "find": "-1.5e+3", "matchCase": true, "wholeCell": true, "portable": true },
+    { "type": "float", "find": "inf", "matchCase": false, "wholeCell": false, "portable": false },
+    { "type": "float", "find": "nan", "matchCase": false, "wholeCell": true, "portable": false },
+    { "type": "float", "find": "2 ", "matchCase": false, "wholeCell": false, "portable": false },
+    { "type": "boolean", "find": "true", "matchCase": false, "wholeCell": true, "portable": true },
+    { "type": "boolean", "find": "TRUE", "matchCase": true, "wholeCell": true, "portable": false },
+    { "type": "boolean", "find": "true", "matchCase": false, "wholeCell": false, "portable": false },
+    { "type": "datetime", "find": "2026", "matchCase": false, "wholeCell": false, "portable": false },
+    { "type": "decimal", "find": "1", "matchCase": false, "wholeCell": false, "portable": false }
+  ]
+}

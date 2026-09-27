@@ -146,7 +146,7 @@ describe("R kernel bridge contract", () => {
     };
     expect(() =>
       assertMutationContract(session, actual, window, expected, 1, 1, [], "positional", emptyView, {
-        columnId: "r:c:0",
+        columnIds: ["r:c:0"],
         mode: "mayRemove"
       })
     ).not.toThrow();
@@ -162,7 +162,7 @@ describe("R kernel bridge contract", () => {
         "positional",
         emptyView,
         {
-          columnId: "r:c:0",
+          columnIds: ["r:c:0"],
           mode: "mayRemove"
         }
       )

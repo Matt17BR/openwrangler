@@ -852,6 +852,7 @@ def test_find_cells_accepts_a_scope_an_origin_and_the_longest_query() -> None:
         # Rows past the view clamp at the end, so the origin row has no upper bound.
         **{"from": {"row": 2**70, "columnId": "c:city"}},
         includeFrom=True,
+        includePosition=True,
     )
     before = deepcopy(request)
     envelope = {"protocolVersion": 4, "requestId": "find", "priority": "interactive", "request": request}
@@ -868,6 +869,7 @@ def test_find_cells_accepts_a_scope_an_origin_and_the_longest_query() -> None:
         ("matchCase", 0, "matchCase"),
         ("wholeCell", None, "wholeCell"),
         ("includeFrom", "true", "includeFrom"),
+        ("includePosition", 1, "includePosition"),
         ("direction", "up", "direction"),
         ("direction", ["next"], "direction"),
         ("from", [], "from"),

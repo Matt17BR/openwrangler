@@ -80,6 +80,14 @@ const validSteps = {
   oneHotEncode: step("oneHotEncode", { columns: [text] }),
   multiLabelBinarize: step("multiLabelBinarize", { column: text, delimiter: "," }),
   findReplace: step("findReplace", { column: text, find: "a", replacement: "b" }),
+  replaceMatches: step("replaceMatches", {
+    columns: [text],
+    find: "a",
+    replacement: "b",
+    matchCase: false,
+    wholeCell: false,
+    spelling: "portable"
+  }),
   stripText: step("stripText", { column: text }),
   splitText: step("splitText", { column: text, delimiter: ",", index: 0, newColumn: "part" }),
   splitTextColumns: step("splitTextColumns", {

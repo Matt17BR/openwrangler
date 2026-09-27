@@ -2686,7 +2686,8 @@ type NonSortEditorAction =
   | "undoStep"
   | "redoStep"
   | "goToRow"
-  | "find";
+  | "find"
+  | "replace";
 
 export type EditorActionMessage =
   | ({ action: "clearFilterColumn" } & ViewFilterRemovalTarget)

@@ -218,7 +218,8 @@ describe("R kernel view contract", () => {
       direction: "next" as const,
       columns: [value],
       from: { row: 0, column: value },
-      includeFrom: true
+      includeFrom: true,
+      includePosition: false
     };
     const encode = (patch: Record<string, unknown>) =>
       encodeRKernelRequest({
@@ -233,6 +234,7 @@ describe("R kernel view contract", () => {
     expect(() => encode({ query: "x".repeat(1_025) })).toThrow("request.payload.query");
     expect(() => encode({ direction: "down" })).toThrow("request.payload.direction");
     expect(() => encode({ includeFrom: undefined })).toThrow();
+    expect(() => encode({ includePosition: 1 })).toThrow();
 
     const decode = (fields: Record<string, unknown>) =>
       decodeRKernelResponseJson(
@@ -256,6 +258,12 @@ describe("R kernel view contract", () => {
     expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 3 } })).toThrow("ordinal");
     expect(() => decode({ matchCount: 2, match: { row: -1, column: value, ordinal: 1 } })).toThrow("row");
     expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 1, extra: 1 } })).toThrow();
+    expect(decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 1, position: 0 } })).toMatchObject({
+      match: { row: 1, position: 0 }
+    });
+    expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 1, position: -1 } })).toThrow(
+      "position"
+    );
   });
 
   it("checks summary and dataset-statistics results against one active view", () => {

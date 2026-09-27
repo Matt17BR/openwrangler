@@ -309,6 +309,7 @@
   }
 
   .gridNavigationButton:disabled,
+  .gridNavigationButton[aria-disabled="true"],
   .headerProfilesButton:disabled {
     border-color: GrayText;
     color: GrayText;

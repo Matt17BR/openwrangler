@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CellValue, GridPage, SessionMetadata } from "../shared/protocol";
+import type { CellValue, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -236,17 +236,297 @@ describe("grid Find", () => {
   });
 });
 
+describe("grid Replace", () => {
+  let hasFocus: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    postMessage.mockClear();
+    hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  });
+  afterEach(() => hasFocus.mockRestore());
+
+  it("replaces the current match with a one-cell step, moves past it, and applies it before the next Replace", async () => {
+    open(metadata);
+    expect(fireEvent.keyDown(screen.getByRole("grid"), { key: "h", ctrlKey: true })).toBe(false);
+    expect(screen.getByRole("button", { name: "Toggle Replace" })).toHaveAttribute("aria-expanded", "true");
+    const input = screen.getByRole("textbox", { name: "Find" });
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: "ber" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(latestFind().request).toMatchObject({ query: "ber", includePosition: true });
+    await respond(latestFind().request.viewRequestId, 2, { row: 0, columnId: "c:0", ordinal: 1, position: 0 });
+
+    const replacement = screen.getByRole("textbox", { name: "Replace with" });
+    act(() => replacement.focus());
+    fireEvent.change(replacement, { target: { value: "BER" } });
+    fireEvent.keyDown(replacement, { key: "Enter" });
+    const first = latestPreview();
+    expect(first).toEqual({
+      id: expect.stringMatching(/^replaceMatches-/u),
+      kind: "replaceMatches",
+      params: {
+        columns: [{ id: "c:0", name: "city" }],
+        find: "ber",
+        replacement: "BER",
+        matchCase: false,
+        wholeCell: false,
+        spelling: "portable",
+        row: 0
+      }
+    });
+    expect(replacement).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Replace" })).toHaveAttribute("aria-disabled", "true");
+
+    postMessage.mockClear();
+    preview(first, 2);
+    const advance = latestFind().request;
+    expect(advance).toMatchObject({ from: { row: 0, columnId: "c:0" }, includeFrom: false, includePosition: true });
+    await respond(advance.viewRequestId, 1, { row: 1, columnId: "c:0", ordinal: 1, position: 1 }, 2);
+    expect(status()).toBe("1 of 1, row 2, city");
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(runtimeRequests()).toEqual(["applyDraft"]);
+    dispatch({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 3,
+      metadata: { ...metadata, revision: 3, steps: [first], latestStepInputSchema: metadata.schema },
+      page,
+      code: "frame"
+    });
+    expect(latestPreview()).toMatchObject({ kind: "replaceMatches", params: { row: 1, replacement: "BER" } });
+    expect(latestPreview().id).not.toBe(first.id);
+  });
+
+  it("asks once for the current match's row when Replace opens after a search", async () => {
+    open(metadata);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "f", ctrlKey: true });
+    const input = screen.getByRole("textbox", { name: "Find" });
+    fireEvent.change(input, { target: { value: "paris" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(latestFind().request).not.toHaveProperty("includePosition");
+    await respond(latestFind().request.viewRequestId, 1, { row: 2, columnId: "c:0", ordinal: 1 });
+
+    postMessage.mockClear();
+    fireEvent.keyDown(input, { key: "h", ctrlKey: true });
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toHaveFocus();
+    const positioned = latestFind().request;
+    expect(positioned).toMatchObject({ from: { row: 2, columnId: "c:0" }, includeFrom: true, includePosition: true });
+    await respond(positioned.viewRequestId, 1, { row: 2, columnId: "c:0", ordinal: 1 });
+    expect(runtimeRequests()).toEqual(["findCells"]);
+    expect(screen.getByRole("button", { name: "Replace" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("previews Replace all over the scope and match options, skipping columns that can't contain the text", () => {
+    const wide: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 3, columns: 5 },
+      filteredShape: { rows: 3, columns: 5 },
+      schema: [
+        ...metadata.schema,
+        { id: "c:3", name: "population", position: 3, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:4", name: "founded", position: 4, rawType: "Date", type: "date", nullable: false }
+      ]
+    };
+    open(wide, {
+      ...page,
+      columnIds: ["c:0", "c:1", "c:2", "c:3", "c:4"],
+      rows: page.rows.map((row, index) => ({
+        ...row,
+        values: [...row.values, cell("integer", String(index * 1000)), cell("date", `180${index}-01-01`)]
+      }))
+    });
+    dispatch({ kind: "editorAction", action: "replace" });
+    const input = screen.getByRole("textbox", { name: "Find" });
+    fireEvent.change(input, { target: { value: "1" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, altKey: true });
+    expect(latestPreview().params).toEqual({
+      columns: [
+        { id: "c:0", name: "city" },
+        { id: "c:1", name: "country" },
+        { id: "c:3", name: "population" },
+        { id: "c:4", name: "founded" }
+      ],
+      find: "1",
+      replacement: "",
+      matchCase: false,
+      wholeCell: false,
+      spelling: "portable"
+    });
+
+    discard();
+    fireEvent.change(input, { target: { value: "Paris" } });
+    fireEvent.keyDown(input, { key: "c", altKey: true });
+    fireEvent.keyDown(input, { key: "w", altKey: true });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search in" }), { target: { value: "c:0" } });
+    const replacement = screen.getByRole("textbox", { name: "Replace with" });
+    fireEvent.change(replacement, { target: { value: "Lyon" } });
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+    expect(latestPreview().params).toEqual({
+      columns: [{ id: "c:0", name: "city" }],
+      find: "Paris",
+      replacement: "Lyon",
+      matchCase: true,
+      wholeCell: true,
+      spelling: "portable"
+    });
+  });
+
+  it("pins Replace to the session's language where Python and R display values differently", () => {
+    open(
+      {
+        ...metadata,
+        shape: { rows: 3, columns: 2 },
+        filteredShape: { rows: 3, columns: 2 },
+        schema: [
+          metadata.schema[0]!,
+          { id: "c:1", name: "seen", position: 1, rawType: "Datetime", type: "datetime", nullable: false }
+        ]
+      },
+      {
+        ...page,
+        columnIds: ["c:0", "c:1"],
+        rows: page.rows.map((row) => ({ ...row, values: [row.values[0]!, cell("datetime", "2024-01-31T10:30:00")] }))
+      }
+    );
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "h", ctrlKey: true });
+    const input = screen.getByRole("textbox", { name: "Find" });
+    fireEvent.change(input, { target: { value: "2024" } });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, altKey: true });
+    expect(latestPreview().params).toMatchObject({
+      columns: [
+        { id: "c:0", name: "city" },
+        { id: "c:1", name: "seen" }
+      ],
+      spelling: "python"
+    });
+  });
+
+  it("offers Switch to Editing in Viewing mode", () => {
+    open({
+      ...metadata,
+      mode: "viewing",
+      source: { kind: "notebookVariable", label: "df", variableName: "df", uri: "file:///workspace/cities.ipynb" },
+      capabilities: {
+        ...metadata.capabilities,
+        lazy: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: true
+      }
+    });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "h", ctrlKey: true });
+    const bar = screen.getByRole("search", { name: "Find in grid" });
+    expect(screen.getByRole("textbox", { name: "Find" })).toHaveFocus();
+    expect(screen.queryByRole("textbox", { name: "Replace with" })).toBeNull();
+    fireEvent.click(within(bar).getByRole("button", { name: "Switch to Editing" }));
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ kind: "switchSessionMode", mode: "editing" }));
+  });
+
+  it("explains why a saved snapshot can't replace", () => {
+    open({
+      ...metadata,
+      revision: 0,
+      mode: "viewing",
+      source: { kind: "notebookOutput", label: "saved frame" },
+      capabilities: {
+        ...metadata.capabilities,
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false
+      }
+    });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "h", ctrlKey: true });
+    expect(screen.getByRole("search", { name: "Find in grid" })).toHaveTextContent(
+      "Saved notebook snapshots are viewing only."
+    );
+    expect(screen.queryByRole("textbox", { name: "Replace with" })).toBeNull();
+  });
+
+  it("waits for another draft and leaves Ctrl+H in editable fields alone", () => {
+    open({
+      ...metadata,
+      draftStep: { id: "draft", kind: "dropColumns", params: { columns: [{ id: "c:1", name: "country" }] } }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Go to row" }));
+    expect(fireEvent.keyDown(screen.getByRole("textbox", { name: "Row number" }), { key: "h", ctrlKey: true })).toBe(
+      true
+    );
+    expect(screen.queryByRole("search", { name: "Find in grid" })).toBeNull();
+
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "ƒ", code: "KeyF", metaKey: true, altKey: true });
+    expect(screen.getByRole("search", { name: "Find in grid" })).toHaveTextContent(
+      "Apply or discard the current draft to replace."
+    );
+    expect(screen.queryByRole("textbox", { name: "Replace with" })).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "Toggle Replace" });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Find" }), { key: "Escape" });
+    expect(screen.queryByRole("search", { name: "Find in grid" })).toBeNull();
+    expect(runtimeRequests()).toEqual([]);
+  });
+});
+
+function latestPreview(): TransformStep {
+  const message = postMessage.mock.calls
+    .map(([candidate]) => candidate)
+    .filter((candidate) => candidate?.kind === "runtimeRequest" && candidate.request.kind === "previewStep")
+    .at(-1);
+  expect(message).toBeDefined();
+  return message.request.step;
+}
+
+function preview(step: TransformStep, revision: number): void {
+  dispatch({
+    kind: "stepPreview",
+    revision,
+    metadata: { ...metadata, revision, draftStep: step },
+    page,
+    diff: {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    },
+    code: "frame"
+  });
+}
+
+function discard(): void {
+  dispatch({
+    kind: "planUpdated",
+    action: "discard",
+    revision: 1,
+    metadata,
+    page,
+    code: "frame"
+  });
+}
+
 function text(value: string): CellValue {
   return { kind: "string", raw: value, display: value, isNull: false, isNaN: false };
+}
+
+function cell(kind: CellValue["kind"], display: string): CellValue {
+  return { kind, raw: display, display, isNull: false, isNaN: false };
 }
 
 function list(values: string[]): CellValue {
   return { kind: "list", raw: values, display: JSON.stringify(values), isNull: false, isNaN: false };
 }
 
-function open(sessionMetadata: SessionMetadata): void {
+function open(sessionMetadata: SessionMetadata, sessionPage: GridPage = page): void {
   render(<App />);
-  dispatch({ kind: "sessionOpened", metadata: sessionMetadata, page, summaries: [] });
+  dispatch({ kind: "sessionOpened", metadata: sessionMetadata, page: sessionPage, summaries: [] });
   postMessage.mockClear();
 }
 
@@ -289,9 +569,10 @@ async function dispatchAsync(data: unknown): Promise<void> {
 function respond(
   viewRequestId: string,
   matchCount: number,
-  match?: { row: number; columnId: string; ordinal: number }
+  match?: { row: number; columnId: string; ordinal: number; position?: number },
+  revision = 1
 ): Promise<void> {
-  return dispatchAsync({ kind: "cellsFound", revision: 1, viewRequestId, matchCount, ...(match ? { match } : {}) });
+  return dispatchAsync({ kind: "cellsFound", revision, viewRequestId, matchCount, ...(match ? { match } : {}) });
 }
 
 function status(): string {

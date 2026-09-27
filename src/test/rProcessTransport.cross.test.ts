@@ -686,6 +686,142 @@ describe.skipIf(!enabled)("plain R process transport", () => {
       }
     }
   );
+  it("finds a match's dataframe row and replaces cells across columns through the public R bridge", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-replace-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: [
+        "frame <- data.frame(",
+        '  label = c("apple", "Banana", "cherry", "apple pie"),',
+        '  note = c("an Apple", "b", "apple", NA),',
+        "  score = c(1.5, 2.5, 1.5, 3),",
+        "  row.names = letters[1:4]",
+        ")"
+      ].join("\n")
+    });
+    const context = {
+      extension: { packageJSON: { version: "2.1.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
+    const sessionId = randomUUID();
+    const source = {
+      kind: "documentVariable",
+      uri: vscode.Uri.file(resolve(temporaryParent, "replace.R")).toString(),
+      variableName: "frame",
+      label: "frame"
+    } as const;
+    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+    const columns = [
+      { id: "r:c:0", name: "label" },
+      { id: "r:c:1", name: "note" },
+      { id: "r:c:2", name: "score" }
+    ] as const;
+    const replace = (id: string, params: Record<string, unknown>): TransformStep =>
+      ({
+        id,
+        kind: "replaceMatches",
+        params: { matchCase: false, wholeCell: false, spelling: "portable", ...params }
+      }) as TransformStep;
+    try {
+      const opened = await bridge.request({
+        kind: "openSession",
+        source,
+        backend: "r",
+        mode: "editing",
+        requestedSessionId: sessionId,
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(opened.kind).toBe("sessionOpened");
+      if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+
+      const found = await bridge.request({
+        kind: "findCells",
+        sessionId,
+        revision: 0,
+        viewRequestId: "replace-find",
+        filterModel: { filters: [], sort: [{ column: "score", direction: "desc", nulls: "last" }] },
+        query: "apple",
+        matchCase: false,
+        wholeCell: false,
+        direction: "next",
+        includePosition: true
+      });
+      expect(found).toMatchObject({
+        kind: "cellsFound",
+        matchCount: 4,
+        match: { row: 0, columnId: "r:c:0", position: 3 }
+      });
+
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: replace("across", { columns: [columns[0], columns[1]], find: "apple", replacement: "pear" }),
+        ...window
+      });
+      expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
+      if (preview.kind !== "stepPreview") throw new Error(JSON.stringify(preview));
+      expect(preview.metadata.schema).toEqual(opened.metadata.schema);
+      expect(preview.diff).toMatchObject({ changedCells: 4, truncated: false, addedColumns: [], removedColumns: [] });
+      expect(
+        preview.diff.cells.map((cell) => [cell.rowNumber, cell.column, (cell.after as { display: string }).display])
+      ).toEqual([
+        [0, "label", "pear"],
+        [0, "note", "an pear"],
+        [2, "note", "pear"],
+        [3, "label", "pear pie"]
+      ]);
+      expect(preview.code).toContain(".ow_replace_helpers");
+      const applied = await bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window });
+      expect(applied.kind).toBe("planUpdated");
+
+      const cell = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        step: replace("cell", { columns: [columns[2]], find: "1.5", replacement: "nan", wholeCell: true, row: 2 }),
+        ...window
+      });
+      expect(cell.kind, JSON.stringify(cell)).toBe("stepPreview");
+      if (cell.kind !== "stepPreview") throw new Error(JSON.stringify(cell));
+      expect(cell.diff).toMatchObject({ changedCells: 1, cells: [{ rowNumber: 2, column: "score" }] });
+      expect(cell.page.rows.map((row) => row.values[2]?.display)).toEqual(["1.5", "2.5", "NaN", "3.0"]);
+      const discarded = await bridge.request({ kind: "discardDraft", sessionId, revision: 3, ...window });
+      expect(discarded.kind).toBe("planUpdated");
+
+      for (const [step, message] of [
+        [
+          replace("python", { columns: [columns[0]], find: "a", replacement: "b", spelling: "python" }),
+          "Replay it with a Python library"
+        ],
+        [
+          replace("number", { columns: [columns[2]], find: "2.5", replacement: "x", wholeCell: true }),
+          "which isn't a number"
+        ]
+      ] as const) {
+        const refused = await bridge.request({ kind: "previewStep", sessionId, revision: 4, step, ...window });
+        expect(refused.kind).toBe("error");
+        if (refused.kind !== "error") throw new Error(JSON.stringify(refused));
+        expect(refused.message).toContain(message);
+      }
+
+      const undone = await bridge.request({ kind: "undoStep", sessionId, revision: 4, ...window });
+      expect(undone.kind).toBe("planUpdated");
+      if (undone.kind !== "planUpdated") throw new Error(JSON.stringify(undone));
+      expect(undone.page).toEqual(opened.page);
+    } finally {
+      await bridge.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("contains stdin error events while rejecting the write and retaining exact process cleanup", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-stdin-error-test-"));
     const transport = new RProcessSessionTransport({

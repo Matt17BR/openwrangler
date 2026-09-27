@@ -42,7 +42,7 @@ To install a downloaded VSIX, use **Views and More Actions > Install from VSIX..
   interpolation.
 - **Organize columns:** select, drop, rename, duplicate, and convert column types.
 - **Clean text and categories:** trim spaces, replace text, change case, split, extract with regular expressions, and
-  encode categories.
+  encode categories. Press `Ctrl+H` to replace Find matches in one cell or across the grid.
 - **Calculate values:** write formulas, rank with ties, scale and round numbers, and format dates.
 - **Create labels and flags:** build Text or Boolean results with **Conditional column**.
 - **Reshape and summarize:** pivot between long and wide tables, or group rows and aggregate values.

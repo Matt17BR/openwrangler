@@ -5289,6 +5289,15 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             format="%Y/%m",
             newColumn="month",
         ),
+        bound_step(
+            "replaceMatches",
+            columns=[bound_ref("c:source:1", "text", 1), bound_ref("c:source:3", "value", 3)],
+            find="-",
+            replacement="+",
+            matchCase=True,
+            wholeCell=False,
+            spelling="python",
+        ),
     ]
     source_schema = engine.schema(source)
     source_columns = source_lineage(source_schema)
@@ -7291,6 +7300,15 @@ def test_duckdb_notebook_session_operations_match_generated_code(monkeypatch: py
             step("floorNumber", column=value, newColumn="floored"),
             step("ceilNumber", column=value, newColumn="ceiled"),
             step("formatDatetime", column=day, format="%Y/%m", newColumn="month"),
+            step(
+                "replaceMatches",
+                columns=[text, value],
+                find="-",
+                replacement="+",
+                matchCase=True,
+                wholeCell=False,
+                spelling="python",
+            ),
         ],
         [step("pivotLonger", columns=[group, text], labelColumn="measure", valueColumn="reading")],
         [
