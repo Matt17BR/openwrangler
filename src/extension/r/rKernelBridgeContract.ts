@@ -43,6 +43,7 @@ const R_BASE_CAPABILITIES = Object.freeze({
   sort: true,
   profile: true,
   columnValues: true,
+  find: true,
   supportedOperations: [...operationKinds] as OperationKind[]
 } satisfies Omit<SourceCapabilities, "notebookInsert" | "documentInsert">);
 

@@ -805,6 +805,7 @@ export function createReleasedRDocumentJourney({
           sort: true,
           profile: true,
           columnValues: true,
+          find: true,
           supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS,
           notebookInsert: false,
           documentInsert: true

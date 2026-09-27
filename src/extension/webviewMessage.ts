@@ -63,6 +63,7 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "getSummary",
   "getDatasetStats",
   "getColumnValues",
+  "findCells",
   "inspectStep",
   "previewStep",
   "applyDraft",

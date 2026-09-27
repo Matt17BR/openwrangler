@@ -13,9 +13,11 @@ from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, SessionDataShape, default_engine_registry
 from .engines.base import (
     ExportOptions,
+    FindQuery,
     reconcile_view_filter_model,
 )
 from .export_target import ExportTarget, ExportTargetError
+from .find_cells import FindMatches
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operation_catalog_generated import OPERATION_DEFINITIONS
 from .operations import OperationError, validate_step
@@ -101,6 +103,14 @@ class SessionCleanupError(EngineError):
 
 
 @dataclass(frozen=True, slots=True)
+class _FindCache:
+    frame: Any
+    revision: int
+    key: tuple[str, bool, bool, tuple[int, ...]]
+    matches: FindMatches
+
+
+@dataclass(frozen=True, slots=True)
 class _AppliedViewRestore:
     step_id: str
     before: dict[str, Any]
@@ -172,6 +182,7 @@ class Session:
     disposed: bool = False
     spark_confirmed_view: _SparkConfirmedView | None = None
     inspection_boundary: _StepInspectionBoundary | None = None
+    find_cache: _FindCache | None = None
 
     @property
     def display_frame(self) -> Any:
@@ -212,6 +223,7 @@ class Session:
         with self.access.invalidation():
             self.page_cache.clear()
             self.page_cache_bytes = 0
+            self.find_cache = None
 
     def invalidate_source_view(self) -> None:
         with self.access.invalidation():
@@ -661,6 +673,7 @@ class SessionManager:
             session.view_change_epoch = candidate.view_change_epoch
             session.page_cache = candidate.page_cache
             session.page_cache_bytes = candidate.page_cache_bytes
+            session.find_cache = candidate.find_cache
             session.committed_shape = candidate.committed_shape
             session.source_shape = candidate.source_shape
             if confirmed_view is None:
@@ -721,6 +734,57 @@ class SessionManager:
                 "values": values,
                 "hasMore": has_more,
             }
+
+    def find_cells(
+        self,
+        session_id: str,
+        revision: int,
+        filter_model: Mapping[str, Any],
+        text: str,
+        *,
+        match_case: bool = False,
+        whole_cell: bool = False,
+        backward: bool = False,
+        column_ids: Sequence[str] | None = None,
+        start: Mapping[str, Any] | None = None,
+        include_start: bool = False,
+    ) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.access.shared(), self._validated_source_read(session):
+            self._assert_revision(session, revision)
+            if not session.engine.capabilities.supports_find:
+                raise EngineError(f"Find is unavailable for {session.backend} dataframes.")
+            schema = self._active_schema(session)
+            positions = {column["id"]: column["position"] for column in schema}
+            scope = tuple(
+                sorted(self._find_position(positions, column_id) for column_id in column_ids)
+                if column_ids is not None
+                else range(len(schema))
+            )
+            frame = self._find_view(session, filter_model)
+            key = (text, match_case, whole_cell, scope)
+            cached = session.find_cache
+            if (
+                cached is not None
+                and cached.frame is frame
+                and cached.revision == session.revision
+                and cached.key == key
+            ):
+                matches = cached.matches
+            else:
+                query = FindQuery(text, match_case=match_case, whole_cell=whole_cell)
+                matches = FindMatches.from_masks(scope, session.engine.find_masks(frame, list(scope), query))
+                session.find_cache = _FindCache(frame, session.revision, key, matches)
+            origin = None if start is None else (int(start["row"]), self._find_position(positions, start["columnId"]))
+            cell = matches.step(origin, backward=backward, inclusive=include_start)
+            response: dict[str, Any] = {"kind": "cellsFound", "revision": session.revision, "matchCount": matches.count}
+            if cell is not None:
+                response["match"] = {
+                    "row": cell[0],
+                    "columnId": schema[cell[1]]["id"],
+                    "ordinal": matches.ordinal(cell),
+                }
+            return response
 
     def get_dataset_stats(
         self,
@@ -1501,6 +1565,22 @@ class SessionManager:
             session.view_change_epoch += 1
         return session.filtered
 
+    def _find_view(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
+        """Resolve the grid's filtered and sorted rows without changing the confirmed view."""
+        model = self._normalize_filter_model(filter_model)
+        if model == session.filter_model:
+            return session.filtered
+        if not model.get("filters") and not model.get("sort"):
+            return session.display_frame
+        return session.engine.filter_view(session.display_frame, model)
+
+    @staticmethod
+    def _find_position(positions: Mapping[str, int], column_id: str) -> int:
+        position = positions.get(column_id)
+        if position is None:
+            raise EngineError("A Find column is no longer in the dataframe. Search again.")
+        return position
+
     def _view_query_frame(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
         """Resolve a profiling view without changing the confirmed grid view.
 
@@ -1984,6 +2064,7 @@ class SessionManager:
             ],
             "lazy": session.engine.is_lazy(session.display_frame, session.source.metadata),
             "cancel": engine_capabilities.supports_request_cancellation,
+            "find": engine_capabilities.supports_find,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
             "notebookInsert": (

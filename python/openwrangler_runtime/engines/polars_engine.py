@@ -53,6 +53,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     ExportOptions,
+    FindQuery,
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
@@ -476,6 +477,51 @@ def _polars_with_display_label(frame: Any, column: str, dtype: Any, name: str) -
     return pl.concat([frame.filter(~differs), rewritten])
 
 
+def _polars_find_match(frame: Any, column: str, dtype: Any, query: FindQuery) -> Any | None:
+    """A row-aligned Boolean expression marking cells whose displayed text matches ``query``, or None if none can."""
+    import polars as pl
+
+    value = _ow_polars_col(frame, column)
+    # Spelling each distinct value once is much cheaper than spelling every row, especially for floats.
+    distinct = frame.select(value.alias("value")).unique()
+    if isinstance(distinct, pl.LazyFrame):
+        distinct = distinct.collect(engine="streaming")
+    labelled = pl.col("value")
+    floating = dtype.is_float()
+    datetime = isinstance(dtype, pl.Datetime)
+    if dtype == pl.String or dtype == pl.Float64 or dtype.is_integer() or datetime:
+        text = labelled if dtype == pl.String else _polars_display_text(labelled, dtype)
+        if not query.match_case:
+            text = text.str.replace_many(_ASCII_LOWER_REPLACEMENTS)
+        if datetime:
+            text = text.str.replace_all("T" if query.match_case else "t", " ", literal=True)
+        needle = query.needle(datetime=datetime)
+        matches = text == needle if query.whole_cell else text.str.contains(needle, literal=True)
+        if floating:
+            matches = matches & labelled.is_not_nan()
+        matched = distinct.filter(matches.fill_null(False))
+    else:
+        # Other types are spelled by the page's own cell encoder.
+        prepared = _polars_prepare_temporal_cells(distinct, {"value": dtype})
+        cells = [_polars_query_cell(item, dtype) for item in prepared.get_column("value").to_list()]
+        labels = [None if cell["isNull"] or cell.get("isNaN") else cell["display"] for cell in cells]
+        matched = distinct.filter(pl.Series(query.label_matches(labels), dtype=pl.Boolean))
+    if floating:
+        matched = matched.filter(pl.col("value") != 0)
+    match = value.is_in(matched.get_column("value").implode()) if matched.height else None
+    if floating:
+        # Distinct values merge signed zeros, which the grid spells as 0.0 and -0.0.
+        # Plain Boolean operators: Polars 1.44 drops a lazy sort before a select of literal when/then branches.
+        positive, negative = query.label_matches(["0.0", "-0.0"])
+        if positive or negative:
+            zero = value == 0
+            if not (positive and negative):
+                negative_zero = (pl.lit(1.0) / value) < 0
+                zero = zero & (negative_zero if negative else ~negative_zero)
+            match = zero if match is None else zero | match
+    return None if match is None else match.fill_null(False)
+
+
 def _polars_has_temporal(dtype: Any) -> bool:
     import polars as pl
 
@@ -605,6 +651,7 @@ class PolarsEngine(DataFrameEngine):
         export_formats=frozenset({"csv", "parquet"}),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
+        supports_find=True,
     )
 
     def prepare(self, source: Mapping[str, Any] | None = None) -> None:
@@ -1626,6 +1673,38 @@ class PolarsEngine(DataFrameEngine):
             item["selectionValue"] = selection
             values.append(item)
         return values, counts.height > limit
+
+    def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
+        import polars as pl
+
+        df = frame if isinstance(frame, pl.LazyFrame) else self.normalize(frame)
+        schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+        visible = self._visible_columns(df)
+        expressions = {}
+        for index, position in enumerate(positions):
+            column = visible[position]
+            if not query.could_match(infer_semantic_type(str(schema[column]))):
+                continue
+            match = _polars_find_match(df, column, schema[column], query)
+            if match is not None:
+                expressions[index] = match.alias(f"match_{index}")
+        masks: list[Any | None] = [None] * len(positions)
+        if not expressions:
+            return masks
+        # One pass matches every column, including a filtered or sorted lazy view.
+        result = df.select(list(expressions.values()))
+        if isinstance(result, pl.LazyFrame):
+            result = result.collect(engine="streaming")
+        # Joined only after collection: a lazy plan may drop its sort before this aggregation.
+        joined = result.select(
+            pl.when(pl.col(name)).then(pl.lit("1")).otherwise(pl.lit("0")).str.join("").alias(name)
+            for name in result.columns
+        )
+        for index in expressions:
+            bits = joined.get_column(f"match_{index}").item()
+            if "1" in bits:
+                masks[index] = bits.encode("ascii")
+        return masks
 
     def _predicate_expr(
         self,

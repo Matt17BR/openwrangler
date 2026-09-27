@@ -12219,6 +12219,254 @@ openwrangler_r_frame_contract <- local({
     finish(json_array(values), length(priority) > limit)
   }
 
+  # Characters a present value of each type can display, so other queries skip the column unread.
+  find_characters <- list(
+    integer = "0123456789-",
+    float = "0123456789-+.eEinfinityINFINITY",
+    boolean = "truefalsTRUEFALS",
+    date = "0123456789-:.+ Tt",
+    datetime = "0123456789-:.+ Tt"
+  )
+
+  find_could_match <- function(text, column_type) {
+    if (column_type %in% c("list", "struct")) return(FALSE)
+    allowed <- find_characters[[column_type]]
+    is.null(allowed) || all(utf8ToInt(text) %in% utf8ToInt(allowed))
+  }
+
+  # Only ASCII letters fold without match case; datetime cells also match with a space for their T.
+  find_label_matches <- function(labels, query, datetime) {
+    needle <- query$text
+    if (!query$matchCase) {
+      needle <- ascii_fold(needle)
+      labels <- ascii_fold(labels)
+    }
+    if (datetime) {
+      separator <- if (query$matchCase) "T" else "t"
+      pattern <- if (query$matchCase) "(?<![A-Za-z])T(?![A-Za-z])" else "(?<![a-z])t(?![a-z])"
+      needle <- gsub(pattern, " ", needle, perl = TRUE)
+      labels <- gsub(separator, " ", labels, fixed = TRUE)
+    }
+    if (query$wholeCell) labels == needle else grepl(needle, labels, fixed = TRUE, useBytes = TRUE)
+  }
+
+  # The grid text of each indexed present value, as encode_value displays it.
+  find_value_displays <- function(column, semantics, indices, integer64_bindings = NULL) {
+    kind <- semantics$kind
+    if (kind == "logical") return(ifelse(column[indices], "TRUE", "FALSE"))
+    if (kind == "integer") return(as.character(column[indices]))
+    if (kind == "integer64") {
+      return(integer64_as_character(integer64_subset(column, indices), integer64_bindings %||% ensure_integer64_bindings()))
+    }
+    if (kind == "character") return(profile_text_values(column[indices], indices, "find value"))
+    if (kind == "factor") {
+      levels <- plain_metadata_storage(semantics$levels)
+      return(profile_text_values(levels[unclass(column)[indices]], indices, "find value"))
+    }
+    if (kind == "clock_datetime") return(clock_display_values(column[indices]))
+    values <- as.double(unclass(column)[indices])
+    if (kind == "double") {
+      displays <- display_double_values(values)
+      displays[values == Inf] <- "Inf"
+      displays[values == -Inf] <- "-Inf"
+      return(displays)
+    }
+    if (kind == "date") return(display_date_values(structure(values, class = "Date"), "find value"))
+    if (kind == "datetime") {
+      timezone <- semantics$timezone
+      attributes(values) <- if (is.null(timezone)) {
+        list(class = c("POSIXct", "POSIXt"))
+      } else {
+        list(class = c("POSIXct", "POSIXt"), tzone = timezone)
+      }
+      return(display_datetime_values(values, timezone, "find value"))
+    }
+    if (kind == "difftime") return(display_difftime_values(values, semantics$units))
+    abort("internal-error", "unknown R column kind")
+  }
+
+  # Labels one display per distinct value; missing values and NaN never match.
+  find_column_mask <- function(column, semantics, column_type, query, integer64_bindings = NULL) {
+    if (nested_kind(semantics) || !find_could_match(query$text, column_type)) return(NULL)
+    present <- profile_present_indices(column, semantics, integer64_bindings)
+    if (length(present) == 0L) return(NULL)
+    identities <- if (semantics$kind == "character") {
+      column[present]
+    } else if (semantics$kind %in% c("factor", "logical")) {
+      unclass(column)[present]
+    } else {
+      profile_value_identities(column, semantics, present, integer64_bindings)
+    }
+    # match() merges signed zeros, but the grid shows -0.0 apart; the unused NA keeps it apart.
+    if (semantics$kind == "double") identities[identities == 0 & 1 / identities < 0] <- NA_real_
+    group <- match(identities, identities)
+    first <- which(group == seq_along(group))
+    hits <- find_label_matches(
+      find_value_displays(column, semantics, present[first], integer64_bindings),
+      query,
+      identical(column_type, "datetime")
+    )
+    if (!any(hits)) return(NULL)
+    slot <- integer(length(group))
+    slot[first] <- seq_along(first)
+    mask <- logical(length(column))
+    mask[present] <- hits[slot[group]]
+    mask
+  }
+
+  # Matches are cached as packed bits: bit r of a column marks zero-based view row r.
+  find_bit_tables <- local({
+    bits <- lapply(0:255, function(byte) which(as.integer(intToBits(byte))[1:8] == 1L) - 1L)
+    list(
+      count = vapply(bits, length, integer(1L)),
+      lowest = vapply(bits, function(set) if (length(set) == 0L) NA_integer_ else min(set), integer(1L)),
+      highest = vapply(bits, function(set) if (length(set) == 0L) NA_integer_ else max(set), integer(1L))
+    )
+  })
+
+  find_pack <- function(mask) packBits(c(mask, logical((-length(mask)) %% 8L)), type = "raw")
+
+  find_row_is_set <- function(bits, row) {
+    byte <- row %/% 8L + 1L
+    byte <= length(bits) && bitwAnd(as.integer(bits[[byte]]), bitwShiftL(1L, row %% 8L)) != 0L
+  }
+
+  # The first matching row at or after row, or NA.
+  find_next_row <- function(bits, row) {
+    byte <- row %/% 8L + 1L
+    if (byte > length(bits)) return(NA_integer_)
+    value <- bitwAnd(as.integer(bits[[byte]]), bitwAnd(255L, bitwNot(bitwShiftL(1L, row %% 8L) - 1L)))
+    if (value == 0L) {
+      if (byte == length(bits)) return(NA_integer_)
+      later <- match(TRUE, bits[(byte + 1L):length(bits)] != as.raw(0L))
+      if (is.na(later)) return(NA_integer_)
+      byte <- byte + later
+      value <- as.integer(bits[[byte]])
+    }
+    (byte - 1L) * 8L + find_bit_tables$lowest[[value + 1L]]
+  }
+
+  # The last matching row at or before row, or NA.
+  find_previous_row <- function(bits, row) {
+    if (row < 0L || length(bits) == 0L) return(NA_integer_)
+    byte <- row %/% 8L + 1L
+    if (byte > length(bits)) {
+      byte <- length(bits)
+      row <- byte * 8L - 1L
+    }
+    value <- bitwAnd(as.integer(bits[[byte]]), bitwShiftL(1L, row %% 8L + 1L) - 1L)
+    if (value == 0L) {
+      if (byte == 1L) return(NA_integer_)
+      earlier <- which(bits[seq_len(byte - 1L)] != as.raw(0L))
+      if (length(earlier) == 0L) return(NA_integer_)
+      byte <- earlier[[length(earlier)]]
+      value <- as.integer(bits[[byte]])
+    }
+    (byte - 1L) * 8L + find_bit_tables$highest[[value + 1L]]
+  }
+
+  find_count_before <- function(bits, row) {
+    byte <- row %/% 8L + 1L
+    whole <- min(byte - 1L, length(bits))
+    count <- if (whole > 0L) sum(as.double(find_bit_tables$count[as.integer(bits[seq_len(whole)]) + 1L])) else 0
+    if (byte <= length(bits) && row %% 8L > 0L) {
+      count <- count + find_bit_tables$count[[bitwAnd(as.integer(bits[[byte]]), bitwShiftL(1L, row %% 8L) - 1L) + 1L]]
+    }
+    count
+  }
+
+  find_extreme <- function(rows, backward) {
+    target <- if (backward) max(rows, na.rm = TRUE) else min(rows, na.rm = TRUE)
+    tied <- which(rows == target)
+    list(row = target, index = if (backward) max(tied) else min(tied))
+  }
+
+  # Row-major order over view rows, then schema positions, wrapping around the view.
+  find_step <- function(found, start, backward, inclusive) {
+    if (length(found$bits) == 0L) return(NULL)
+    if (!is.null(start)) {
+      row <- as.integer(min(start$row, found$rows))
+      eligible <- if (backward) found$positions < start$position else found$positions > start$position
+      if (inclusive) eligible <- eligible | found$positions == start$position
+      same_row <- which(eligible & vapply(found$bits, find_row_is_set, logical(1L), row = row))
+      if (length(same_row) != 0L) return(list(row = row, index = if (backward) max(same_row) else min(same_row)))
+      rows <- vapply(found$bits, function(bits) {
+        if (backward) find_previous_row(bits, row - 1L) else find_next_row(bits, row + 1L)
+      }, integer(1L))
+      if (!all(is.na(rows))) return(find_extreme(rows, backward))
+    }
+    rows <- vapply(found$bits, function(bits) {
+      if (backward) find_previous_row(bits, found$rows) else find_next_row(bits, 0L)
+    }, integer(1L))
+    find_extreme(rows, backward)
+  }
+
+  find_cells <- function(
+    capture,
+    view_query,
+    query,
+    columns = NULL,
+    from = NULL,
+    include_from = FALSE,
+    backward = FALSE,
+    filter_cache = NULL,
+    find_cache = NULL
+  ) {
+    validate_capture(capture)
+    descriptor <- capture$descriptor
+    positions <- if (is.null(columns)) {
+      seq_along(descriptor$schema)
+    } else {
+      sort(vapply(columns, function(reference) {
+        resolve_column_reference(reference, descriptor, "find column")$position
+      }, integer(1L)))
+    }
+    start <- if (is.null(from)) NULL else {
+      list(row = from$row, position = resolve_column_reference(from$column, descriptor, "find origin")$position)
+    }
+    key <- list(view = view_query, query = query, positions = positions)
+    if (!is.null(find_cache) && identical(find_cache$capture, capture) && identical(find_cache$key, key)) {
+      found <- find_cache$found
+    } else {
+      frame <- read_capture_frame(capture, validated = TRUE)
+      view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE, filter_cache = filter_cache)
+      kinds <- vapply(descriptor$schema[positions], function(column) column$semantics$kind, character(1L))
+      integer64_bindings <- if ("integer64" %in% kinds) ensure_integer64_bindings() else NULL
+      matched <- integer()
+      bits <- list()
+      for (position in positions) {
+        column_descriptor <- descriptor$schema[[position]]
+        column <- frame[[position]]
+        if (!is.null(view$rows)) column <- column[view$rows]
+        validate_profile_column(column, column_descriptor$semantics, "find column", integer64_bindings)
+        mask <- find_column_mask(column, column_descriptor$semantics, column_descriptor$type, query, integer64_bindings)
+        if (is.null(mask)) next
+        matched <- c(matched, position)
+        bits[[length(bits) + 1L]] <- find_pack(mask)
+      }
+      found <- list(rows = as.integer(view$totalRows), positions = matched, bits = bits)
+      if (!is.null(find_cache)) {
+        find_cache$capture <- capture
+        find_cache$key <- key
+        find_cache$found <- found
+      }
+    }
+    count <- sum(vapply(found$bits, function(bits) find_count_before(bits, found$rows), numeric(1L)))
+    cell <- find_step(found, start, backward, include_from)
+    if (is.null(cell)) return(list(matchCount = count, match = NULL))
+    column_descriptor <- descriptor$schema[[found$positions[[cell$index]]]]
+    before <- sum(vapply(found$bits, find_count_before, numeric(1L), row = cell$row))
+    same_row <- sum(vapply(found$bits[seq_len(cell$index)], find_row_is_set, logical(1L), row = cell$row))
+    list(
+      matchCount = count,
+      match = list(
+        row = cell$row,
+        column = list(id = column_descriptor$id, name = column_descriptor$name),
+        ordinal = before + same_row
+      )
+    )
+  }
+
   materialize_page <- function(
     capture,
     row_offset = 0L,
@@ -12505,6 +12753,7 @@ openwrangler_r_frame_contract <- local({
     advance_dataset_stats = advance_dataset_stats,
     materialize_dataset_stats = materialize_dataset_stats,
     materialize_column_values = materialize_column_values,
+    find_cells = find_cells,
     encode_page = encode_page,
     encode_view_page = encode_view_page,
     limits = list(

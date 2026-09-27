@@ -23,7 +23,7 @@ export type BooleanVisualization = Extract<ColumnVisualization, { kind: "boolean
 export type DatetimeVisualization = Extract<ColumnVisualization, { kind: "datetime" }>;
 export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number];
 export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
-export type OptionalViewingCapability = "filter" | "sort" | "profile" | "columnValues";
+export type OptionalViewingCapability = "filter" | "sort" | "profile" | "columnValues" | "find";
 
 export function isDuckDBTableSource(source: SessionSource): boolean {
   return (

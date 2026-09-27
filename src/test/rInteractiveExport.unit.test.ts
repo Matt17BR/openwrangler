@@ -204,6 +204,7 @@ function activeExportTransport(contract: RFramePageContract): RKernelBridgeTrans
       }
     })),
     getColumnValues: vi.fn(async () => ({ column: "order_id", values: [], hasMore: false })),
+    findCells: vi.fn(async () => ({ matchCount: 0 })),
     previewStep: vi.fn(unexpected),
     applyDraft: vi.fn(unexpected),
     discardDraft: vi.fn(unexpected),

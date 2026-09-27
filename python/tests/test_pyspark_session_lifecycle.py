@@ -196,6 +196,7 @@ def test_session_manager_detects_live_variable_and_disables_mutation_capabilitie
         "supportedOperations": [],
         "lazy": False,
         "cancel": False,
+        "find": False,
         "exportCsv": False,
         "exportParquet": False,
         "notebookInsert": False,

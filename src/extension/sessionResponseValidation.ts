@@ -75,6 +75,13 @@ export function responseMismatch(
       return response.revision === request.revision
         ? undefined
         : `column-values revision ${response.revision} did not match ${request.revision}`;
+    case "findCells":
+      if (response.kind !== "cellsFound") return `runtime returned ${response.kind}`;
+      if (response.viewRequestId !== request.viewRequestId) return "find correlation did not match";
+      if (response.revision !== request.revision) {
+        return `find revision ${response.revision} did not match ${request.revision}`;
+      }
+      return foundCellMismatch(response.match, confirmedPageSchema, request.columnIds);
     case "previewStep":
       if (response.kind !== "stepPreview") return `runtime returned ${response.kind}`;
       if (response.revision !== request.revision + 1) {
@@ -200,6 +207,19 @@ function canonicalImmutableSource(source: SessionSource): SessionSource {
     canonical.importOptions = importOptions;
   }
   return canonical;
+}
+
+function foundCellMismatch(
+  match: Extract<OpenWranglerResponse, { kind: "cellsFound" }>["match"],
+  schema: readonly ColumnSchema[] | undefined,
+  requestedColumnIds: readonly string[] | undefined
+): string | undefined {
+  if (match === undefined) return undefined;
+  if (!schema) return "find validation is missing the confirmed schema";
+  if (!schema.some((column) => column.id === match.columnId)) return "find matched a column outside the schema";
+  return requestedColumnIds === undefined || requestedColumnIds.includes(match.columnId)
+    ? undefined
+    : "find matched a column outside the requested scope";
 }
 
 function summaryProjectionMismatch(

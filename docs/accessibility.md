@@ -28,10 +28,19 @@ Only one rendered body cell is in the Tab order at a time. Put focus on that cel
 | `Ctrl/Cmd+End`              | Move to the final row and column in an exact-total non-PySpark view. |
 | Context Menu or `Shift+F10` | Open the filter-by-cell actions for the focused cell.                |
 | `Ctrl+G`                    | Open **Go to row** on every platform, then type a row number.        |
+| `Ctrl/Cmd+F`                | Open **Find**, or return focus to its text box.                      |
+| `F3` / `Shift+F3`           | Move to the next or previous Find match.                             |
 
-You can also open **Go to row** with the search button beside the row count, or by clicking the row count. It
+You can also open **Go to row** with its button beside the row count, or by clicking the row count. It
 accepts a number with any locale's grouping separators, focuses that row in the current column, and fetches its
 block when needed. `Escape` closes it and returns focus to the button without closing any other surface.
+
+**Find** searches the current view after its filters and sorts. It starts at the focused cell, searches all columns
+or the selected column, and reports the match position, such as `3 of 120`, in a status region. `Enter` and
+`Shift+Enter` in the text box move to the next and previous match; `Alt+C` toggles **Match case** and `Alt+W`
+toggles **Match whole cell**. A match that is outside the loaded rows is fetched and selected without moving focus
+out of the text box. `Escape` closes Find and returns focus to the grid cell, which is the current match when one was
+found. `Ctrl/Cmd+F` in any other text box keeps its own behavior.
 
 Navigation can cross a fetched row or column block. Open Wrangler requests the required block, keeps the absolute
 cell position, and restores focus after it arrives if the webview still owns focus. For a PySpark view whose total is

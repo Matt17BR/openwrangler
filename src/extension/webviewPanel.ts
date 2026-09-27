@@ -1770,8 +1770,15 @@ export class OpenWranglerPanel {
             }
           }
         }
-        // Old profile owners will be retired by the accepted atomic view.
-        if (response.kind === "summary" || response.kind === "datasetStats" || response.kind === "columnValues") return;
+        // Old profile and Find owners will be retired by the accepted atomic view.
+        if (
+          response.kind === "summary" ||
+          response.kind === "datasetStats" ||
+          response.kind === "columnValues" ||
+          response.kind === "cellsFound"
+        ) {
+          return;
+        }
       }
       if (
         request.kind === "redoStep" &&
@@ -2678,7 +2685,8 @@ type NonSortEditorAction =
   | "discardDraft"
   | "undoStep"
   | "redoStep"
-  | "goToRow";
+  | "goToRow"
+  | "find";
 
 export type EditorActionMessage =
   | ({ action: "clearFilterColumn" } & ViewFilterRemovalTarget)

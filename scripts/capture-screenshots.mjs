@@ -13,7 +13,11 @@ import {
 import { createGridColumnClipboardHarness } from "./grid-column-clipboard-harness.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
-import { captureWebviewScreenshot, preflightWebviewBrowser } from "./webview-browser.mjs";
+import {
+  captureWebviewScreenshot,
+  createWebviewSelectorReadiness,
+  preflightWebviewBrowser
+} from "./webview-browser.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -95,6 +99,15 @@ filter_model = {
 }
 session_id = opened["metadata"]["sessionId"]
 sales_column = next(column for column in opened["metadata"]["schema"] if column["name"] == "sales")
+city_column = next(column for column in opened["metadata"]["schema"] if column["name"] == "city")
+found = manager.find_cells(
+    session_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+    "i",
+    start={"row": 0, "columnId": city_column["id"]},
+    include_start=True,
+)
 opened["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, {"logic": "and", "filters": [], "sort": []})["stats"]
 filtered_page = manager.get_page(session_id, 0, 0, 4, filter_model)
 filtered_page["metadata"]["stats"] = manager.get_dataset_stats(session_id, 0, filter_model)["stats"]
@@ -429,6 +442,7 @@ if mime_payload is None:
 
 print(json.dumps({
     "opened": opened,
+    "find": found,
     "filtered": {
         "kind": "sessionOpened",
         "metadata": filtered_page["metadata"],
@@ -658,6 +672,30 @@ writeWebviewHarness(
   }
 );
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
+for (const [theme, suffix] of [
+  ["dark", "dark"],
+  ["highContrast", "high-contrast"]
+]) {
+  writeWebviewHarness(
+    `grid-find-${suffix}-1280.html`,
+    payloads.opened,
+    {},
+    `acceptance/grid-find-${suffix}-1280.png`,
+    {},
+    {
+      theme,
+      findFixture: { text: "i", response: payloads.find },
+      readiness: createWebviewSelectorReadiness({
+        description: "the open Find bar with its current and highlighted matches",
+        selectors: [
+          { selector: 'td[data-find-match="current"]', count: 1 },
+          { selector: 'td[data-find-match="match"]', count: 2 }
+        ],
+        emptyArrayGlobals: ["openWranglerHarnessErrors"]
+      })
+    }
+  );
+}
 writeWebviewHarness(
   "grid-terminal-range-dark-320.html",
   terminalRangePayload,
@@ -870,6 +908,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const pixelRatio = appearance.pixelRatio ?? 1;
   const strictProjectedPages = appearance.strictProjectedPages === true;
+  const findFixture = appearance.findFixture ?? null;
   const zoomViewportStyles =
     zoom === 1
       ? ""
@@ -908,6 +947,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     const stepInspections = ${stringifyForInlineScript(stepInspections)};
     const strictProjectedPages = ${stringifyForInlineScript(strictProjectedPages)};
     const clipboardColumnFixture = ${stringifyForInlineScript(clipboardColumnFixture)};
+    const findFixture = ${stringifyForInlineScript(findFixture)};
     window.openWranglerMessages = [];
     window.openWranglerHarnessErrors = [];
     window.openWranglerProjectedResponses = [];
@@ -919,6 +959,44 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload, origin: window.location.origin })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(editorAction)}, origin: window.location.origin })), 90);` : ""}
           ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
+          ${
+            findFixture
+              ? `{
+            let opened = false;
+            let typed = false;
+            let searched = false;
+            const driveFind = () => {
+              const input = document.querySelector('input[aria-label="Find"]');
+              if (!(input instanceof HTMLInputElement)) {
+                const open = document.querySelector('button[aria-label="Find"]');
+                if (!opened && open instanceof HTMLButtonElement) {
+                  opened = true;
+                  open.click();
+                }
+                return;
+              }
+              if (!typed) {
+                typed = true;
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, findFixture.text);
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+              const next = document.querySelector('button[aria-label="Next match"]');
+              if (!searched && next instanceof HTMLButtonElement && !next.disabled) {
+                searched = true;
+                findObserver.disconnect();
+                next.click();
+              }
+            };
+            const findObserver = new MutationObserver(driveFind);
+            findObserver.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ["disabled"]
+            });
+          }`
+              : ""
+          }
           ${
             openInsights
               ? `setTimeout(() => {
@@ -952,6 +1030,12 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           }`
               : ""
           }
+        }
+        if (message.kind === "runtimeRequest" && message.request.kind === "findCells" && findFixture) {
+          setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
+            data: { ...findFixture.response, viewRequestId: message.request.viewRequestId },
+            origin: window.location.origin
+          })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getColumnValues") {
           const value = columnValues[message.request.column];
@@ -1332,7 +1416,13 @@ function themeTokens(theme) {
       scrollbarHover: "#646464b3",
       scrollbarActive: "#bfbfbf66",
       selection: "#04395e",
-      selectionForeground: "#ffffff"
+      selectionForeground: "#ffffff",
+      optionActive: "#007fd466",
+      optionActiveBorder: "#007fd4",
+      findMatch: "#515c6a",
+      findMatchBorder: "#74879f",
+      findMatchHighlight: "#ea5c0055",
+      findMatchHighlightBorder: "transparent"
     },
     light: {
       foreground: "#333333",
@@ -1352,7 +1442,13 @@ function themeTokens(theme) {
       scrollbarHover: "#646464b3",
       scrollbarActive: "#00000099",
       selection: "#0060c0",
-      selectionForeground: "#ffffff"
+      selectionForeground: "#ffffff",
+      optionActive: "#0090f133",
+      optionActiveBorder: "#0090f1",
+      findMatch: "#a8ac94",
+      findMatchBorder: "#7c7f6d",
+      findMatchHighlight: "#ea5c0055",
+      findMatchHighlightBorder: "transparent"
     },
     highContrast: {
       foreground: "#ffffff",
@@ -1372,7 +1468,13 @@ function themeTokens(theme) {
       scrollbarHover: "#ffffffcc",
       scrollbarActive: "#ffffff",
       selection: "#000000",
-      selectionForeground: "#ffffff"
+      selectionForeground: "#ffffff",
+      optionActive: "transparent",
+      optionActiveBorder: "#6fc3df",
+      findMatch: "transparent",
+      findMatchBorder: "#f38518",
+      findMatchHighlight: "transparent",
+      findMatchHighlightBorder: "#f38518"
     },
     highContrastLight: {
       foreground: "#000000",
@@ -1392,7 +1494,13 @@ function themeTokens(theme) {
       scrollbarHover: "#000000cc",
       scrollbarActive: "#000000",
       selection: "#ffffff",
-      selectionForeground: "#000000"
+      selectionForeground: "#000000",
+      optionActive: "transparent",
+      optionActiveBorder: "#007acc",
+      findMatch: "transparent",
+      findMatchBorder: "#0f4a85",
+      findMatchHighlight: "transparent",
+      findMatchHighlightBorder: "#0f4a85"
     }
   };
   const palette = palettes[theme] ?? palettes.dark;
@@ -1417,6 +1525,12 @@ function themeTokens(theme) {
     --vscode-list-activeSelectionForeground: ${palette.selectionForeground};
     --vscode-notifications-background: ${palette.header};
     --vscode-notifications-border: ${palette.border};
+    --vscode-inputOption-activeBackground: ${palette.optionActive};
+    --vscode-inputOption-activeBorder: ${palette.optionActiveBorder};
+    --vscode-editor-findMatchBackground: ${palette.findMatch};
+    --vscode-editor-findMatchBorder: ${palette.findMatchBorder};
+    --vscode-editor-findMatchHighlightBackground: ${palette.findMatchHighlight};
+    --vscode-editor-findMatchHighlightBorder: ${palette.findMatchHighlightBorder};
     --vscode-font-family: "Liberation Sans", Arial, sans-serif;
     --vscode-editor-font-family: "Liberation Mono", monospace;
     font-kerning: none;

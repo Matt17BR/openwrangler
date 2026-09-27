@@ -6,10 +6,12 @@ import type {
   ColumnSchema,
   ColumnSummary,
   DataDiff,
+  GridCell,
   GridPage,
   LiveGridPage,
   SessionMetadata
 } from "../../shared/protocol";
+import { cellMatchesFind } from "../../shared/find";
 import { liveGridLogicalRowExtent, liveGridPageHasMore, sourceDisplayLabel } from "../../shared/protocol";
 import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
@@ -28,6 +30,14 @@ import {
 } from "./rowScrollModel";
 import { GridClipboardControls, useGridClipboard } from "./GridClipboardControls";
 import { GoToRow } from "./GoToRow";
+import { FindBar } from "./FindBar";
+import {
+  isFindableColumn,
+  useGridFind,
+  type GridFindQuery,
+  type GridFindRequest,
+  type GridFindSettlement
+} from "./useGridFind";
 import type { GridCellCoordinate } from "./gridClipboard";
 import type { ProfileValueMode } from "../profileValueMode";
 import { useGridHeaderProfiles } from "./GridHeaderProfileValues";
@@ -65,6 +75,9 @@ interface DataGridProps {
   goToColumnId?: string;
   goToColumnRequestId?: number;
   goToRowRequestId?: number;
+  findRequest?: GridFindRequest;
+  findUnavailableReason?: string;
+  onFindCells?(query: GridFindQuery): Promise<GridFindSettlement>;
   viewState?: GridViewState;
   viewStateRestoreVersion?: number;
   diff?: DataDiff;
@@ -119,6 +132,8 @@ const defaultViewState: GridViewState = { columnWidths: new Map(), viewport: { f
 const narrowHeaderStatsColumnWidth = 167;
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
+const findUnavailable = (): Promise<GridFindSettlement> =>
+  Promise.resolve({ kind: "cancelled", targetRequestId: "find" });
 
 export function DataGrid({
   metadata,
@@ -133,6 +148,9 @@ export function DataGrid({
   goToColumnId,
   goToColumnRequestId,
   goToRowRequestId = 0,
+  findRequest,
+  findUnavailableReason,
+  onFindCells,
   viewState = defaultViewState,
   viewStateRestoreVersion = 0,
   diff,
@@ -1027,8 +1045,97 @@ export function DataGrid({
     goToPage(row, true);
   };
 
+  const pendingFindReveal = useRef<GridCell | undefined>(undefined);
+  // Selects a Find match without moving focus from the find bar, scrolling each axis only when the match is hidden.
+  const revealFoundCell = (cell: GridCell) => {
+    const column = metadata.schema.findIndex((candidate) => candidate.id === cell.columnId);
+    if (column < 0 || cell.row >= logicalRowExtent) return;
+    if (busy) {
+      pendingFindReveal.current = cell;
+      return;
+    }
+    pendingFindReveal.current = undefined;
+    const scroller = scrollerRef.current;
+    const headerHeight = scroller?.querySelector("thead")?.offsetHeight ?? 0;
+    const rowsInView = scroller ? Math.max(1, Math.floor((scroller.clientHeight - headerHeight) / gridRowHeight)) : 1;
+    const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
+    if (
+      cell.row < firstVisibleRow ||
+      cell.row >= firstVisibleRow + rowsInView ||
+      cell.row < page.offset ||
+      cell.row >= page.offset + page.rows.length
+    ) {
+      goToPage(cell.row);
+    }
+    if (scroller) {
+      let columnStart = rowHeaderWidth;
+      for (let index = 0; index < column; index += 1) columnStart += widths[index] ?? defaultColumnWidth;
+      const columnEnd = columnStart + (widths[column] ?? defaultColumnWidth);
+      if (
+        columnStart < scroller.scrollLeft + rowHeaderWidth ||
+        columnEnd > scroller.scrollLeft + scroller.clientWidth
+      ) {
+        scroller.scrollLeft = centeredColumnScrollLeft(
+          widths,
+          column,
+          scroller.clientWidth,
+          rowHeaderWidth,
+          defaultColumnWidth
+        );
+        const scrollLeft = scroller.scrollLeft;
+        const viewport = viewStateRef.current.viewport;
+        programmaticViewportTarget.current = {
+          firstVisibleRow: viewport.firstVisibleRow,
+          scrollTop: scroller.scrollTop,
+          scrollLeft
+        };
+        setViewport((current) => ({ ...current, measured: true, scrollLeft }));
+        reportViewState({ ...viewStateRef.current, viewport: { ...viewport, scrollLeft } });
+      }
+    }
+    setFocusedCell({ row: cell.row, column });
+    gridClipboard.selectCell({ row: cell.row, column }, false);
+    reportViewState({ ...viewStateRef.current, selectedColumnId: cell.columnId });
+  };
+  useEffect(() => {
+    const cell = pendingFindReveal.current;
+    if (!busy && cell) revealFoundCell(cell);
+  });
+
+  const findableColumnIds = useMemo(
+    () => new Set(metadata.schema.filter(isFindableColumn).map((column) => column.id)),
+    [metadata.schema]
+  );
+  const find = useGridFind({
+    viewKey: `${logicalViewContext}:${metadata.revision}`,
+    searchableColumnIds: findableColumnIds,
+    unavailableReason: onFindCells ? findUnavailableReason : (findUnavailableReason ?? "Find is unavailable here."),
+    findCells: onFindCells ?? findUnavailable,
+    origin: () => {
+      const columnId = metadata.schema[focusedCell.column]?.id;
+      return columnId === undefined || logicalRowExtent === 0 ? undefined : { row: focusedCell.row, columnId };
+    },
+    defaultScope: () => {
+      const column = gridClipboard.focusedColumn;
+      return column && gridClipboard.isColumnSelected(column.id) ? column.id : undefined;
+    },
+    reveal: revealFoundCell,
+    returnFocus: () => {
+      focusRequested.current = document.hasFocus();
+      setFocusedCell((current) => ({ ...current }));
+    }
+  });
+  const handledFindRequest = useRef(findRequest?.requestId);
+  useEffect(() => {
+    if (!findRequest || findRequest.requestId === handledFindRequest.current) return;
+    handledFindRequest.current = findRequest.requestId;
+    find.request(findRequest.action);
+  }, [find, findRequest]);
+  const findHighlight = find.highlight;
+
   return (
     <div className="dataGrid">
+      {find.open && <FindBar controller={find} schema={metadata.schema} />}
       {page.totalRows === 0 && metadata.schema.length === 0 && (
         <div className="emptyState" role="status">
           <strong>Empty dataset</strong>
@@ -1194,6 +1301,14 @@ export function DataGrid({
                         })
                       ? "range"
                       : undefined;
+                  const findCurrent =
+                    findHighlight?.current?.row === row.rowNumber && findHighlight.current.columnId === column.id;
+                  const findMatch =
+                    findCurrent ||
+                    (findHighlight !== undefined &&
+                      cell !== undefined &&
+                      (findHighlight.columnId === undefined || findHighlight.columnId === column.id) &&
+                      cellMatchesFind(cell, column.type, findHighlight));
                   const diffCell = diffPresentation?.cell(row.id, column.id);
                   const changedCell = diffCell?.state === "changed";
                   const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
@@ -1271,6 +1386,7 @@ export function DataGrid({
                       aria-label={accessibleLabel ?? displayCell.accessibilityLabel ?? renderedCell ?? ""}
                       data-diff-state={changedCell ? "changed" : addedColumn ? "added" : undefined}
                       data-clipboard-selected={clipboardSelected ? "true" : undefined}
+                      data-find-match={findCurrent ? "current" : findMatch ? "match" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={[
                         "gridCell",
@@ -1279,6 +1395,7 @@ export function DataGrid({
                         clipboardSelected ? "gridClipboardSelected" : "",
                         changedCell ? "diffChangedCell" : "",
                         addedColumn ? "diffAddedColumn" : "",
+                        findCurrent ? "findCurrentMatch" : findMatch ? "findMatch" : "",
                         cellMenuOpen ? "cellFilterMenuOpen" : ""
                       ]
                         .filter(Boolean)
@@ -1513,13 +1630,27 @@ export function DataGrid({
                     page.totalRows
                   ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
           </span>
-          <GoToRow
-            rowCount={addressableRowCount}
-            open={goToRowOpen}
-            busy={busy}
-            onOpenChange={setGoToRowOpen}
-            onGoToRow={goToRow}
-          />
+          <span className="gridRowActions">
+            {onFindCells && (
+              <button
+                type="button"
+                className="gridNavigationButton"
+                aria-label="Find"
+                aria-keyshortcuts="Control+F"
+                title="Find (Ctrl+F)"
+                onClick={() => find.request("open")}
+              >
+                <span className="codicon codicon-search" aria-hidden="true" />
+              </button>
+            )}
+            <GoToRow
+              rowCount={addressableRowCount}
+              open={goToRowOpen}
+              busy={busy}
+              onOpenChange={setGoToRowOpen}
+              onGoToRow={goToRow}
+            />
+          </span>
         </span>
         <span id={gridSelectionInstructionsId} className="gridClipboardAnnouncement">
           {gridSelectionInstructions}

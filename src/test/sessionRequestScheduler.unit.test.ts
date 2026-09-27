@@ -258,6 +258,43 @@ describe("SessionRequestScheduler", () => {
     await queued;
   });
 
+  it("scans Find beside pages, replaces a queued Find, and never lets reads overtake a mutation", async () => {
+    const execution = controlledExecution();
+    const scheduler = new SessionRequestScheduler(execution.execute);
+    const active = scheduler.enqueue(find("find-active"));
+    const superseded = scheduler.enqueue(find("find-superseded"));
+    const latest = scheduler.enqueue(find("find-latest"));
+    await expect(superseded).resolves.toMatchObject({ kind: "cancelled", viewRequestId: "find-superseded" });
+
+    const page = scheduler.enqueue(pageRequest("page"));
+    const values = scheduler.enqueue(columnValues("values"));
+    expect(execution.order).toEqual(["find-active", "page"]);
+    execution.resolve("page");
+    await page;
+    await vi.waitFor(() => expect(execution.order).toEqual(["find-active", "page", "values"]));
+    execution.resolve("values");
+    await values;
+
+    const mutation = scheduler.enqueue(applyDraft());
+    const afterMutation = scheduler.enqueue(pageRequest("after-mutation"));
+    await Promise.resolve();
+    expect(execution.order).toEqual(["find-active", "page", "values"]);
+    scheduler.cancelViewRequests(["find-active"]);
+    expect(scheduler.isCancelled("find-active")).toBe(true);
+    execution.resolve("find-active");
+    await active;
+    await vi.waitFor(() => expect(execution.order.at(-1)).toBe("find-latest"));
+    execution.resolve("find-latest");
+    await latest;
+    await vi.waitFor(() => expect(execution.order.at(-1)).toBe("applyDraft"));
+    execution.resolve("applyDraft");
+    await mutation;
+    await vi.waitFor(() => expect(execution.order.at(-1)).toBe("after-mutation"));
+    execution.resolve("after-mutation");
+    await afterMutation;
+    await scheduler.waitForIdle();
+  });
+
   it("uses explicit priority before the request-kind default", () => {
     expect(sessionRequestPriority(summary("default"))).toBe("background");
     expect(sessionRequestPriority(summary("selected"), { priority: "interactive" })).toBe("interactive");
@@ -314,6 +351,20 @@ function columnValues(viewRequestId: string): SessionBoundRequest {
     filterModel,
     column: "sales",
     limit: 20
+  };
+}
+
+function find(viewRequestId: string): SessionBoundRequest {
+  return {
+    kind: "findCells",
+    sessionId: "session",
+    revision: 0,
+    viewRequestId,
+    filterModel,
+    query: "berlin",
+    matchCase: false,
+    wholeCell: false,
+    direction: "next"
   };
 }
 

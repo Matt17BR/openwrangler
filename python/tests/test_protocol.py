@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from openwrangler_runtime import SessionManager, __version__
-from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
+from openwrangler_runtime.limits import MAX_FIND_QUERY_CHARACTERS, MAX_VIEW_VALUE_TEXT_CHARACTERS
 from openwrangler_runtime.protocol import (
     MAX_PAGE_LIMIT,
     PROTOCOL_VERSION,
@@ -613,7 +613,7 @@ def test_open_session_rejects_import_values_for_the_wrong_file_format(
         decode_envelope(_open_session_envelope_with_import_options(import_options, file_name))
 
 
-@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues", "findCells"])
 def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
     request: dict[str, object] = {
         "kind": kind,
@@ -626,6 +626,8 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         request.update(offset=0, limit=200, columnOffset=0, columnLimit=64)
     elif kind == "getColumnValues":
         request.update(column="city", limit=100)
+    elif kind == "findCells":
+        request.update(query="Rome", matchCase=False, wholeCell=False, direction="next")
 
     envelope = {
         "protocolVersion": 4,
@@ -644,7 +646,7 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         decode_envelope(envelope)
 
 
-@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues", "findCells"])
 def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
     request: dict[str, object] = {
         "kind": kind,
@@ -663,6 +665,8 @@ def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
         request.update(offset=0, limit=200, columnOffset=0, columnLimit=64)
     elif kind == "getColumnValues":
         request.update(column="city", limit=100)
+    elif kind == "findCells":
+        request.update(query="Rome", matchCase=False, wholeCell=False, direction="next")
 
     with pytest.raises(ProtocolError, match=r"filterModel\.sort contains duplicate columns"):
         decode_envelope(
@@ -754,7 +758,7 @@ def test_view_queries_reject_malformed_structure(path, replacement, remove: bool
         )
 
 
-@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues", "findCells"])
 def test_view_queries_preserve_valid_structure_and_opaque_values(kind: str) -> None:
     values = [None, False, 0, 0.5, " spaced ", [1, None], {"nested": "x" * (MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)}]
     columns = [
@@ -799,6 +803,8 @@ def test_view_queries_preserve_valid_structure_and_opaque_values(kind: str) -> N
         request.update(offset=0, limit=3, columnOffset=0, columnLimit=1)
     elif kind == "getColumnValues":
         request.update(column=" repeated ", limit=3, search="")
+    elif kind == "findCells":
+        request.update(query=" ", matchCase=True, wholeCell=True, direction="previous")
     before = deepcopy(request)
     decoded = decode_envelope(
         {"protocolVersion": 4, "requestId": "valid-view", "priority": "interactive", "request": request}
@@ -822,6 +828,71 @@ def test_column_values_rejects_nontext_query_fields(field: str, value: object) -
     }
     with pytest.raises(ProtocolError, match=field):
         decode_envelope({"protocolVersion": 4, "requestId": "picker", "priority": "interactive", "request": request})
+
+
+def _find_request(**fields: object) -> dict[str, object]:
+    return {
+        "kind": "findCells",
+        "sessionId": "session",
+        "revision": 0,
+        "viewRequestId": "view",
+        "filterModel": {"logic": "and", "filters": [], "sort": []},
+        "query": "Rome",
+        "matchCase": False,
+        "wholeCell": False,
+        "direction": "next",
+        **fields,
+    }
+
+
+def test_find_cells_accepts_a_scope_an_origin_and_the_longest_query() -> None:
+    request = _find_request(
+        query="😀" * MAX_FIND_QUERY_CHARACTERS,
+        columnIds=["c:city", "c:country"],
+        # Rows past the view clamp at the end, so the origin row has no upper bound.
+        **{"from": {"row": 2**70, "columnId": "c:city"}},
+        includeFrom=True,
+    )
+    before = deepcopy(request)
+    envelope = {"protocolVersion": 4, "requestId": "find", "priority": "interactive", "request": request}
+    assert decode_envelope(envelope)[2] == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("query", "", "query"),
+        ("query", "x" * (MAX_FIND_QUERY_CHARACTERS + 1), "query"),
+        ("query", 1, "query"),
+        ("query", "\ud800", "valid Unicode"),
+        ("matchCase", 0, "matchCase"),
+        ("wholeCell", None, "wholeCell"),
+        ("includeFrom", "true", "includeFrom"),
+        ("direction", "up", "direction"),
+        ("direction", ["next"], "direction"),
+        ("from", [], "from"),
+        ("from", {"row": 0}, "from"),
+        ("from", {"row": -1, "columnId": "c:city"}, "from"),
+        ("from", {"row": True, "columnId": "c:city"}, "from"),
+        ("from", {"row": 0, "columnId": ""}, "from"),
+        ("from", {"row": 0, "columnId": "c:city", "ordinal": 1}, "from"),
+        ("columnIds", [], "columnIds"),
+        ("columnIds", ["c:city", "c:city"], "columnIds"),
+        ("columnIds", [""], "columnIds"),
+    ],
+)
+def test_find_cells_rejects_malformed_fields(field: str, value: object, message: str) -> None:
+    envelope = {"protocolVersion": 4, "requestId": "find", "priority": "interactive", "request": _find_request()}
+    envelope["request"][field] = value
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(envelope)
+
+
+def test_find_cells_requires_every_search_option() -> None:
+    request = _find_request()
+    del request["wholeCell"]
+    with pytest.raises(ProtocolError, match="missing required fields: wholeCell"):
+        decode_envelope({"protocolVersion": 4, "requestId": "find", "priority": "interactive", "request": request})
 
 
 def _opaque_view_envelope(value: object, placement: str = "value") -> dict:

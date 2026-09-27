@@ -29,6 +29,7 @@ import type {
   ValueCount
 } from "../../shared/protocol";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
+import { isFindQuery } from "../../shared/find";
 import {
   isExportOptions,
   isOpenWranglerResponse,
@@ -118,6 +119,11 @@ export interface RKernelDatasetStatsResult {
   readonly totalRows: number;
   readonly stats: DatasetStats;
 }
+
+export type RKernelFindOrigin = Readonly<{ row: number; column: RKernelColumnReference }>;
+export type RKernelFoundCell = Readonly<{ row: number; column: RKernelColumnReference; ordinal: number }>;
+export type RKernelFindQuery = Omit<Extract<RKernelRequest, { kind: "findCells" }>["payload"], "sessionId">;
+export type RKernelFindResult = Readonly<{ matchCount: number; match?: RKernelFoundCell }>;
 
 export interface RKernelColumnReference {
   readonly id: string;
@@ -751,6 +757,22 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
+      kind: "findCells";
+      payload: Readonly<{
+        sessionId: string;
+        view: RKernelViewQuery;
+        query: string;
+        matchCase: boolean;
+        wholeCell: boolean;
+        direction: "next" | "previous";
+        columns: readonly RKernelColumnReference[] | null;
+        from: RKernelFindOrigin | null;
+        includeFrom: boolean;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
       kind: "previewStep";
       payload: Readonly<{
         sessionId: string;
@@ -938,6 +960,14 @@ export type RKernelResponse =
       column: string;
       values: readonly ValueCount[];
       hasMore: boolean;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "cellsFound";
+      sessionId: string;
+      matchCount: number;
+      match?: RKernelFoundCell;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -1272,6 +1302,36 @@ export function decodeRKernelResponseJson(
       column: boundedText(record.column, "response.column", maximumVariableNameBytes, true),
       values: Object.freeze(candidate.values),
       hasMore: candidate.hasMore
+    });
+  }
+  if (kind === "cellsFound") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "matchCount"], ["match"]);
+    validateEnvelope(record, expected);
+    const matchCount = boundedInteger(
+      record.matchCount,
+      "response.matchCount",
+      R_FRAME_CONTRACT_LIMITS.rows * R_FRAME_CONTRACT_LIMITS.columns
+    );
+    let match: RKernelFoundCell | undefined;
+    if (record.match !== undefined) {
+      const found = exactRecord(record.match, ["row", "column", "ordinal"], "R kernel found cell");
+      const ordinal = boundedInteger(found.ordinal, "response.match.ordinal", matchCount);
+      if (ordinal < 1) fail("response.match.ordinal must be positive.");
+      match = Object.freeze({
+        row: boundedInteger(found.row, "response.match.row", R_FRAME_CONTRACT_LIMITS.rows - 1),
+        column: validateColumnReference(found.column, "response.match.column"),
+        ordinal
+      });
+    } else if (matchCount > 0) {
+      fail("R kernel Find response omitted its match.");
+    }
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "cellsFound" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      matchCount,
+      ...(match === undefined ? {} : { match })
     });
   }
   if (kind === "stepPreview" || (kind === "planUpdated" && value.action === "redo")) {
@@ -1627,6 +1687,31 @@ function validateRequest(request: RKernelRequest): void {
     }
     if (boundedInteger(payload.limit, "request.payload.limit", 10_000) < 1) {
       fail("request.payload.limit must be positive.");
+    }
+    return;
+  }
+  if (record.kind === "findCells") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "view", "query", "matchCase", "wholeCell", "direction", "columns", "from", "includeFrom"],
+      "R kernel find payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    validateViewQuery(payload.view);
+    if (!isFindQuery(payload.query) || payload.query.includes("\u0000")) {
+      fail("request.payload.query must be 1 to 1,024 characters of text.");
+    }
+    for (const field of ["matchCase", "wholeCell", "includeFrom"] as const) {
+      if (typeof payload[field] !== "boolean") fail(`request.payload.${field} must be a boolean.`);
+    }
+    if (payload.direction !== "next" && payload.direction !== "previous") {
+      fail("request.payload.direction must be next or previous.");
+    }
+    if (payload.columns !== null) validateColumnReferences(payload.columns, R_FRAME_CONTRACT_LIMITS.columns);
+    if (payload.from !== null) {
+      const origin = exactRecord(payload.from, ["row", "column"], "R kernel find origin");
+      boundedInteger(origin.row, "request.payload.from.row", R_FRAME_CONTRACT_LIMITS.rows);
+      validateColumnReference(origin.column, "request.payload.from.column");
     }
     return;
   }

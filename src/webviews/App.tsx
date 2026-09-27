@@ -9,6 +9,7 @@ import type {
   TransformStep
 } from "../shared/protocol";
 import {
+  dataBackendLabel,
   engineLabel,
   formatSessionRowCount,
   isExactGridPage,
@@ -43,6 +44,7 @@ import {
   type ConfirmedFilterHistory
 } from "./filters/filterHistory";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
+import type { GridFindQuery, GridFindRequest, GridFindSettlement } from "./grid/useGridFind";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
 import type { ProfileValueMode } from "./profileValueMode";
 import { OperationBuilder } from "./operations/OperationBuilder";
@@ -228,6 +230,10 @@ export function App() {
   const clearFilterColumnActionRef = useRef<(target: ViewFilterRemovalTarget) => void>(() => undefined);
   const [goToRowRequestId, setGoToRowRequestId] = useState(0);
   const requestGoToRowRef = useRef<() => boolean>(() => false);
+  const [findRequest, setFindRequest] = useState<GridFindRequest | undefined>();
+  const requestFindRef = useRef<(action: GridFindRequest["action"]) => boolean>(() => false);
+  const findRequestIds = useRef(new Set<string>());
+  const pendingFind = useRef<{ viewRequestId: string; settle(settlement: GridFindSettlement): void }>(undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -851,6 +857,19 @@ export function App() {
       if (event.origin !== window.location.origin) return;
       const decoded = decodeAppHostMessage(event.data);
       if (!decoded) return;
+      if (
+        (decoded.kind === "cellsFound" || decoded.kind === "error" || decoded.kind === "cancelled") &&
+        decoded.viewRequestId !== undefined
+      ) {
+        if (findRequestIds.current.delete(decoded.viewRequestId)) {
+          const pending = pendingFind.current;
+          if (pending?.viewRequestId === decoded.viewRequestId) {
+            pendingFind.current = undefined;
+            pending.settle(decoded);
+          }
+          return;
+        }
+      }
       const recovery = decoded.kind === "sessionRecovered" ? decoded : undefined;
       const response = decoded.kind === "sessionRecovered" ? decoded.result : decoded;
       if (recovery) {
@@ -1156,6 +1175,8 @@ export function App() {
           clearFilterColumnActionRef.current(response);
         } else if (response.action === "goToRow") {
           requestGoToRowRef.current();
+        } else if (response.action === "find") {
+          requestFindRef.current("open");
         } else if (response.action === "openFilters") {
           if (stepInspectionTargetRef.current) return;
           const currentMetadata = metadataRef.current;
@@ -1942,7 +1963,42 @@ export function App() {
       setGoToRowRequestId((current) => current + 1);
       return true;
     };
+    requestFindRef.current = (action) => {
+      if (operationOpen || !metadataRef.current || stepInspectionTargetRef.current) return false;
+      setFindRequest((current) => ({ action, requestId: (current?.requestId ?? 0) + 1 }));
+      return true;
+    };
   }, [operationOpen]);
+
+  const findCells = useCallback(
+    (query: GridFindQuery): Promise<GridFindSettlement> => {
+      const current = readConfirmedProfileView();
+      if (!current) return Promise.resolve({ kind: "cancelled", targetRequestId: "find" });
+      const viewRequestId = nextViewRequestId();
+      return new Promise((resolve) => {
+        const superseded = pendingFind.current;
+        superseded?.settle({ kind: "cancelled", targetRequestId: "find", viewRequestId: superseded.viewRequestId });
+        findRequestIds.current.add(viewRequestId);
+        pendingFind.current = { viewRequestId, settle: resolve };
+        vscode.postMessage({
+          kind: "runtimeRequest",
+          viewContextId: current.view.viewContextId,
+          request: { kind: "findCells", viewRequestId, filterModel: current.metadata.filterModel, ...query }
+        });
+      });
+    },
+    [nextViewRequestId, readConfirmedProfileView]
+  );
+
+  useEffect(() => {
+    const requestIds = findRequestIds.current;
+    return () => {
+      const pending = pendingFind.current;
+      pendingFind.current = undefined;
+      requestIds.clear();
+      pending?.settle({ kind: "cancelled", targetRequestId: "find", viewRequestId: pending.viewRequestId });
+    };
+  }, [activeViewContextId]);
 
   useEffect(() => {
     clearFilterColumnActionRef.current = (target) => {
@@ -2108,6 +2164,12 @@ export function App() {
       }
     } else if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === "g") {
       handled = requestGoToRowRef.current();
+    } else if (modifier && !event.altKey && !event.shiftKey && key === "f") {
+      // Keep Ctrl+F inside editable fields away from the workbench as well as from grid Find.
+      if (editableTarget) event.stopPropagation();
+      else handled = requestFindRef.current("open");
+    } else if (!editableTarget && !modifier && !event.altKey && event.key === "F3") {
+      handled = requestFindRef.current(event.shiftKey ? "previous" : "next");
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
         requestOperationIntent({ action: "editLatest" });
@@ -2691,6 +2753,13 @@ export function App() {
                 goToColumnId={goToColumnRequest?.columnId}
                 goToColumnRequestId={goToColumnRequest?.requestId}
                 goToRowRequestId={goToRowRequestId}
+                findRequest={inspectionMode ? undefined : findRequest}
+                onFindCells={inspectionMode ? undefined : findCells}
+                findUnavailableReason={
+                  supportsViewingCapability(displayMetadata.capabilities, "find")
+                    ? undefined
+                    : `Find is unavailable for ${dataBackendLabel(displayMetadata.backend)} dataframes.`
+                }
                 onGoToColumnHandled={handleColumnReveal}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={

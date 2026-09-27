@@ -84,6 +84,7 @@ def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
             "editable": False,
             "lazy": True,
             "cancel": False,
+            "find": True,
             "exportCsv": False,
             "exportParquet": False,
             "notebookInsert": False,
@@ -101,6 +102,12 @@ def test_duckdb_database_table_session_retains_quoted_source_and_forces_viewing(
         summary = manager.get_summary(session_id, 0, model, ["c:source:0"])["summaries"][0]
         assert summary["numeric"]["min"] == 7 and summary["numeric"]["max"] == 11
         assert summary["numeric"]["sum"] == 27
+        assert manager.find_cells(session_id, 0, model, "9") == {
+            "kind": "cellsFound",
+            "revision": 0,
+            "matchCount": 1,
+            "match": {"row": 1, "columnId": "c:source:0", "ordinal": 1},
+        }
         counted: list[Any] = []
         shape = native.shape
 
@@ -7058,6 +7065,7 @@ def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion
             "editable": True,
             "lazy": False,
             "cancel": False,
+            "find": True,
             "exportCsv": True,
             "exportParquet": True,
             "notebookInsert": source_kind == "notebookVariable",

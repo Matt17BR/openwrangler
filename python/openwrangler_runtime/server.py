@@ -214,6 +214,22 @@ def _dispatch(
             ),
             request,
         )
+    if kind == "findCells":
+        return _with_view_request_id(
+            manager.find_cells(
+                request["sessionId"],
+                int(request["revision"]),
+                request["filterModel"],
+                request["query"],
+                match_case=request["matchCase"],
+                whole_cell=request["wholeCell"],
+                backward=request["direction"] == "previous",
+                column_ids=request.get("columnIds"),
+                start=request.get("from"),
+                include_start=request.get("includeFrom", False),
+            ),
+            request,
+        )
     if kind == "previewStep":
         return manager.preview_step(
             request["sessionId"],

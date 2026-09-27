@@ -75,7 +75,7 @@ export function GoToRow({ rowCount, open, busy, onOpenChange, onGoToRow }: GoToR
         disabled={rowCount === 0}
         onClick={() => onOpenChange(true)}
       >
-        <span className="codicon codicon-search" aria-hidden="true" />
+        <span className="codicon codicon-list-selection" aria-hidden="true" />
       </button>
     );
   }

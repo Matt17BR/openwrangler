@@ -125,6 +125,9 @@ window resize or grid scroll.
 Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
 profiles in every visible or partially visible column within the existing capture deadline. Offscreen rendering
 overscan can stay unprofiled. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
+Find screenshots open the bar from the grid footer, type and step through the real controls from DOM observation
+rather than timers, and wait for exactly one current match and the remaining highlighted matches in dark and high
+contrast.
 Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
 invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
 The existing operation-form browser owner checks that Group By controls fit without sideways scrolling and remain

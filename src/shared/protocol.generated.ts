@@ -13,6 +13,7 @@ export type OpenWranglerRequest =
   | SummaryRequest
   | DatasetStatsRequest
   | ValuesRequest
+  | FindRequest
   | PreviewStepRequest
   | InspectStepRequest
   | ApplyDraftRequest
@@ -513,6 +514,7 @@ export type OpenWranglerResponse =
   | SummaryResponse
   | DatasetStatsResponse
   | ValuesResponse
+  | FindResponse
   | StepPreviewResponse
   | StepInspectionResponse
   | PlanUpdatedResponse
@@ -681,6 +683,27 @@ export interface ValuesRequest {
   filterModel: FilterModel;
   search?: string;
   limit: number;
+}
+export interface FindRequest {
+  kind: "findCells";
+  sessionId: string;
+  revision: number;
+  viewRequestId: string;
+  filterModel: FilterModel;
+  query: string;
+  matchCase: boolean;
+  wholeCell: boolean;
+  direction: "next" | "previous";
+  /**
+   * @minItems 1
+   */
+  columnIds?: [string, ...string[]];
+  from?: GridCell;
+  includeFrom?: boolean;
+}
+export interface GridCell {
+  row: number;
+  columnId: string;
 }
 export interface PreviewStepRequest {
   kind: "previewStep";
@@ -1347,6 +1370,7 @@ export interface SourceCapabilities {
   sort?: boolean;
   profile?: boolean;
   columnValues?: boolean;
+  find?: boolean;
   supportedOperations?: OperationKind[];
 }
 export interface SessionOpenedResponse {
@@ -1529,6 +1553,18 @@ export interface ValuesResponse {
   values: ValueCount[];
   hasMore: boolean;
 }
+export interface FindResponse {
+  kind: "cellsFound";
+  revision: number;
+  viewRequestId: string;
+  matchCount: number;
+  match?: FoundCell;
+}
+export interface FoundCell {
+  row: number;
+  columnId: string;
+  ordinal: number;
+}
 export interface StepPreviewResponse {
   kind: "stepPreview";
   revision: number;
@@ -1689,6 +1725,21 @@ export const openWranglerRequestShapes = Object.freeze([
     optional: Object.freeze(["search"])
   }),
   Object.freeze({
+    kind: "findCells",
+    required: Object.freeze([
+      "kind",
+      "sessionId",
+      "revision",
+      "viewRequestId",
+      "filterModel",
+      "query",
+      "matchCase",
+      "wholeCell",
+      "direction"
+    ]),
+    optional: Object.freeze(["columnIds", "from", "includeFrom"])
+  }),
+  Object.freeze({
     kind: "previewStep",
     required: Object.freeze([
       "kind",
@@ -1798,6 +1849,11 @@ export const openWranglerResponseShapes = Object.freeze([
     kind: "columnValues",
     required: Object.freeze(["kind", "revision", "viewRequestId", "column", "values", "hasMore"]),
     optional: Object.freeze([])
+  }),
+  Object.freeze({
+    kind: "cellsFound",
+    required: Object.freeze(["kind", "revision", "viewRequestId", "matchCount"]),
+    optional: Object.freeze(["match"])
   }),
   Object.freeze({
     kind: "stepPreview",

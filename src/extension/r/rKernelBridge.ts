@@ -234,6 +234,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.readQueries.getDatasetStats(request, options);
       case "getColumnValues":
         return this.readQueries.getColumnValues(request, options);
+      case "findCells":
+        return this.readQueries.findCells(request, options);
       case "redoStep":
         return this.mutations.redoStep(request, options);
       case "previewStep":

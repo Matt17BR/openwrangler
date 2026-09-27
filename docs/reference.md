@@ -40,6 +40,7 @@
 | `openWrangler.undoStep`                       | Open Wrangler: Undo Latest Step                                |
 | `openWrangler.redoStep`                       | Open Wrangler: Redo Latest Undone Step                         |
 | `openWrangler.goToRow`                        | Open Wrangler: Go to Row                                       |
+| `openWrangler.find`                           | Open Wrangler: Find                                            |
 | `openWrangler.openViewSort`                   | Open Wrangler: Edit View Sorts                                 |
 | `openWrangler.moveViewSortUp`                 | Open Wrangler: Move View Sort Up                               |
 | `openWrangler.moveViewSortDown`               | Open Wrangler: Move View Sort Down                             |
@@ -56,13 +57,14 @@
 
 ## Keyboard shortcuts
 
-| Command                       | Windows / Linux | macOS         | Context                                                                     |
-| ----------------------------- | --------------- | ------------- | --------------------------------------------------------------------------- |
-| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`      |
-| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
-| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan` |
-| `openWrangler.goToRow`        | `ctrl+g`        | `ctrl+g`      | `activeCustomEditorId == openWrangler.viewer`                               |
+| Command                       | Windows / Linux | macOS         | Context                                                                                                                                |
+| ----------------------------- | --------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `openWrangler.applyStep`      | `ctrl+enter`    | `cmd+enter`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`                                                                 |
+| `openWrangler.discardStep`    | `escape`        | `escape`      | `activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft`                                                                 |
+| `openWrangler.editLatestStep` | `ctrl+shift+e`  | `cmd+shift+e` | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan`                                                            |
+| `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan`                                                            |
+| `openWrangler.goToRow`        | `ctrl+g`        | `ctrl+g`      | `activeCustomEditorId == openWrangler.viewer`                                                                                          |
+| `openWrangler.find`           | `ctrl+f`        | `cmd+f`       | `activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus` |
 
 ## Settings
 
@@ -140,6 +142,7 @@ Canonical schema: `protocol/openwrangler.v4.schema.json`. Protocol version: `4`.
 | Request   | `SummaryRequest`         | `getSummary`      |
 | Request   | `DatasetStatsRequest`    | `getDatasetStats` |
 | Request   | `ValuesRequest`          | `getColumnValues` |
+| Request   | `FindRequest`            | `findCells`       |
 | Request   | `PreviewStepRequest`     | `previewStep`     |
 | Request   | `InspectStepRequest`     | `inspectStep`     |
 | Request   | `ApplyDraftRequest`      | `applyDraft`      |
@@ -155,6 +158,7 @@ Canonical schema: `protocol/openwrangler.v4.schema.json`. Protocol version: `4`.
 | Response  | `SummaryResponse`        | `summary`         |
 | Response  | `DatasetStatsResponse`   | `datasetStats`    |
 | Response  | `ValuesResponse`         | `columnValues`    |
+| Response  | `FindResponse`           | `cellsFound`      |
 | Response  | `StepPreviewResponse`    | `stepPreview`     |
 | Response  | `StepInspectionResponse` | `stepInspection`  |
 | Response  | `PlanUpdatedResponse`    | `planUpdated`     |

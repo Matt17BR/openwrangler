@@ -5,6 +5,8 @@ import type {
   RKernelColumnReference,
   RKernelDataExportResult,
   RKernelDatasetStatsResult,
+  RKernelFindQuery,
+  RKernelFindResult,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
   RKernelStepInspectionResult,
@@ -38,6 +40,7 @@ export interface RKernelBridgeTransport {
     limit: number,
     options?: RKernelRequestOptions
   ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
+  findCells(sessionId: string, find: RKernelFindQuery, options?: RKernelRequestOptions): Promise<RKernelFindResult>;
   previewStep(
     sessionId: string,
     revision: number,

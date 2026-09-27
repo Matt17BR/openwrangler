@@ -92,6 +92,7 @@ class LiveNotebookPandasEngine(CountingPandasEngine):
         export_formats=frozenset(),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
+        supports_find=False,
     )
 
     @staticmethod

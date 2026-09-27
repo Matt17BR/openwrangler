@@ -81,6 +81,11 @@ local({
   assert_identical(stats$totalRows, 2L, "dataset statistics changed cached membership")
   values <- send("getColumnValues", list(sessionId = session_id, column = reference[[1L]], view = view, search = NULL, limit = 10L))
   assert_identical(values$kind, "columnValues", "cached column values failed")
+  found <- send("findCells", list(sessionId = session_id, view = view, query = "a", matchCase = FALSE,
+    wholeCell = FALSE, direction = "next", columns = NULL, from = NULL, includeFrom = FALSE))
+  assert_identical(found$matchCount, 2L, "Find changed cached membership")
+  assert_identical(found$match, list(row = 0L, column = list(id = "r:c:0", name = "label"), ordinal = 1L),
+    "Find did not follow the cached sorted order")
   assert_identical(send("beginSummary", list(sessionId = session_id, summaryId = "01234567-0123-4123-8123-012345678901",
     columns = reference, view = view))$kind, "summaryComplete", "continued summary did not use the filtered view")
   assert_identical(send("beginDatasetStats", list(sessionId = session_id, statsId = "01234567-0123-4123-8123-012345678902",
@@ -392,6 +397,38 @@ values_response <- dispatch(
 assert_identical(values_response$kind, "columnValues", "the R agent did not return column values")
 assert_identical(values_response$values[[1L]]$value, "a", "column-value search did not use ASCII folding")
 assert_identical(values_response$values[[1L]]$count, 2L, "column-value counts changed")
+
+find_cells <- function(query, view = empty_view(), ...) {
+  payload <- list(sessionId = session_id, view = view, query = query, matchCase = FALSE, wholeCell = FALSE,
+    direction = "next", columns = NULL, from = NULL, includeFrom = FALSE)
+  options <- list(...)
+  payload[names(options)] <- options
+  dispatch("findCells", payload)
+}
+group_reference <- list(id = "r:c:0", name = "group")
+score_reference <- list(id = "r:c:1", name = "score")
+found <- find_cells("A")
+assert_identical(found$kind, "cellsFound", "the R agent did not find cells")
+assert_identical(found$matchCount, 2L, "Find did not fold ASCII case")
+assert_identical(found$match, list(row = 1L, column = group_reference, ordinal = 1L), "Find did not start at the first match")
+following <- find_cells("A", from = list(row = 1L, column = group_reference))
+assert_identical(following$match, list(row = 2L, column = group_reference, ordinal = 2L), "Find did not move to the next row")
+wrapped <- find_cells("A", from = list(row = 2L, column = group_reference))
+assert_identical(wrapped$match$row, 1L, "Find did not wrap to the first match")
+assert_identical(find_cells("A", direction = "previous")$match$row, 2L, "Find did not start backward at the last match")
+assert_identical(find_cells("A", from = list(row = 2L, column = group_reference), includeFrom = TRUE)$match$row, 2L,
+  "Find skipped the including origin")
+assert_identical(find_cells("A", matchCase = TRUE), list(transportVersion = 18L, requestId = request_id,
+  kind = "cellsFound", sessionId = session_id, matchCount = 0L), "Find ignored match case")
+assert_identical(find_cells("1.0", wholeCell = TRUE, columns = list(score_reference))$match,
+  list(row = 0L, column = score_reference, ordinal = 1L), "Find did not match the whole displayed number")
+assert_identical(find_cells(".", columns = list(score_reference))$matchCount, 2L, "Find matched a missing number")
+by_group <- list(filters = I(list()), sorts = I(list(list(column = group_reference, direction = "asc", nulls = "last"))))
+assert_identical(find_cells("b", view = by_group)$match$row, 2L, "Find ignored the view order")
+assert_identical(find_cells("a", direction = "up")$code, "invalid_request", "Find accepted an unknown direction")
+assert_identical(find_cells(strrep("a", 1025L))$code, "invalid_request", "Find accepted an unbounded query")
+assert_identical(find_cells("a", from = list(row = 0L, column = list(id = "r:c:9", name = "missing")))$kind, "error",
+  "Find accepted an origin outside the schema")
 assert_identical(
   values_response$values[[1L]]$selectionValue$columnType,
   "string",

@@ -266,11 +266,13 @@ available; explicit column filters and exact value selections keep their existin
 Runtime work has three relevant classes:
 
 - mutations and exports are exclusive;
-- page and column-value reads may proceed alongside background or selected-column profiling; and
+- page and column-value reads may proceed alongside background profiling, selected-column profiling and Find; and
 - background profiles use bounded capacity and are cancelled or drained during close.
 
-The host admits at most one background profile, one interactive profile and one ordinary foreground request per
-session. Interactive requests retain FIFO order, so reads cannot skip a queued mutation. Mutations, exports and close
+The host admits at most one background profile, one interactive scan (a selected-column profile, requested dataset
+statistics or Find) and one ordinary foreground request per session. Interactive requests otherwise retain FIFO
+order: a page or column-value read may start ahead of queued scans that are waiting for the scan slot, but no read
+skips a queued mutation. A new Find replaces a queued Find, which settles as cancelled. Mutations, exports and close
 wait for every active owner to settle, including cancelled profiles. Native R still executes one request at a time;
 managed file profiles can yield between requests as described under [Viewing and profiling](#viewing-and-profiling).
 
@@ -290,6 +292,14 @@ values. Passive metadata and viewing changes retain local form input.
 Value Search and its Enter shortcut are unavailable while the current view cannot be profiled. During a pending
 viewing query, search text remains editable; settlement does not queue or replay a search. The request owner
 rechecks eligibility at dispatch.
+Find (`findCells`) searches the confirmed view's rows after filters and sorts in row-major order. It starts at an
+optional origin cell, wraps around the view, and returns the total match count plus the next or previous match with
+its 1-based ordinal. The query is 1 to 1,024 code points. Matching folds ASCII case only unless Match case is on;
+Match whole cell compares the complete displayed text. A standalone `T` or a space matches the datetime separator.
+Null, NaN, list and struct cells never match. Python sessions keep one match set for the exact view frame, revision
+and query; R computes matches per request. The host checks that a match names a confirmed column inside the
+requested scope, and the webview ignores a result once its view or revision changes. The grid highlights loaded
+matches with the same rules. PySpark reports the `find` capability as false.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing

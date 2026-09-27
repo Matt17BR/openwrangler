@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
+  ColumnSchema,
   DatasetStatsRequest,
+  FindRequest,
   OpenWranglerResponse,
   PageRequest,
   SummaryRequest,
@@ -27,7 +29,7 @@ import {
   validateProfileRequest,
   type RBridgeSession
 } from "./rKernelBridgeContract";
-import type { RKernelColumnReference, RKernelViewQuery } from "./rKernelProtocol";
+import type { RKernelColumnReference, RKernelFindQuery, RKernelViewQuery } from "./rKernelProtocol";
 import { RKernelDiagnosticError } from "./rKernelTransport";
 import type { RKernelBridgeTransport } from "./rKernelBridgeTransport";
 import {
@@ -42,7 +44,7 @@ import { assertCustomDerivedRowIdentities } from "./rKernelMutationSchema";
 
 export type RKernelReadTransport = Pick<
   RKernelBridgeTransport,
-  "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues"
+  "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues" | "findCells"
 >;
 
 export class RKernelReadQueries {
@@ -271,4 +273,83 @@ export class RKernelReadQueries {
       throw error;
     }
   }
+
+  async findCells(request: FindRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId, request.viewRequestId);
+    if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+    const stale = staleRevisionError(session, request.revision, request.viewRequestId);
+    if (stale) return stale;
+    const expectedRevision = session.revision;
+    const expectedSchema = session.schema;
+
+    let find: RKernelFindQuery;
+    try {
+      find = rFindQuery(request, expectedSchema);
+    } catch (error) {
+      return errorResponse(
+        "invalid_view",
+        error instanceof Error ? error.message : String(error),
+        true,
+        request.sessionId,
+        request.viewRequestId
+      );
+    }
+    // R strings cannot contain NUL, so no R cell can match.
+    if (request.query.includes("\u0000")) {
+      return { kind: "cellsFound", revision: session.revision, viewRequestId: request.viewRequestId, matchCount: 0 };
+    }
+
+    try {
+      const result = await this.transport.findCells(request.sessionId, find, transportOptions(options));
+      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
+        return staleResponseError(request.sessionId, request.viewRequestId);
+      }
+      const match = result.match;
+      if (match) {
+        const column = expectedSchema.find((candidate) => candidate.id === match.column.id);
+        if (!column || column.name !== match.column.name) {
+          throw new Error("The R kernel matched a column outside the dataframe.");
+        }
+        if (find.columns && !find.columns.some((candidate) => candidate.id === column.id)) {
+          throw new Error("The R kernel matched a column outside the Find scope.");
+        }
+      }
+      return {
+        kind: "cellsFound",
+        revision: session.revision,
+        viewRequestId: request.viewRequestId,
+        matchCount: result.matchCount,
+        ...(match ? { match: { row: match.row, columnId: match.column.id, ordinal: match.ordinal } } : {})
+      };
+    } catch (error) {
+      if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
+      if (error instanceof RKernelDiagnosticError) {
+        return diagnosticResponse(error, request.sessionId, request.viewRequestId);
+      }
+      throw error;
+    }
+  }
+}
+
+function rFindQuery(request: FindRequest, schema: readonly ColumnSchema[]): RKernelFindQuery {
+  const columns = new Map(schema.map((column) => [column.id, column]));
+  const reference = (columnId: string): RKernelColumnReference => {
+    const column = columns.get(columnId);
+    if (!column) throw new Error("A Find column is no longer in the dataframe. Search again.");
+    return { id: column.id, name: column.name };
+  };
+  return {
+    view: resolveViewQuery(request.filterModel, schema),
+    query: request.query,
+    matchCase: request.matchCase,
+    wholeCell: request.wholeCell,
+    direction: request.direction,
+    columns: request.columnIds?.map(reference) ?? null,
+    from: request.from
+      ? { row: Math.min(request.from.row, R_FRAME_CONTRACT_LIMITS.rows), column: reference(request.from.columnId) }
+      : null,
+    includeFrom: request.includeFrom ?? false
+  };
 }

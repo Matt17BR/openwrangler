@@ -509,6 +509,9 @@ Editing a sort from the sidebar selects its column while preserving unfinished f
 Sort edits made while an earlier query is pending remain available if that query fails; applying them stays explicit.
 New filters can replace a pending filter Undo; confirmed changes remain undoable.
 While new filters or sorts are loading, value-search text stays editable; Search becomes available when the view is ready.
+Find (`Ctrl/Cmd+F`) searches the current view in Pandas, Polars, DuckDB and every R library, with the value-search
+matching rules, Match case, Match whole cell, and an all-columns or selected-column scope. It reports the match
+position and count, and moves to matches outside the loaded rows. PySpark views explain that Find is unavailable.
 Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
 range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
 operands. Existing saved selections remain removable through the filter controls.

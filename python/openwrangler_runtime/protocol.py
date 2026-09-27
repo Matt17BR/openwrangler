@@ -8,7 +8,7 @@ from math import isfinite
 from typing import Any
 
 from .custom_code_output import redact_diagnostic
-from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
+from .limits import MAX_FIND_QUERY_CHARACTERS, MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operations import COLUMN_TYPES, FILTER_OPERATORS, OperationError, validate_step
 from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
@@ -42,6 +42,16 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "getSummary": ("sessionId", "revision", "viewRequestId", "filterModel"),
     "getDatasetStats": ("sessionId", "revision", "viewRequestId", "filterModel"),
     "getColumnValues": ("sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"),
+    "findCells": (
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "filterModel",
+        "query",
+        "matchCase",
+        "wholeCell",
+        "direction",
+    ),
     "previewStep": ("sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"),
     "inspectStep": ("sessionId", "revision", "stepId", "offset", "limit", "columnOffset", "columnLimit"),
     "applyDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
@@ -87,6 +97,20 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "filterModel",
         "search",
         "limit",
+    },
+    "findCells": {
+        "kind",
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "filterModel",
+        "query",
+        "matchCase",
+        "wholeCell",
+        "direction",
+        "columnIds",
+        "from",
+        "includeFrom",
     },
     "previewStep": {
         "kind",
@@ -187,6 +211,30 @@ def view_request_id_for_payload(value: Any) -> str | None:
     return bounded_transport_id(request.get("viewRequestId"))
 
 
+def _validate_find_request(request: Mapping[str, Any]) -> None:
+    query = request["query"]
+    if not isinstance(query, str) or not query or len(query) > MAX_FIND_QUERY_CHARACTERS:
+        raise ProtocolError(f"query must contain 1 to {MAX_FIND_QUERY_CHARACTERS:,} Unicode code points.")
+    try:
+        query.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ProtocolError("query must be valid Unicode text.") from error
+    for field in ("matchCase", "wholeCell", "includeFrom"):
+        if field in request and not isinstance(request[field], bool):
+            raise ProtocolError(f"{field} must be a boolean.")
+    if not isinstance(request["direction"], str) or request["direction"] not in {"next", "previous"}:
+        raise ProtocolError("direction must be next or previous.")
+    if "from" in request:
+        start = _mapping(request["from"], "from")
+        if (
+            set(start) != {"row", "columnId"}
+            or not _is_non_negative_integer(start["row"])
+            or not isinstance(start["columnId"], str)
+            or not start["columnId"]
+        ):
+            raise ProtocolError("from must contain exactly a non-negative row and a non-empty columnId.")
+
+
 def bounded_transport_id(value: Any) -> str | None:
     if not isinstance(value, str) or not value or len(value) > MAX_TRANSPORT_ID_BYTES:
         return None
@@ -251,7 +299,9 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("column must be a non-empty string.")
         if "search" in request and not isinstance(request["search"], str):
             raise ProtocolError("search must be a string.")
-    if kind == "getSummary" and "columnIds" in request:
+    if kind == "findCells":
+        _validate_find_request(request)
+    if kind in {"getSummary", "findCells"} and "columnIds" in request:
         column_ids = request["columnIds"]
         if (
             not isinstance(column_ids, list)

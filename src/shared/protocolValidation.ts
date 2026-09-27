@@ -49,6 +49,7 @@ import {
 import { portableRegexContract, validatePortableRegexOutputName } from "./portableRegex";
 import { isDuckDBTableSource, isRLibrary, PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
+import { isFindQuery } from "./find";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -196,6 +197,23 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         optional(candidate, "search", isString) &&
         isBoundedPageSize(candidate.limit)
       );
+    case "findCells":
+      return (
+        isSessionRequest(candidate) &&
+        isNonEmptyString(candidate.viewRequestId) &&
+        isFilterModel(candidate.filterModel) &&
+        isFindQuery(candidate.query) &&
+        isBoolean(candidate.matchCase) &&
+        isBoolean(candidate.wholeCell) &&
+        isOneOf(candidate.direction, ["next", "previous"]) &&
+        optional(
+          candidate,
+          "columnIds",
+          (columnIds) => isUniqueNonEmptyStringArray(columnIds) && columnIds.length > 0
+        ) &&
+        optional(candidate, "from", isGridCell) &&
+        optional(candidate, "includeFrom", isBoolean)
+      );
     case "previewStep":
       return (
         isSessionRequest(candidate) &&
@@ -318,6 +336,8 @@ export function isOpenWranglerResponse(value: unknown): value is OpenWranglerRes
       return isDatasetStatsResponse(candidate);
     case "columnValues":
       return isValuesResponse(candidate);
+    case "cellsFound":
+      return isFindResponse(candidate);
     case "stepPreview":
       return isStepPreviewResponse(candidate);
     case "stepInspection":
@@ -385,6 +405,26 @@ function isValuesResponse(candidate: UnknownRecord): boolean {
     isString(candidate.column) &&
     isArrayOf(candidate.values, isValueCount) &&
     isBoolean(candidate.hasMore)
+  );
+}
+
+function isGridCell(value: unknown): boolean {
+  const candidate = exactRecord(value, ["row", "columnId"]);
+  return candidate !== undefined && isNonNegativeSafeInteger(candidate.row) && isNonEmptyString(candidate.columnId);
+}
+
+function isFindResponse(candidate: UnknownRecord): boolean {
+  if (!isNonNegativeInteger(candidate.revision) || !isNonEmptyString(candidate.viewRequestId)) return false;
+  if (!isNonNegativeSafeInteger(candidate.matchCount)) return false;
+  if (candidate.match === undefined) return candidate.matchCount === 0;
+  const match = exactRecord(candidate.match, ["row", "columnId", "ordinal"]);
+  return (
+    match !== undefined &&
+    isNonNegativeSafeInteger(match.row) &&
+    isNonEmptyString(match.columnId) &&
+    isNonNegativeSafeInteger(match.ordinal) &&
+    match.ordinal >= 1 &&
+    match.ordinal <= candidate.matchCount
   );
 }
 
@@ -690,7 +730,7 @@ function isSourceCapabilities(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"],
-    ["documentInsert", "filter", "sort", "profile", "columnValues", "supportedOperations"]
+    ["documentInsert", "filter", "sort", "profile", "columnValues", "find", "supportedOperations"]
   );
   return (
     candidate !== undefined &&
@@ -705,6 +745,7 @@ function isSourceCapabilities(value: unknown): boolean {
     optional(candidate, "sort", isBoolean) &&
     optional(candidate, "profile", isBoolean) &&
     optional(candidate, "columnValues", isBoolean) &&
+    optional(candidate, "find", isBoolean) &&
     optional(candidate, "supportedOperations", isUniqueOperationKindArray)
   );
 }
