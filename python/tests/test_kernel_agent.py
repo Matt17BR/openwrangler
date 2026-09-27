@@ -486,6 +486,8 @@ def _view_request(kind: str, session_id: str, view_request_id: str) -> dict[str,
     }
     if kind == "getPage":
         request.update({"offset": 0, "limit": 20, "columnOffset": 0, "columnLimit": 64})
+    if kind == "findCells":
+        request.update({"query": "3", "matchCase": False, "wholeCell": False, "direction": "next"})
     return request
 
 
@@ -1399,7 +1401,7 @@ def test_decoder_error_preserves_available_request_and_view_correlation() -> Non
     }
 
 
-@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues", "findCells"])
 def test_malformed_view_is_rejected_before_native_work_and_preserves_session(kind, tmp_path, monkeypatch) -> None:
     path = tmp_path / "view-admission.csv"
     source = "value\n1\n3\n"
@@ -1428,6 +1430,7 @@ def test_malformed_view_is_rejected_before_native_work_and_preserves_session(kin
 
         guarded.setattr(session.engine, "apply_filter_model", forbidden)
         guarded.setattr(session.engine, "column_values", forbidden)
+        guarded.setattr(session.engine, "find_masks", forbidden)
         result = json.loads(kernel_agent.dispatch_json(_envelope(request, request_id="invalid-view-transport")))
     assert result["requestId"] == "invalid-view-transport"
     assert result["response"]["code"] == "invalid_request"
@@ -1438,6 +1441,15 @@ def test_malformed_view_is_rejected_before_native_work_and_preserves_session(kin
     assert path.read_text(encoding="utf-8") == source
     recovery = json.loads(kernel_agent.dispatch_json(_envelope(_view_request("getPage", session_id, "valid-view"))))
     assert recovery["response"]["page"] == opened["page"]
+    if kind == "findCells":
+        found = json.loads(kernel_agent.dispatch_json(_envelope(_view_request(kind, session_id, "valid-find"))))
+        assert found["response"] == {
+            "kind": "cellsFound",
+            "revision": 0,
+            "viewRequestId": "valid-find",
+            "matchCount": 1,
+            "match": {"row": 1, "columnId": opened["metadata"]["schema"][0]["id"], "ordinal": 1},
+        }
     manager.close_session(session_id, 0)
 
 

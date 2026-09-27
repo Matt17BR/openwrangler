@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnSchema, ColumnSummary, FilterModel } from "../shared/protocol";
-import { decodeRKernelResponseJson, R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
+import {
+  decodeRKernelResponseJson,
+  encodeRKernelRequest,
+  R_KERNEL_TRANSPORT_VERSION
+} from "../extension/r/rKernelProtocol";
 import {
   assertRColumnValuesContract,
   assertRDatasetStatsContract,
@@ -200,6 +204,58 @@ describe("R kernel view contract", () => {
     expect(() => assertRColumnValuesContract(session, { id: "r:c:1", name: "group" }, values, 2)).toThrow(
       "wrong column"
     );
+  });
+
+  it("bounds Find requests and requires a positive in-range ordinal exactly when cells match", () => {
+    const requestId = "88888888-8888-4888-8888-888888888888";
+    const value = { id: "r:c:0", name: "value" };
+    const payload = {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      view: { filters: [], sorts: [] },
+      query: "2",
+      matchCase: false,
+      wholeCell: true,
+      direction: "next" as const,
+      columns: [value],
+      from: { row: 0, column: value },
+      includeFrom: true
+    };
+    const encode = (patch: Record<string, unknown>) =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId,
+        kind: "findCells",
+        payload: { ...payload, ...patch }
+      } as Parameters<typeof encodeRKernelRequest>[0]);
+    expect(JSON.parse(encode({})).payload).toEqual(payload);
+    expect(() => encode({ columns: null, from: null })).not.toThrow();
+    expect(() => encode({ query: "a\u0000b" })).toThrow("request.payload.query");
+    expect(() => encode({ query: "x".repeat(1_025) })).toThrow("request.payload.query");
+    expect(() => encode({ direction: "down" })).toThrow("request.payload.direction");
+    expect(() => encode({ includeFrom: undefined })).toThrow();
+
+    const decode = (fields: Record<string, unknown>) =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId,
+          kind: "cellsFound",
+          sessionId: payload.sessionId,
+          ...fields
+        }),
+        requestId
+      );
+    expect(decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 2 } })).toMatchObject({
+      kind: "cellsFound",
+      matchCount: 2,
+      match: { row: 1, column: value, ordinal: 2 }
+    });
+    expect(decode({ matchCount: 0 })).not.toHaveProperty("match");
+    expect(() => decode({ matchCount: 1 })).toThrow("omitted its match");
+    expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 0 } })).toThrow("positive");
+    expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 3 } })).toThrow("ordinal");
+    expect(() => decode({ matchCount: 2, match: { row: -1, column: value, ordinal: 1 } })).toThrow("row");
+    expect(() => decode({ matchCount: 2, match: { row: 1, column: value, ordinal: 1, extra: 1 } })).toThrow();
   });
 
   it("checks summary and dataset-statistics results against one active view", () => {

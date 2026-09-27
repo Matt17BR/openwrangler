@@ -57,6 +57,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     ExportOptions,
+    FindQuery,
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
@@ -396,6 +397,7 @@ class DuckDBEngine(DataFrameEngine):
         export_formats=frozenset({"csv", "parquet"}),
         supports_shutdown_interrupt=True,
         supports_request_cancellation=False,
+        supports_find=True,
     )
 
     def __init__(self) -> None:
@@ -1367,6 +1369,35 @@ class DuckDBEngine(DataFrameEngine):
             item["selectionValue"] = selection
             values.append(item)
         return values, len(rows) > limit
+
+    def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
+        frame = self.normalize(frame)
+        visible = self._visible_columns(frame)
+        types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        matches = {}
+        for index, position in enumerate(positions):
+            column = visible[position]
+            if query.could_match(_semantic_type(types[column])):
+                matches[index] = _duckdb_find_match(_quote_ident(column), types[column], query)
+        masks: list[Any | None] = [None] * len(positions)
+        if not matches:
+            return masks
+        total = int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
+        if total == 0:
+            return masks
+        position = _quote_ident(_unique_internal(self._columns(frame), "__ow_find_position"))
+        # Each bitstring marks matching rows in view order and is null when none match.
+        aggregates = ", ".join(
+            f"CAST(system.main.bitstring_agg({position}, 1, {total}) FILTER (WHERE {match}) AS VARCHAR)"
+            for match in matches.values()
+        )
+        (row,) = self._terminal_rows(
+            frame, f"SELECT {aggregates} FROM (SELECT *, row_number() OVER () AS {position} FROM ow) AS ow_find"
+        )
+        for index, bits in zip(matches, row, strict=True):
+            if bits is not None:
+                masks[index] = bits.encode("ascii")
+        return masks
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         self._assert_cleaning_supported()
@@ -3697,7 +3728,82 @@ def _duckdb_display_text(identifier: str, raw_type: str) -> str:
             f"CASE WHEN {identifier} > 0 THEN 'Infinity' ELSE '-Infinity' END "
             f"ELSE {text} END"
         )
+    if raw_type == "BOOLEAN":
+        return f"CASE WHEN {identifier} THEN 'True' WHEN NOT {identifier} THEN 'False' END"
+    if raw_type == "BLOB":
+        return f"system.main.to_base64({identifier})"
     return f"CAST({identifier} AS VARCHAR)"
+
+
+# Equal values of these types always share one display, so each distinct value can be spelled once.
+_DUCKDB_FIND_DISTINCT_TYPES = frozenset(
+    {
+        "VARCHAR",
+        "BOOLEAN",
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+        "FLOAT",
+        "DOUBLE",
+        "DATE",
+        "TIMESTAMP",
+        "TIMESTAMP_S",
+        "TIMESTAMP_MS",
+        "TIMESTAMP_NS",
+    }
+)
+# Displays of these types are ASCII, where lower() is the same ASCII folding and much cheaper than translate().
+_DUCKDB_FIND_ASCII_SEMANTIC_TYPES = frozenset({"integer", "float", "decimal", "boolean", "date", "datetime"})
+
+
+def _duckdb_find_text_match(identifier: str, raw_type: str, query: FindQuery) -> str:
+    text = _duckdb_display_text(identifier, raw_type)
+    semantic_type = _semantic_type(raw_type)
+    if not query.match_case:
+        text = (
+            f"system.main.lower({text})"
+            if semantic_type in _DUCKDB_FIND_ASCII_SEMANTIC_TYPES
+            else f"system.main.translate({text}, {_sql_literal(_ASCII_UPPER)}, {_sql_literal(_ASCII_LOWER)})"
+        )
+    datetime = semantic_type == "datetime"
+    if datetime:
+        text = f"system.main.replace({text}, {_sql_literal('T' if query.match_case else 't')}, ' ')"
+    needle = _sql_literal(query.needle(datetime=datetime))
+    match = f"{text} = {needle}" if query.whole_cell else f"system.main.contains({text}, {needle})"
+    return f"({_valid_predicate(identifier, raw_type)} AND {match})"
+
+
+def _duckdb_find_match(identifier: str, raw_type: str, query: FindQuery) -> str:
+    """SQL marking the rows of ``ow`` whose displayed cell text matches ``query``."""
+    if not (
+        raw_type in _DUCKDB_FIND_DISTINCT_TYPES
+        or raw_type.startswith("DECIMAL(")
+        or _duckdb_datetime_is_aware(raw_type)
+    ):
+        return _duckdb_find_text_match(identifier, raw_type, query)
+    value = _quote_ident("value")
+    floating = _is_float_type(raw_type)
+    labelled = _duckdb_find_text_match(value, raw_type, query) + (f" AND {value} <> 0" if floating else "")
+    # The LIMIT keeps DuckDB from pushing the label filter below DISTINCT, which would spell every row.
+    match = (
+        f"{identifier} IN (SELECT {value} FROM (SELECT DISTINCT {identifier} AS {value} FROM ow "
+        f"LIMIT {2**63 - 1}) AS ow_distinct WHERE {labelled})"
+    )
+    if floating:
+        # DISTINCT merges signed zeros, which the grid spells as 0.0 and -0.0.
+        positive, negative = query.label_matches(["0.0", "-0.0"])
+        if positive or negative:
+            sign = f"system.main.signbit({identifier})"
+            zero = "TRUE" if positive and negative else sign if negative else f"NOT {sign}"
+            match = f"CASE WHEN {identifier} = 0 THEN {zero} ELSE {match} END"
+    return match
 
 
 def _duckdb_temporal_output(expression: str, dtype: Any, depth: int = 0) -> str | None:

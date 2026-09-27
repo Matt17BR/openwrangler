@@ -485,7 +485,7 @@ export async function verifyGridStatusBarBrowserAcceptance(browser, harnessDirec
     forcedStyles.appOverflow > 1 ||
     forcedStyles.documentOverflow > 1 ||
     forcedStyles.clippedChildren > 0 ||
-    forcedStyles.navigation.length !== 3 ||
+    forcedStyles.navigation.length !== 4 ||
     forcedStyles.navigation.some(
       ({ borderStyle, borderWidth, forcedColorAdjust, opacity, iconVisible }) =>
         borderStyle !== "solid" ||

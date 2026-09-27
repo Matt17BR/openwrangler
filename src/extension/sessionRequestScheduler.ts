@@ -33,7 +33,7 @@ type ExecuteSessionRequest = (
 
 export class SessionRequestScheduler {
   private activeForegroundOperation: QueuedSessionOperation | undefined;
-  private activeInteractiveProfile: QueuedSessionOperation | undefined;
+  private activeInteractiveScan: QueuedSessionOperation | undefined;
   private activeBackgroundOperation: QueuedSessionOperation | undefined;
   private interactiveQueue: QueuedSessionOperation[] = [];
   private backgroundQueue: QueuedSessionOperation[] = [];
@@ -50,6 +50,11 @@ export class SessionRequestScheduler {
         // Closing is a terminal barrier. The coordinator discards queued
         // background work first; accepted foreground work still settles in order.
         this.terminalOperation = operation;
+      } else if (request.kind === "findCells") {
+        const superseded = this.interactiveQueue.filter((queued) => queued.request.kind === "findCells");
+        this.interactiveQueue = this.interactiveQueue.filter((queued) => queued.request.kind !== "findCells");
+        this.cancelOperations(superseded);
+        this.interactiveQueue.push(operation);
       } else if (sessionRequestPriority(request, options) === "background") {
         this.backgroundQueue.push(operation);
       } else {
@@ -77,11 +82,7 @@ export class SessionRequestScheduler {
   cancelViewRequests(viewRequestIds: readonly string[]): void {
     if (viewRequestIds.length === 0) return;
     const cancelled = new Set(viewRequestIds);
-    for (const active of [
-      this.activeForegroundOperation,
-      this.activeInteractiveProfile,
-      this.activeBackgroundOperation
-    ]) {
+    for (const active of [this.activeForegroundOperation, this.activeInteractiveScan, this.activeBackgroundOperation]) {
       const viewRequestId = active ? requestViewId(active.request) : undefined;
       if (
         active &&
@@ -135,7 +136,7 @@ export class SessionRequestScheduler {
   hasPendingRequest(predicate: (request: SessionBoundRequest) => boolean): boolean {
     return (
       (this.activeForegroundOperation !== undefined && predicate(this.activeForegroundOperation.request)) ||
-      (this.activeInteractiveProfile !== undefined && predicate(this.activeInteractiveProfile.request)) ||
+      (this.activeInteractiveScan !== undefined && predicate(this.activeInteractiveScan.request)) ||
       (this.activeBackgroundOperation !== undefined && predicate(this.activeBackgroundOperation.request)) ||
       this.interactiveQueue.some(({ request }) => predicate(request)) ||
       this.backgroundQueue.some(({ request }) => predicate(request)) ||
@@ -155,7 +156,7 @@ export class SessionRequestScheduler {
       checkpoints.push({ state, lane, requestKind, viewRequestId });
     };
     append(this.activeForegroundOperation?.request, "active", "foreground");
-    append(this.activeInteractiveProfile?.request, "active", "foreground");
+    append(this.activeInteractiveScan?.request, "active", "foreground");
     append(this.activeBackgroundOperation?.request, "active", "background");
     for (const operation of this.interactiveQueue) append(operation.request, "queued", "foreground");
     for (const operation of this.backgroundQueue) append(operation.request, "queued", "background");
@@ -169,7 +170,7 @@ export class SessionRequestScheduler {
     return {
       quiescent: this.isIdle(),
       activeForegroundOperation:
-        this.activeForegroundOperation !== undefined || this.activeInteractiveProfile !== undefined,
+        this.activeForegroundOperation !== undefined || this.activeInteractiveScan !== undefined,
       activeBackgroundOperation: this.activeBackgroundOperation !== undefined,
       interactiveQueueLength: this.interactiveQueue.length,
       backgroundQueueLength: this.backgroundQueue.length,
@@ -179,26 +180,18 @@ export class SessionRequestScheduler {
 
   private startNext(): void {
     while (!this.activeForegroundOperation && this.interactiveQueue.length > 0) {
-      const next = this.interactiveQueue[0];
-      if (
-        (this.activeInteractiveProfile && next.request.kind !== "getPage" && next.request.kind !== "getColumnValues") ||
-        (this.activeBackgroundOperation &&
-          !canRunAlongsideBackground(next.request, next.options, this.activeBackgroundOperation.request))
-      ) {
-        break;
-      }
-      this.interactiveQueue.shift();
+      const index = this.nextRunnableInteractiveIndex();
+      if (index < 0) break;
+      const [next] = this.interactiveQueue.splice(index, 1);
       this.startOperation(
         next,
-        next.request.kind === "getSummary" || next.request.kind === "getDatasetStats"
-          ? "activeInteractiveProfile"
-          : "activeForegroundOperation"
+        isInteractiveScan(next.request) ? "activeInteractiveScan" : "activeForegroundOperation"
       );
     }
 
     if (
       !this.activeForegroundOperation &&
-      !this.activeInteractiveProfile &&
+      !this.activeInteractiveScan &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length === 0
@@ -210,7 +203,7 @@ export class SessionRequestScheduler {
 
     if (
       !this.activeForegroundOperation &&
-      !this.activeInteractiveProfile &&
+      !this.activeInteractiveScan &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length > 0
@@ -222,9 +215,23 @@ export class SessionRequestScheduler {
     this.resolveIdleWaiters();
   }
 
+  /** Reads may overtake queued read-only scans that cannot start yet; every other request keeps its order. */
+  private nextRunnableInteractiveIndex(): number {
+    for (const [index, operation] of this.interactiveQueue.entries()) {
+      const { request, options } = operation;
+      const blocked =
+        (this.activeInteractiveScan && request.kind !== "getPage" && request.kind !== "getColumnValues") ||
+        (this.activeBackgroundOperation &&
+          !canRunAlongsideBackground(request, options, this.activeBackgroundOperation.request));
+      if (!blocked) return index;
+      if (!isInteractiveScan(request)) return -1;
+    }
+    return -1;
+  }
+
   private startOperation(
     operation: QueuedSessionOperation,
-    owner: "activeForegroundOperation" | "activeInteractiveProfile" | "activeBackgroundOperation"
+    owner: "activeForegroundOperation" | "activeInteractiveScan" | "activeBackgroundOperation"
   ): void {
     this[owner] = operation;
     void this.execute(operation.request, operation.options)
@@ -251,7 +258,7 @@ export class SessionRequestScheduler {
   private isIdle(): boolean {
     return (
       !this.activeForegroundOperation &&
-      !this.activeInteractiveProfile &&
+      !this.activeInteractiveScan &&
       !this.activeBackgroundOperation &&
       this.interactiveQueue.length === 0 &&
       this.backgroundQueue.length === 0 &&
@@ -278,6 +285,10 @@ export function requestViewId(request: OpenWranglerRequest): string | undefined 
   return "viewRequestId" in request && typeof request.viewRequestId === "string" ? request.viewRequestId : undefined;
 }
 
+function isInteractiveScan(request: SessionBoundRequest): boolean {
+  return request.kind === "getSummary" || request.kind === "getDatasetStats" || request.kind === "findCells";
+}
+
 function canRunAlongsideBackground(
   request: SessionBoundRequest,
   options: BridgeRequestOptions | undefined,
@@ -289,6 +300,7 @@ function canRunAlongsideBackground(
   return (
     request.kind === "getPage" ||
     request.kind === "getColumnValues" ||
+    request.kind === "findCells" ||
     (request.kind === "getSummary" && options?.priority === "interactive")
   );
 }
@@ -298,6 +310,7 @@ function isCancellableViewRequest(request: SessionBoundRequest, options?: Bridge
     request.kind === "getSummary" ||
     request.kind === "getDatasetStats" ||
     request.kind === "getColumnValues" ||
+    request.kind === "findCells" ||
     (request.kind === "getPage" && options?.ephemeralPage === true)
   );
 }

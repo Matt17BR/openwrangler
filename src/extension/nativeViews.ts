@@ -1122,6 +1122,11 @@ function registerNativeViewsTransactional(
         void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before going to a row.");
       }
     }),
+    registerCommand("openWrangler.find", () => {
+      if (!OpenWranglerPanel.sendEditorAction({ action: "find" })) {
+        void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before using Find.");
+      }
+    }),
     registerCommand("openWrangler.copyCode", async () => {
       const acquired = await codePreview.acquireCodeForAction();
       if (acquired.kind !== "available") return reportCodePreviewActionFailure(acquired, "copying");

@@ -545,6 +545,7 @@
         "sort": { "type": "boolean" },
         "profile": { "type": "boolean" },
         "columnValues": { "type": "boolean" },
+        "find": { "type": "boolean" },
         "supportedOperations": {
           "type": "array",
           "uniqueItems": true,
@@ -2670,6 +2671,49 @@
         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
       }
     },
+    "GridCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "columnId"],
+      "properties": {
+        "row": { "type": "integer", "minimum": 0 },
+        "columnId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "FindRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "filterModel",
+        "query",
+        "matchCase",
+        "wholeCell",
+        "direction"
+      ],
+      "properties": {
+        "kind": { "const": "findCells" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
+        "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "query": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "matchCase": { "type": "boolean" },
+        "wholeCell": { "type": "boolean" },
+        "direction": { "enum": ["next", "previous"] },
+        "columnIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "from": { "$ref": "#/definitions/GridCell" },
+        "includeFrom": { "type": "boolean" }
+      }
+    },
     "PreviewStepRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -2876,6 +2920,7 @@
         { "$ref": "#/definitions/SummaryRequest" },
         { "$ref": "#/definitions/DatasetStatsRequest" },
         { "$ref": "#/definitions/ValuesRequest" },
+        { "$ref": "#/definitions/FindRequest" },
         { "$ref": "#/definitions/PreviewStepRequest" },
         { "$ref": "#/definitions/InspectStepRequest" },
         { "$ref": "#/definitions/ApplyDraftRequest" },
@@ -2954,6 +2999,28 @@
         "column": { "type": "string" },
         "values": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
         "hasMore": { "type": "boolean" }
+      }
+    },
+    "FoundCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row", "columnId", "ordinal"],
+      "properties": {
+        "row": { "type": "integer", "minimum": 0 },
+        "columnId": { "type": "string", "minLength": 1 },
+        "ordinal": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "FindResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "viewRequestId", "matchCount"],
+      "properties": {
+        "kind": { "const": "cellsFound" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
+        "matchCount": { "type": "integer", "minimum": 0 },
+        "match": { "$ref": "#/definitions/FoundCell" }
       }
     },
     "StepPreviewResponse": {
@@ -3076,6 +3143,7 @@
         { "$ref": "#/definitions/SummaryResponse" },
         { "$ref": "#/definitions/DatasetStatsResponse" },
         { "$ref": "#/definitions/ValuesResponse" },
+        { "$ref": "#/definitions/FindResponse" },
         { "$ref": "#/definitions/StepPreviewResponse" },
         { "$ref": "#/definitions/StepInspectionResponse" },
         { "$ref": "#/definitions/PlanUpdatedResponse" },

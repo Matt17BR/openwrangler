@@ -72,6 +72,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     ExportOptions,
+    FindQuery,
     PageColumnProjection,
     RowAxis,
     SessionDataShape,
@@ -1244,6 +1245,7 @@ class PandasEngine(DataFrameEngine):
         export_formats=frozenset({"csv", "parquet"}),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
+        supports_find=True,
     )
 
     def detect(self, value: Any) -> bool:
@@ -1957,6 +1959,26 @@ class PandasEngine(DataFrameEngine):
                 }
             )
         return values, len(counts) > limit
+
+    def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
+        import numpy as np
+
+        view = frame if isinstance(frame, _PandasRowView) else None
+        df = view.source if view is not None else self.normalize(frame)
+        visible = self._visible_positions(df)
+        # A view with most source rows is cheaper to match in source order and then reorder.
+        by_source = view is not None and 2 * view.row_count() >= len(df)
+        masks: list[Any | None] = []
+        for position in positions:
+            frame_position = visible[position]
+            if view is None or by_source:
+                mask = _pandas_find_mask(df.iloc[:, frame_position], query)
+                if mask is not None and view is not None:
+                    mask = mask[view.positions]
+            else:
+                mask = _pandas_find_mask(view.column(frame_position), query)
+            masks.append((mask.view(np.uint8) + ord("0")).tobytes() if mask is not None and mask.any() else None)
+        return masks
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         import numpy as np
@@ -8851,6 +8873,82 @@ def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
     coarse = pa.scalar(seconds, type=pa.timestamp("s", tz=scalar.type.tz)).as_py()
     display = datetime_isoformat(coarse, nanoseconds=remainder * (1_000_000_000 // scale))
     return {"kind": "datetime", "raw": display, "display": display, "isNull": False, "isNaN": False}
+
+
+def _pandas_find_mask(series: Any, query: FindQuery) -> Any:
+    """Mark the rows whose grid cell text matches ``query``, spelling each distinct value once."""
+    import numpy as np
+    import pandas as pd
+
+    column_type = _pandas_semantic_type(series)
+    if not query.could_match(column_type):
+        return None
+    values = _pandas_scalar_values(series)
+    dtype = values.dtype
+    # Object columns can mix Python types, so only native storage has uniform spelling.
+    objects = isinstance(dtype, np.dtype) and dtype.kind == "O"
+    native = not objects and not isinstance(dtype, pd.CategoricalDtype)
+    try:
+        if objects:
+            # Equal objects of different types, such as 1, 1.0 and True, are spelled differently.
+            keys = pd.Series([(type(value), value) for value in values.array], dtype=object)
+            codes = pd.factorize(keys)[0]
+            uniques = values.array.take(np.unique(codes, return_index=True)[1])
+        else:
+            codes, uniques = pd.factorize(values, use_na_sentinel=True)
+    except (TypeError, ValueError, ArithmeticError):
+        # Unhashable or incomparable objects are spelled row by row.
+        codes, uniques = np.arange(len(values)), values.array
+    if native and column_type == "float" and _pandas_narrow_float_type(dtype) is None:
+        numbers = np.asarray(uniques, dtype=float)
+        # NumPy spells binary64 with the same shortest, lowercase digits as the cell's Python repr.
+        labels = numbers.astype(str)
+        infinity = "Infinity" if query.match_case else "infinity"
+        labels[np.isposinf(numbers)] = infinity
+        labels[np.isneginf(numbers)] = "-" + infinity
+        matched = _pandas_ascii_label_matches(labels, query, folded=True) & ~np.isnan(numbers)
+    elif native and column_type in {"integer", "boolean"}:
+        labels = np.asarray(uniques).astype(str)
+        matched = _pandas_ascii_label_matches(labels, query, folded=column_type == "integer")
+    else:
+        labels = (
+            list(uniques)
+            if native and column_type == "string"
+            else _pandas_cell_displays(pd.Series(uniques, copy=False))
+        )
+        matched = np.asarray(query.label_matches(labels, datetime=column_type == "datetime"), dtype=bool)
+    # A missing value's code, -1, selects the appended False.
+    mask = np.append(matched, False)[codes]
+    if native and column_type == "float" and (np.asarray(uniques, dtype=float) == 0).any():
+        # Factorizing merges signed zeros, which the grid spells as 0.0 and -0.0.
+        row_numbers = np.asarray(values.to_numpy(dtype=float, na_value=np.nan))
+        zeros = row_numbers == 0
+        positive, negative = query.label_matches(["0.0", "-0.0"])
+        mask[zeros] = np.where(np.signbit(row_numbers[zeros]), negative, positive)
+    return mask
+
+
+def _pandas_ascii_label_matches(labels: Any, query: FindQuery, *, folded: bool = False) -> Any:
+    """Vectorized matching of ASCII labels, where NumPy's lowercase is the same ASCII folding.
+
+    ``folded`` labels already contain no uppercase letters when the query ignores case.
+    """
+    import numpy as np
+
+    strings = getattr(np, "strings", np.char)
+    text = labels if query.match_case or folded else strings.lower(labels)
+    needle = query.needle()
+    return np.asarray(text == needle if query.whole_cell else strings.find(text, needle) >= 0, dtype=bool)
+
+
+def _pandas_cell_displays(values: Any) -> list[str | None]:
+    """Grid cell text for each value, or None for a missing value, spelled as a page spells it."""
+    temporal = _pandas_arrow_temporal_array(values, categorical=True)
+    displays: list[str | None] = []
+    for position, value in enumerate(_pandas_temporal_output_values(values, temporal, nan_is_missing=True)):
+        cell = _pandas_temporal_cell(value, temporal[position] if temporal is not None else None)
+        displays.append(None if cell["isNull"] or cell["isNaN"] else cell["display"])
+    return displays
 
 
 def _pandas_temporal_text(value: Any, scalar: Any) -> str:

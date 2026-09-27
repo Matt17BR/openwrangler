@@ -30,6 +30,7 @@ _RECOVERABLE_RESPONSE_ENCODING_KINDS = {
     "getSummary",
     "getDatasetStats",
     "getColumnValues",
+    "findCells",
     "inspectStep",
     "cancelRequest",
 }

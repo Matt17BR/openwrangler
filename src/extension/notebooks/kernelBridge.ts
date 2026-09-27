@@ -1458,7 +1458,8 @@ export function isIdempotentKernelReadRequest(request: OpenWranglerRequest): boo
     request.kind === "getPage" ||
     request.kind === "getSummary" ||
     request.kind === "getDatasetStats" ||
-    request.kind === "getColumnValues"
+    request.kind === "getColumnValues" ||
+    request.kind === "findCells"
   );
 }
 

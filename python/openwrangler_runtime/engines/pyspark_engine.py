@@ -108,6 +108,7 @@ class PySparkEngine(DataFrameEngine):
         export_formats=frozenset(),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
+        supports_find=False,
     )
 
     def __init__(self) -> None:

@@ -20,6 +20,8 @@ import {
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   type RKernelDatasetStatsResult,
+  type RKernelFindQuery,
+  type RKernelFindResult,
   type RKernelDataExportResult,
   type RKernelErrorResponse,
   type RKernelExportFormat,
@@ -341,6 +343,24 @@ export class RKernelSessionTransport {
     });
   }
 
+  async findCells(
+    sessionId: string,
+    find: RKernelFindQuery,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelFindResult> {
+    const request = this.request("findCells", { sessionId, ...find });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "cellsFound" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned a mismatched Find result.");
+    }
+    return Object.freeze({
+      matchCount: response.matchCount,
+      ...(response.match === undefined ? {} : { match: response.match })
+    });
+  }
+
   async exportData(
     sessionId: string,
     revision: number,
@@ -631,6 +651,7 @@ export class RKernelSessionTransport {
           | "getSummary"
           | "getDatasetStats"
           | "getColumnValues"
+          | "findCells"
           | "previewStep"
           | "applyDraft"
           | "discardDraft"

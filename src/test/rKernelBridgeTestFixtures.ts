@@ -153,6 +153,7 @@ export function fakeRKernelTransport(
       stats: rKernelDatasetStatsFor(contract)
     })),
     getColumnValues: vi.fn(async (_sessionId, column) => ({ column: column.name, values: [], hasMore: false })),
+    findCells: vi.fn(async () => ({ matchCount: 0 })),
     previewStep: vi.fn(async () => {
       const next = previewQueue.shift();
       if (!next) throw new Error("Unexpected R step preview.");

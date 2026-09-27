@@ -11031,6 +11031,7 @@ openwrangler_r_kernel_agent <- local({
     sessions <- new.env(hash = TRUE, parent = emptyenv())
     pending_summaries <- new.env(hash = TRUE, parent = emptyenv())
     pending_stats <- new.env(hash = TRUE, parent = emptyenv())
+    find_caches <- new.env(hash = TRUE, parent = emptyenv())
     filter_cache <- if (is.null(file_source)) NULL else frame_contract$new_file_filter_cache()
     disposed <- FALSE
 
@@ -11041,6 +11042,8 @@ openwrangler_r_kernel_agent <- local({
           if (is.null(session_id) || identical(owner$sessionId, session_id)) rm(list = id, envir = records)
         }
       }
+      cached <- if (is.null(session_id)) ls(find_caches, all.names = TRUE) else intersect(session_id, ls(find_caches, all.names = TRUE))
+      rm(list = cached, envir = find_caches)
       invisible(NULL)
     }
 
@@ -11358,6 +11361,76 @@ openwrangler_r_kernel_agent <- local({
           values = result$values,
           hasMore = result$hasMore
         )
+        return(response)
+      }
+
+      if (identical(kind, "findCells")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "view", "query", "matchCase", "wholeCell", "direction", "columns", "from", "includeFrom"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        view <- decode_view(payload$view, frame_contract$limits)
+        text <- bounded_text(payload$query, "request.payload.query", 4096L)
+        if (!nzchar(text) || nchar(text, type = "chars") > 1024L) {
+          abort("invalid_request", "request.payload.query must contain 1 to 1,024 characters")
+        }
+        for (field in c("matchCase", "wholeCell", "includeFrom")) {
+          value <- payload[[field]]
+          if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+            abort("invalid_request", sprintf("request.payload.%s must be a boolean", field))
+          }
+        }
+        if (!identical(payload$direction, "next") && !identical(payload$direction, "previous")) {
+          abort("invalid_request", "request.payload.direction must be next or previous")
+        }
+        columns <- if (is.null(payload$columns)) NULL else {
+          if (!is.list(payload$columns) || is.object(payload$columns) || length(payload$columns) == 0L ||
+              length(payload$columns) > frame_contract$limits$columns) {
+            abort("invalid_request", "request.payload.columns must be a bounded non-empty array")
+          }
+          references <- lapply(seq_along(payload$columns), function(index) {
+            decode_column_reference(payload$columns[[index]], sprintf("columns[%d]", index), frame_contract$limits$columnIdBytes)
+          })
+          if (anyDuplicated(vapply(references, `[[`, character(1L), "id", USE.NAMES = FALSE))) {
+            abort("invalid_request", "request.payload.columns contains a repeated column identity")
+          }
+          references
+        }
+        from <- if (is.null(payload$from)) NULL else {
+          origin <- exact_record(payload$from, c("row", "column"), "request.payload.from")
+          list(
+            row = whole_number(origin$row, "request.payload.from.row", frame_contract$limits$rows),
+            column = decode_column_reference(origin$column, "request.payload.from.column", frame_contract$limits$columnIdBytes)
+          )
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        if (!exists(session_id, envir = find_caches, inherits = FALSE)) {
+          assign(session_id, new.env(parent = emptyenv()), envir = find_caches)
+        }
+        result <- frame_contract$find_cells(
+          active_capture(session),
+          view,
+          list(text = text, matchCase = payload$matchCase, wholeCell = payload$wholeCell),
+          columns,
+          from,
+          payload$includeFrom,
+          identical(payload$direction, "previous"),
+          filter_cache,
+          get(session_id, envir = find_caches, inherits = FALSE)
+        )
+        response <- list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "cellsFound",
+          sessionId = session_id,
+          matchCount = result$matchCount
+        )
+        if (!is.null(result$match)) response$match <- result$match
         return(response)
       }
 

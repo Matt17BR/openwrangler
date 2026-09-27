@@ -794,6 +794,64 @@ def resolve_excel_sheet_selector(options: Mapping[str, Any]) -> ExcelSheetSelect
     return ("sheetIndex", 0)
 
 
+FIND_SKIPPED_COLUMN_TYPES = frozenset({"list", "struct"})
+_FIND_ASCII_TO_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_FIND_FOLDED_TIME_SEPARATOR = re.compile(r"(?<![a-z])t(?![a-z])")
+_FIND_TIME_SEPARATOR = re.compile(r"(?<![A-Za-z])T(?![A-Za-z])")
+# Every character that a displayed number can contain, after ASCII folding.
+_FIND_NUMBER_CHARACTERS = frozenset("0123456789-")
+_FIND_REAL_CHARACTERS = frozenset("0123456789-+.eEinfinityINFINITY")
+_FIND_BOOLEAN_CHARACTERS = frozenset("truefalsTRUEFALS")
+_FIND_DATETIME_CHARACTERS = frozenset("0123456789-:.+ Tt")
+
+
+@dataclass(frozen=True, slots=True)
+class FindQuery:
+    """Literal grid search text. Without match case, only ASCII letters fold, as in value search."""
+
+    text: str
+    match_case: bool
+    whole_cell: bool
+
+    def fold(self, text: str) -> str:
+        return text if self.match_case else text.translate(_FIND_ASCII_TO_LOWER)
+
+    def needle(self, *, datetime: bool = False) -> str:
+        needle = self.fold(self.text)
+        if datetime:
+            # Datetime cells separate the time with T; a space finds them too.
+            needle = (_FIND_TIME_SEPARATOR if self.match_case else _FIND_FOLDED_TIME_SEPARATOR).sub(" ", needle)
+        return needle
+
+    def could_match(self, column_type: str) -> bool:
+        """Whether a displayed value of this type can contain the query at all."""
+        characters = set(self.text)
+        if column_type == "integer":
+            return characters <= _FIND_NUMBER_CHARACTERS
+        if column_type == "float":
+            return characters <= _FIND_REAL_CHARACTERS
+        if column_type == "boolean":
+            return characters <= _FIND_BOOLEAN_CHARACTERS
+        if column_type in {"date", "datetime"}:
+            return characters <= _FIND_DATETIME_CHARACTERS
+        return column_type not in FIND_SKIPPED_COLUMN_TYPES
+
+    def label_matches(self, labels: Iterable[str | None], *, datetime: bool = False) -> list[bool]:
+        """Match displayed labels; None marks a missing value, which never matches."""
+        needle = self.needle(datetime=datetime)
+        separator = "T" if self.match_case else "t"
+        matches = []
+        for label in labels:
+            if label is None:
+                matches.append(False)
+                continue
+            text = self.fold(label)
+            if datetime:
+                text = text.replace(separator, " ")
+            matches.append(text == needle if self.whole_cell else needle in text)
+        return matches
+
+
 @dataclass(frozen=True, slots=True)
 class EngineCapabilities:
     """Immutable description of the work an engine can own."""
@@ -804,6 +862,7 @@ class EngineCapabilities:
     export_formats: frozenset[ExportFormat]
     supports_shutdown_interrupt: bool
     supports_request_cancellation: bool
+    supports_find: bool
 
 
 @dataclass(frozen=True)
@@ -1016,6 +1075,14 @@ class DataFrameEngine(ABC):
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
         raise NotImplementedError
+
+    def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
+        """Mark the cells whose displayed text matches ``query``.
+
+        Returns, for each requested visible column position, ASCII bytes in page order with ``1`` for each matching
+        row and ``0`` otherwise, or None when no row matches.
+        """
+        raise EngineError(f"Find is unavailable for {self.name} dataframes.")
 
     def validate_transform_preflight(
         self,

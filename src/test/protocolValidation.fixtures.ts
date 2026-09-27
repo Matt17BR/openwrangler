@@ -129,6 +129,13 @@ const responses: OpenWranglerResponse[] = [
     hasMore: false
   },
   {
+    kind: "cellsFound",
+    revision: 3,
+    viewRequestId: "find-1",
+    matchCount: 2,
+    match: { row: 0, columnId: "column:0", ordinal: 1 }
+  },
+  {
     kind: "stepPreview",
     revision: 3,
     metadata: {
@@ -241,6 +248,20 @@ const requests: OpenWranglerRequest[] = [
     filterModel: metadata.filterModel,
     search: "1",
     limit: 50
+  },
+  {
+    kind: "findCells",
+    sessionId: "session-1",
+    revision: 3,
+    viewRequestId: "find-1",
+    filterModel: metadata.filterModel,
+    query: "1",
+    matchCase: false,
+    wholeCell: false,
+    direction: "next",
+    columnIds: ["column:0"],
+    from: { row: 0, columnId: "column:0" },
+    includeFrom: true
   },
   {
     kind: "previewStep",

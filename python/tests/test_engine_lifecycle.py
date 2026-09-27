@@ -103,6 +103,7 @@ class ReadOnlyPandasEngine(TrackingPandasEngine):
         export_formats=frozenset(),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
+        supports_find=False,
     )
 
 
@@ -114,6 +115,7 @@ class InterruptiblePandasEngine(TrackingPandasEngine):
         export_formats=PandasEngine.capabilities.export_formats,
         supports_shutdown_interrupt=True,
         supports_request_cancellation=False,
+        supports_find=False,
     )
 
 
@@ -727,6 +729,7 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
         "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
+        "find": True,
         "exportCsv": True,
         "exportParquet": True,
         "notebookInsert": False,
@@ -740,6 +743,7 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
         "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
+        "find": True,
         "exportCsv": False,
         "exportParquet": False,
         "notebookInsert": False,
@@ -749,6 +753,7 @@ def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) ->
         "supportedOperations": pandas_operations,
         "lazy": False,
         "cancel": False,
+        "find": True,
         "exportCsv": False,
         "exportParquet": False,
         "notebookInsert": True,

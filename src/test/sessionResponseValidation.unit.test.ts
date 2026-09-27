@@ -273,6 +273,62 @@ describe("session response validation", () => {
     ).toBe(`summary for ${schema[1]!.id} did not match the confirmed schema`);
   });
 
+  it("binds Find matches to the correlated revision, confirmed schema, and requested scope", () => {
+    const request: SessionBoundRequest = {
+      kind: "findCells",
+      sessionId: runtimeSessionId,
+      revision: 4,
+      viewRequestId: "find-request",
+      filterModel,
+      query: "west",
+      matchCase: false,
+      wholeCell: false,
+      direction: "next",
+      columnIds: [schema[1]!.id]
+    };
+    const response: OpenWranglerResponse = {
+      kind: "cellsFound",
+      revision: 4,
+      viewRequestId: "find-request",
+      matchCount: 1,
+      match: { row: 0, columnId: schema[1]!.id, ordinal: 1 }
+    };
+
+    expect(responseMismatch(request, response, runtimeSessionId, schema)).toBeUndefined();
+    expect(
+      responseMismatch(
+        request,
+        { kind: "cellsFound", revision: 4, viewRequestId: "find-request", matchCount: 0 },
+        runtimeSessionId
+      )
+    ).toBeUndefined();
+    expect(responseMismatch(request, { ...response, viewRequestId: "other" }, runtimeSessionId, schema)).toBe(
+      "find correlation did not match"
+    );
+    expect(responseMismatch(request, { ...response, revision: 5 }, runtimeSessionId, schema)).toBe(
+      "find revision 5 did not match 4"
+    );
+    expect(responseMismatch(request, response, runtimeSessionId)).toBe(
+      "find validation is missing the confirmed schema"
+    );
+    expect(
+      responseMismatch(
+        request,
+        { ...response, match: { row: 0, columnId: "column:gone", ordinal: 1 } },
+        runtimeSessionId,
+        schema
+      )
+    ).toBe("find matched a column outside the schema");
+    expect(
+      responseMismatch(
+        request,
+        { ...response, match: { row: 0, columnId: schema[0]!.id, ordinal: 1 } },
+        runtimeSessionId,
+        schema
+      )
+    ).toBe("find matched a column outside the requested scope");
+  });
+
   it("validates mutation action, revision, metadata, projection, and diff identities", () => {
     const request: SessionBoundRequest = {
       kind: "applyDraft",

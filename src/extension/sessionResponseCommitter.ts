@@ -171,11 +171,11 @@ export class SessionResponseCommitter {
         callbacks
       );
     }
-    if (response.kind === "summary" || response.kind === "columnValues") {
+    if (response.kind === "summary" || response.kind === "columnValues" || response.kind === "cellsFound") {
       if (response.revision < requestRuntimeRevision || !isCurrentLogicalView(session, options)) {
         return protocolError(
           "stale_response",
-          "Ignored a stale or superseded profiling response.",
+          "Ignored a stale or superseded view query response.",
           true,
           session.publicId,
           requestViewId(publicRequest)

@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DatasetStatsRequest, FilterModel, PageRequest, SummaryRequest, ValuesRequest } from "../shared/protocol";
+import type {
+  DatasetStatsRequest,
+  FilterModel,
+  FindRequest,
+  PageRequest,
+  SummaryRequest,
+  ValuesRequest
+} from "../shared/protocol";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
 import { sessionFromContract, type RBridgeSession } from "../extension/r/rKernelBridgeContract";
 import { RKernelReadQueries, type RKernelReadTransport } from "../extension/r/rKernelReadQueries";
@@ -192,7 +199,80 @@ describe("R kernel read queries", () => {
       { cancellation: undefined, ...options }
     );
   });
+
+  it("binds Find to exact column references and fails closed on kernel matches outside the scope", async () => {
+    const contract = frameContract();
+    const transport = fakeTransport(contract);
+    const queries = new RKernelReadQueries(transport, new Map([[sessionId, createSession(contract)]]));
+    const options = { timeoutMs: 987 };
+    transport.findCells.mockResolvedValueOnce({ matchCount: 3, match: { row: 0, column: valueColumn, ordinal: 2 } });
+
+    await expect(queries.findCells(findRequest("find-1"), options)).resolves.toEqual({
+      kind: "cellsFound",
+      revision: 0,
+      viewRequestId: "find-1",
+      matchCount: 3,
+      match: { row: 0, columnId: "r:c:0", ordinal: 2 }
+    });
+    expect(transport.findCells).toHaveBeenCalledWith(
+      sessionId,
+      {
+        view: { filters: [], sorts: [] },
+        query: "1",
+        matchCase: true,
+        wholeCell: false,
+        direction: "previous",
+        columns: [valueColumn],
+        from: { row: 0, column: valueColumn },
+        includeFrom: false
+      },
+      { cancellation: undefined, ...options }
+    );
+
+    transport.findCells.mockResolvedValueOnce({
+      matchCount: 1,
+      match: { row: 0, column: { id: "r:c:0", name: "renamed" }, ordinal: 1 }
+    });
+    await expect(queries.findCells(findRequest("find-2"), options)).rejects.toThrow(
+      "The R kernel matched a column outside the dataframe."
+    );
+
+    transport.findCells.mockClear();
+    await expect(queries.findCells({ ...findRequest("find-3"), query: "a\u0000b" }, options)).resolves.toEqual({
+      kind: "cellsFound",
+      revision: 0,
+      viewRequestId: "find-3",
+      matchCount: 0
+    });
+    await expect(
+      queries.findCells({ ...findRequest("find-4"), columnIds: ["r:c:gone"] }, options)
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_view",
+      message: "A Find column is no longer in the dataframe. Search again.",
+      viewRequestId: "find-4"
+    });
+    expect(transport.findCells).not.toHaveBeenCalled();
+  });
 });
+
+const valueColumn = { id: "r:c:0", name: "value" };
+
+function findRequest(viewRequestId: string): FindRequest {
+  return {
+    kind: "findCells",
+    sessionId,
+    revision: 0,
+    viewRequestId,
+    filterModel: emptyFilterModel(),
+    query: "1",
+    matchCase: true,
+    wholeCell: false,
+    direction: "previous",
+    columnIds: ["r:c:0"],
+    from: { row: 0, columnId: "r:c:0" }
+  };
+}
 
 function pageRequest(viewRequestId: string, filterModel: FilterModel = emptyFilterModel()): PageRequest {
   return {
@@ -314,7 +394,8 @@ function fakeTransport(contract: RFramePageContract): {
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async () => summaryResult),
     getDatasetStats: vi.fn(async () => datasetResult),
-    getColumnValues: vi.fn(async () => columnValuesResult)
+    getColumnValues: vi.fn(async () => columnValuesResult),
+    findCells: vi.fn(async () => ({ matchCount: 0 }))
   };
 }
 

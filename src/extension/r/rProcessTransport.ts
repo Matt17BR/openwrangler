@@ -28,6 +28,8 @@ import {
   type RKernelColumnReference,
   type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
+  type RKernelFindQuery,
+  type RKernelFindResult,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -607,6 +609,22 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       column: response.column,
       values: response.values,
       hasMore: response.hasMore
+    });
+  }
+
+  async findCells(
+    sessionId: string,
+    find: RKernelFindQuery,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelFindResult> {
+    const response = await this.executeMapped(this.request("findCells", { sessionId, ...find }), options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "cellsFound" || response.sessionId !== sessionId) {
+      throw new Error("The R process returned a mismatched Find result.");
+    }
+    return Object.freeze({
+      matchCount: response.matchCount,
+      ...(response.match === undefined ? {} : { match: response.match })
     });
   }
 

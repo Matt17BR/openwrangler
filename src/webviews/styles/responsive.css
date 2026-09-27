@@ -218,6 +218,10 @@
     grid-template-columns: auto auto auto minmax(0, 1fr);
   }
 
+  .gridStatusBar > .gridNavigationButton + .gridNavigationButton {
+    margin-inline-start: 0;
+  }
+
   .gridRowLocator {
     grid-column: 1 / -1;
     grid-row: 2;

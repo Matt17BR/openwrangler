@@ -7513,6 +7513,71 @@ profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
 assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
 assert_identical(profile_metrics$datasetProfiles, 1, "dataset profiling ran an unexpected number of times")
 
+# Find walks every match of a view in row-major order and must agree with the page displays.
+local({
+  fc <- openwrangler_r_frame_contract
+  frame <- data.frame(
+    flag = c(TRUE, NA, FALSE, TRUE, FALSE, TRUE),
+    count = c(1L, NA_integer_, -12L, 12L, 125L, 0L),
+    number = c(1.5, NaN, Inf, -0, 0, 12.5),
+    text = c("Alpha", NA_character_, "caf\u00e9", "ALPHA beta", "", "12.5"),
+    category = factor(c("high", NA, "low", "Alpha", "low", "high"), levels = c("low", "high", "Alpha")),
+    date = as.Date(c("2026-01-01", NA, "2026-01-03", "2024-10-01", "2024-10-01", "2026-01-01")),
+    instant = as.POSIXct(c("2026-01-01 12:00:00", NA, "2026-01-03 12:00:00", "2024-10-01 00:05:00",
+      "2024-10-01 00:05:00", "2026-01-01 12:00:00"), tz = "Europe/Berlin"),
+    elapsed = as.difftime(c(1, NA, 3, -0, 0, 1.5), units = "hours"),
+    wide = bit64::as.integer64(c("9223372036854775806", NA, "-12", "12", "0", "1")),
+    check.names = FALSE
+  )
+  frame$items <- list(1:2, NULL, 3L, 4L, 5L, 6L)
+  capture <- fc$capture_frame(frame)
+  schema <- capture$descriptor$schema
+  ids <- vapply(schema, `[[`, character(1L), "id")
+  reference <- function(position) list(id = schema[[position]]$id, name = schema[[position]]$name)
+  count_filter <- list(column = reference(2L), type = "integer", logic = "and",
+    predicates = list(list(kind = "predicate", operator = "gt", value = 0L)))
+  views <- list(
+    list(filters = list(), sorts = list()),
+    list(filters = list(), sorts = list(list(column = reference(2L), direction = "desc", nulls = "last"))),
+    list(filters = list(count_filter), sorts = list())
+  )
+  fold <- function(value) chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
+  queries <- c("1", "12", "alpha", "ALPHA", "-0", "0.0", "Inf", "inf", "TRUE", "true", "2024-10-01 00:05",
+    "2024-10-01T00:05", "T00", "caf\u00e9", "a", "1.5", "e", "NaN", "00:05", "+02:00", "0 hours", "b", "-12")
+  for (view in views) {
+    rows <- fc$materialize_view_page(capture, view, 0L, 100L, 0L, 100L)$page$rows
+    for (text in queries) for (match_case in c(FALSE, TRUE)) for (whole_cell in c(FALSE, TRUE)) {
+      expected <- list()
+      for (row in seq_along(rows)) for (position in seq_along(schema)) {
+        cell <- rows[[row]]$values[[position]]
+        if (isTRUE(cell$isNull) || isTRUE(cell$isNaN) || schema[[position]]$type %in% c("list", "struct")) next
+        needle <- if (match_case) text else fold(text)
+        label <- if (match_case) cell$display else fold(cell$display)
+        if (identical(schema[[position]]$type, "datetime")) {
+          needle <- gsub(if (match_case) "(?<![A-Za-z])T(?![A-Za-z])" else "(?<![a-z])t(?![a-z])", " ", needle, perl = TRUE)
+          label <- gsub(if (match_case) "T" else "t", " ", label, fixed = TRUE)
+        }
+        if (if (whole_cell) identical(label, needle) else grepl(needle, label, fixed = TRUE)) {
+          expected[[length(expected) + 1L]] <- list(row = row - 1L, column = reference(position))
+        }
+      }
+      query <- list(text = text, matchCase = match_case, wholeCell = whole_cell)
+      label <- sprintf("Find %s (case %s, whole %s)", text, match_case, whole_cell)
+      result <- fc$find_cells(capture, view, query)
+      assert_identical(result$matchCount, as.double(length(expected)), paste(label, "counted other cells"))
+      for (step in seq_along(expected)) {
+        assert_identical(result$match, c(expected[[step]], list(ordinal = as.double(step))), paste(label, "skipped a cell"))
+        result <- fc$find_cells(capture, view, query, from = result$match[c("row", "column")])
+      }
+      if (length(expected) != 0L) {
+        assert_identical(result$match$ordinal, 1, paste(label, "did not wrap"))
+        last <- fc$find_cells(capture, view, query, from = expected[[1L]], backward = TRUE)
+        assert_identical(last$match$ordinal, as.double(length(expected)), paste(label, "did not wrap backward"))
+      }
+    }
+  }
+})
+
 }))
 run_frame_contract_case("interactive", local({
 
