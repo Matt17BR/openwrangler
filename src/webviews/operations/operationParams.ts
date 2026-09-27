@@ -1,4 +1,5 @@
 import { parseFormulaLiteral } from "../../shared/formulaLiteral";
+import { replaceMatchesIsPortable } from "../../shared/find";
 import { isTransformStep } from "../../shared/protocolValidation";
 import type { FilterModel } from "../../shared/filterModel";
 import {
@@ -206,6 +207,22 @@ export function buildParams(
         regex: form.has("regex")
       };
       optional(params, "newColumn");
+      return params;
+    }
+    case "replaceMatches": {
+      const columns = requiredColumnReferences("columns", "Replace matches");
+      const options = { text: value("find"), matchCase: form.has("matchCase"), wholeCell: form.has("wholeCell") };
+      const types = columns.map((reference) => availableColumns.find((column) => column.id === reference.id)?.type);
+      const portable = types.every((type) => type !== undefined && replaceMatchesIsPortable(type, options));
+      const params: Record<string, unknown> = {
+        columns,
+        find: options.text,
+        replacement: value("replacement"),
+        matchCase: options.matchCase,
+        wholeCell: options.wholeCell,
+        spelling: portable ? "portable" : value("language") === "r" ? "r" : "python"
+      };
+      if (form.has("row")) params.row = Number(value("row"));
       return params;
     }
     case "stripText": {

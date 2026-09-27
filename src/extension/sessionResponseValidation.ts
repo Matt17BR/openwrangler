@@ -81,7 +81,12 @@ export function responseMismatch(
       if (response.revision !== request.revision) {
         return `find revision ${response.revision} did not match ${request.revision}`;
       }
-      return foundCellMismatch(response.match, confirmedPageSchema, request.columnIds);
+      return foundCellMismatch(
+        response.match,
+        confirmedPageSchema,
+        request.columnIds,
+        request.includePosition === true
+      );
     case "previewStep":
       if (response.kind !== "stepPreview") return `runtime returned ${response.kind}`;
       if (response.revision !== request.revision + 1) {
@@ -212,11 +217,15 @@ function canonicalImmutableSource(source: SessionSource): SessionSource {
 function foundCellMismatch(
   match: Extract<OpenWranglerResponse, { kind: "cellsFound" }>["match"],
   schema: readonly ColumnSchema[] | undefined,
-  requestedColumnIds: readonly string[] | undefined
+  requestedColumnIds: readonly string[] | undefined,
+  includePosition: boolean
 ): string | undefined {
   if (match === undefined) return undefined;
   if (!schema) return "find validation is missing the confirmed schema";
   if (!schema.some((column) => column.id === match.columnId)) return "find matched a column outside the schema";
+  if ((match.position !== undefined) !== includePosition) {
+    return includePosition ? "find omitted the requested row position" : "find returned an unrequested row position";
+  }
   return requestedColumnIds === undefined || requestedColumnIds.includes(match.columnId)
     ? undefined
     : "find matched a column outside the requested scope";

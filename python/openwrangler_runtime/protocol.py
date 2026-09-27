@@ -111,6 +111,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "columnIds",
         "from",
         "includeFrom",
+        "includePosition",
     },
     "previewStep": {
         "kind",
@@ -219,7 +220,7 @@ def _validate_find_request(request: Mapping[str, Any]) -> None:
         query.encode("utf-8")
     except UnicodeEncodeError as error:
         raise ProtocolError("query must be valid Unicode text.") from error
-    for field in ("matchCase", "wholeCell", "includeFrom"):
+    for field in ("matchCase", "wholeCell", "includeFrom", "includePosition"):
         if field in request and not isinstance(request[field], bool):
             raise ProtocolError(f"{field} must be a boolean.")
     if not isinstance(request["direction"], str) or request["direction"] not in {"next", "previous"}:

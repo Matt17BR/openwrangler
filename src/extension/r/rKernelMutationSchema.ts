@@ -434,6 +434,15 @@ export function schemaAfterRStep(
       )
     );
   }
+  if (step.kind === "replaceMatches") {
+    for (const reference of step.params.columns) {
+      const column = requireTransformColumn(reference, inputSchema, "Replace");
+      if (activeKeyColumnIds.includes(column.id)) {
+        throw new TypeError(`Replace can't change '${column.name}', a data.table key column; clone it first.`);
+      }
+    }
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "formula") return schemaAfterFormula(inputSchema, step);
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);

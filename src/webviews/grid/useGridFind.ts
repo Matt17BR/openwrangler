@@ -7,14 +7,43 @@ export type GridFindSettlement = Extract<OpenWranglerResponse, { kind: "cellsFou
 export type GridFindDirection = FindRequest["direction"];
 
 export interface GridFindRequest {
-  action: "open" | GridFindDirection;
+  /** "replace" also opens the Replace row; "advance" moves past the focused cell once a Replace preview arrives. */
+  action: "open" | "replace" | "advance" | GridFindDirection;
   requestId: number;
+}
+
+/** Whether the host can replace matches now, or how to make it possible. */
+export type GridReplaceAvailability =
+  | { kind: "ready"; busy: boolean }
+  | { kind: "switch"; busy: boolean; switchToEditing(trigger: HTMLButtonElement): void }
+  | { kind: "unavailable"; reason: string };
+
+export interface GridReplaceRequest {
+  criteria: GridFindCriteria;
+  replacement: string;
+  /** The current match's column and zero-based dataframe row; absent to replace every match in scope. */
+  cell?: { columnId: string; position: number };
+}
+
+/** Ctrl+H, or Cmd+Option+F as on macOS, opens Replace like the editor's find widget. */
+export function isReplaceShortcut(event: {
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  key: string;
+  code: string;
+}): boolean {
+  if (event.shiftKey) return false;
+  if (event.ctrlKey && !event.metaKey && !event.altKey) return event.key.toLowerCase() === "h";
+  // Option composes a character on macOS, so match the physical key.
+  return event.metaKey && !event.ctrlKey && event.altKey && event.code === "KeyF";
 }
 
 export type GridFindStatus =
   | { kind: "idle" }
   | { kind: "pending"; includeFrom: boolean }
-  | { kind: "found"; ordinal: number; count: number; cell: GridCell }
+  | { kind: "found"; ordinal: number; count: number; cell: GridCell; position?: number }
   | { kind: "none" }
   | { kind: "error"; message: string };
 
@@ -47,7 +76,10 @@ interface UseGridFindOptions {
   /** Columns that Find can scope to; a scope outside this set searches every column. */
   searchableColumnIds: ReadonlySet<string>;
   unavailableReason: string | undefined;
+  /** Whether the session can replace cells, which needs each match's dataframe row. */
+  replaceable: boolean;
   findCells(query: GridFindQuery): Promise<GridFindSettlement>;
+  onReplace(request: GridReplaceRequest): void;
   origin(): GridCell | undefined;
   defaultScope(): string | undefined;
   reveal(cell: GridCell): void;
@@ -58,7 +90,9 @@ export function useGridFind({
   viewKey,
   searchableColumnIds,
   unavailableReason,
+  replaceable,
   findCells,
+  onReplace,
   origin,
   defaultScope,
   reveal,
@@ -77,6 +111,9 @@ export function useGridFind({
   );
   const [result, setResult] = useState<GridFindResult | undefined>();
   const [focusRequestId, setFocusRequestId] = useState(0);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [replacement, setReplacement] = useState("");
+  const [replaceFocusRequestId, setReplaceFocusRequestId] = useState(0);
   const sequence = useRef(0);
   const typingTimer = useRef<number | undefined>(undefined);
   const currentViewKey = useRef(viewKey);
@@ -116,7 +153,8 @@ export function useGridFind({
         wholeCell: next.wholeCell,
         direction,
         ...(next.scope === undefined ? {} : { columnIds: [next.scope] }),
-        ...(from === undefined ? {} : { from, includeFrom })
+        ...(from === undefined ? {} : { from, includeFrom }),
+        ...(replaceOpen && replaceable ? { includePosition: true } : {})
       }).then((settlement) => {
         if (token !== sequence.current || currentViewKey.current !== viewKey) return;
         const status: GridFindStatus =
@@ -129,14 +167,15 @@ export function useGridFind({
                     kind: "found",
                     ordinal: settlement.match.ordinal,
                     count: settlement.matchCount,
-                    cell: { row: settlement.match.row, columnId: settlement.match.columnId }
+                    cell: { row: settlement.match.row, columnId: settlement.match.columnId },
+                    ...(settlement.match.position === undefined ? {} : { position: settlement.match.position })
                   }
                 : { kind: "none" };
         setResult({ viewKey, criteria: next, status });
         if (status.kind === "found") latestReveal.current(status.cell);
       });
     },
-    [cancelTyping, findCells, origin, unavailableReason, viewKey]
+    [cancelTyping, findCells, origin, replaceOpen, replaceable, unavailableReason, viewKey]
   );
 
   const status = result && result.viewKey === viewKey && sameCriteria(result.criteria, criteria) ? result.status : idle;
@@ -186,11 +225,47 @@ export function useGridFind({
         setCriteria(next);
         setOpen(true);
       }
+      if (action === "advance") {
+        if (open && isFindQuery(next.text)) search(next, "next", false);
+        return;
+      }
+      if (action === "replace") {
+        setReplaceOpen(true);
+        if (isFindQuery(next.text)) setReplaceFocusRequestId((current) => current + 1);
+        else setFocusRequestId((current) => current + 1);
+        return;
+      }
       setFocusRequestId((current) => current + 1);
       if (action === "open" || !isFindQuery(next.text)) return;
       search(next, action, open && includeFocusedCell);
     },
     [criteria, defaultScope, includeFocusedCell, open, search, searchableColumnIds]
+  );
+
+  // Replacing one cell needs the match's dataframe row, which searches report only while the Replace row is open.
+  const unpositionedMatch =
+    open && replaceOpen && replaceable && status.kind === "found" && status.position === undefined
+      ? `${viewKey}\u0000${status.cell.row}\u0000${status.cell.columnId}`
+      : undefined;
+  const positionRequested = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (unpositionedMatch === undefined || positionRequested.current === unpositionedMatch) return;
+    positionRequested.current = unpositionedMatch;
+    search(criteria, "next", true);
+  }, [criteria, search, unpositionedMatch]);
+
+  const toggleReplace = useCallback(() => setReplaceOpen((current) => !current), []);
+
+  const matchPosition = status.kind === "found" ? status.position : undefined;
+  const matchColumnId = status.kind === "found" ? status.cell.columnId : undefined;
+  const replace = useCallback(
+    (all: boolean) => {
+      if (!replaceable || unavailableReason || !isFindQuery(criteria.text)) return;
+      if (all) onReplace({ criteria, replacement });
+      else if (matchColumnId !== undefined && matchPosition !== undefined)
+        onReplace({ criteria, replacement, cell: { columnId: matchColumnId, position: matchPosition } });
+    },
+    [criteria, matchColumnId, matchPosition, onReplace, replaceable, replacement, unavailableReason]
   );
 
   const close = useCallback(() => {
@@ -227,7 +302,13 @@ export function useGridFind({
     close,
     step,
     changeText,
-    changeOptions
+    changeOptions,
+    replaceOpen,
+    replacement,
+    replaceFocusRequestId,
+    toggleReplace,
+    changeReplacement: setReplacement,
+    replace
   };
 }
 

@@ -406,6 +406,21 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "replaceMatches") {
+    return {
+      id: step.id,
+      kind: "replaceMatches",
+      params: {
+        columns: [{ ...step.params.columns[0] }, ...step.params.columns.slice(1).map((column) => ({ ...column }))],
+        find: step.params.find,
+        replacement: step.params.replacement,
+        matchCase: step.params.matchCase,
+        wholeCell: step.params.wholeCell,
+        spelling: step.params.spelling,
+        ...(step.params.row === undefined ? {} : { row: step.params.row })
+      }
+    };
+  }
   if (step.kind === "markDuplicates") {
     return {
       id: step.id,
@@ -491,6 +506,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "oneHotEncode" &&
     step.kind !== "multiLabelBinarize" &&
     step.kind !== "findReplace" &&
+    step.kind !== "replaceMatches" &&
     step.kind !== "stripText" &&
     step.kind !== "splitText" &&
     step.kind !== "splitTextColumns" &&

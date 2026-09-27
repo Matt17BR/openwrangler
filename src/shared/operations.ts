@@ -61,12 +61,15 @@ export interface FileEngine {
 
 /**
  * Custom Code is written for one engine's dataframe type, so it replays only between R libraries. Struct and list
- * operations need an engine with native nested types.
+ * operations need an engine with native nested types. Replace matches display text, which only portable searches
+ * share between Python and R.
  */
 export function stepReplaysOnEngine(step: TransformStep, from: FileEngine, to: FileEngine): boolean {
   switch (step.kind) {
     case "customCode":
       return from.backend === "r" && to.backend === "r";
+    case "replaceMatches":
+      return step.params.spelling === "portable" || (step.params.spelling === "r") === (to.backend === "r");
     case "extractStructFields":
       return to.backend !== "pandas";
     case "explodeList":

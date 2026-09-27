@@ -1,4 +1,5 @@
 import { formatFormulaLiteral, isFormulaLiteral } from "../../shared/formulaLiteral";
+import { MAX_FIND_QUERY_CODE_POINTS } from "../../shared/find";
 import { useId, useRef, useState } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
@@ -493,6 +494,48 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
         />
         <CheckboxField name="regex" label="Use regular expression" defaultChecked={params.regex === true} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
+      </>
+    );
+  }
+  if (kind === "replaceMatches") {
+    const replaceable = compatibleColumns(columns, operationColumnTypes(kind));
+    const row = typeof params.row === "number" ? params.row : undefined;
+    const [cellColumnId] = initialColumnReferences("columns");
+    const cellColumn = columns.find((column) => column.id === cellColumnId);
+    return (
+      <>
+        {row === undefined || cellColumn === undefined ? (
+          <ColumnReferencesSelect
+            name="columns"
+            label="Columns"
+            searchLabel="Search columns"
+            columns={replaceable}
+            defaultValue={initialColumnReferences("columns")}
+          />
+        ) : (
+          <>
+            <input type="hidden" name="columns" value={cellColumn.id} />
+            <input type="hidden" name="row" value={row} />
+            <p className="operationCompatibilityNote">{`Replaces only row ${(row + 1).toLocaleString()} of ${cellColumn.name}.`}</p>
+          </>
+        )}
+        <TextField
+          name="find"
+          label="Find"
+          defaultValue={param("find")}
+          maxCodePoints={MAX_FIND_QUERY_CODE_POINTS}
+          required
+        />
+        <TextField
+          name="replacement"
+          label="Replace with"
+          defaultValue={param("replacement")}
+          maxCodePoints={MAX_FIND_QUERY_CODE_POINTS}
+          description="Each result must still read as the column's type."
+        />
+        <CheckboxField name="matchCase" label="Match case" defaultChecked={params.matchCase === true} />
+        <CheckboxField name="wholeCell" label="Match whole cell" defaultChecked={params.wholeCell === true} />
+        <input type="hidden" name="language" value={metadata.backend === "r" ? "r" : "python"} />
       </>
     );
   }

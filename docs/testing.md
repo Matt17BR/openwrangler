@@ -326,6 +326,10 @@ supported by Python and native R. Python-specific extreme offsets remain in Pyth
 parser limits. Live and standalone comparisons use independently constructed native values rather than widening the
 shared fixture to imply unsupported behavior.
 
+The shared [`fixtures/replace-portability-contract.json`](../fixtures/replace-portability-contract.json) decides which
+Replace steps replay on both Python and R. `src/test/findReplaceStep.unit.test.ts`,
+`python/tests/test_replace_matches.py` and the native-R catalog contract each check every case.
+
 For Native R changes, run the full contract suite or the relevant group:
 
 ```bash

@@ -239,6 +239,25 @@ const validCases: ParamsCases = {
     ],
     expected: { column: city, find: "", replacement: "x", regex: true }
   },
+  replaceMatches: {
+    kind: "replaceMatches",
+    fields: [
+      ["columns", "c:city"],
+      ["columns", "c:sales"],
+      ["find", "1"],
+      ["replacement", "2"],
+      ["wholeCell", "on"],
+      ["language", "python"]
+    ],
+    expected: {
+      columns: [city, sales],
+      find: "1",
+      replacement: "2",
+      matchCase: false,
+      wholeCell: true,
+      spelling: "portable"
+    }
+  },
   stripText: {
     kind: "stripText",
     fields: [
@@ -440,6 +459,50 @@ function form(entries: FieldEntries): FormData {
 }
 
 describe("buildParams", () => {
+  it("keeps a Replace step portable only when Python and R show every column alike", () => {
+    const replace = (entries: FieldEntries) =>
+      buildParams("replaceMatches", form([["replacement", "x"], ...entries]), emptyFilterModel, schema);
+    expect(
+      replace([
+        ["columns", "c:sales"],
+        ["find", "1.5"],
+        ["language", "r"]
+      ]).spelling
+    ).toBe("portable");
+    expect(
+      replace([
+        ["columns", "c:sales"],
+        ["find", "inf"],
+        ["language", "r"]
+      ]).spelling
+    ).toBe("r");
+    expect(
+      replace([
+        ["columns", "c:city"],
+        ["columns", "c:when"],
+        ["find", "0"],
+        ["language", "python"]
+      ]).spelling
+    ).toBe("python");
+    expect(
+      replace([
+        ["columns", "c:units"],
+        ["find", "7"],
+        ["row", "41"],
+        ["language", "python"]
+      ])
+    ).toEqual({
+      columns: [units],
+      find: "7",
+      replacement: "x",
+      matchCase: false,
+      wholeCell: false,
+      spelling: "portable",
+      row: 41
+    });
+    expect(() => replace([["find", "7"]])).toThrow("Replace matches requires at least one compatible column.");
+  });
+
   it("retains a selected input date format and refuses a non-text source", () => {
     const fields = form([
       ["column", city.id],

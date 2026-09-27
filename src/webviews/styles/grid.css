@@ -281,14 +281,34 @@
 }
 
 .findBar {
-  align-items: center;
+  align-items: flex-start;
   background: var(--vscode-editorWidget-background);
   border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
   gap: 3px;
   padding: 3px 6px;
+}
+
+.findRows {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.findRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.findReplaceNote {
+  color: var(--vscode-descriptionForeground);
+  font-size: var(--ow-font-size-small);
+  padding-inline: 4px;
 }
 
 .findInput {

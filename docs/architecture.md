@@ -296,10 +296,24 @@ Find (`findCells`) searches the confirmed view's rows after filters and sorts in
 optional origin cell, wraps around the view, and returns the total match count plus the next or previous match with
 its 1-based ordinal. The query is 1 to 1,024 code points. Matching folds ASCII case only unless Match case is on;
 Match whole cell compares the complete displayed text. A standalone `T` or a space matches the datetime separator.
-Null, NaN, list and struct cells never match. Python sessions keep one match set for the exact view frame, revision
-and query; R computes matches per request. The host checks that a match names a confirmed column inside the
+Null, NaN, list and struct cells never match. Python and R sessions each keep one match set for the exact view,
+revision and query. The host checks that a match names a confirmed column inside the
 requested scope, and the webview ignores a result once its view or revision changes. The grid highlights loaded
 matches with the same rules. PySpark reports the `find` capability as false.
+Replace (`replaceMatches`) turns Find matches into an ordinary cleaning step, so the source never changes. The step
+names its columns by stable reference, the find text, a replacement of up to 1,024 code points, Match case, Match
+whole cell and, when it replaces only the current match, that cell's zero-based `row` in the step's input. Find returns
+this row as `position` only when a request sets `includePosition`, because resolving it can sort the whole view; the
+find bar asks only while its Replace row is open in an editable session. Each engine matches displayed text by Find's
+rules, spells each distinct matching value once, and parses the replaced text back into the column's type. A result
+that doesn't parse fails the preview and names the value and column. Text, integer, float, decimal, boolean, date and
+datetime columns are replaceable; categoricals accept only values the column can hold, and R factors gain a level.
+Python and R display float infinities, booleans and datetimes differently, so `spelling` records which display a step
+matched: `portable` replays on every engine, while `python` or `r` replays only in that language. The webview, the
+Python runtime and the R kernel agent read the same cases from `fixtures/replace-portability-contract.json`. Replace
+all over every column includes only columns whose display can contain the text, using the character sets that Find
+uses to skip columns. Replace applies the find bar's own previous draft before previewing another cell; any other
+draft disables Replace until it is applied or discarded.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing

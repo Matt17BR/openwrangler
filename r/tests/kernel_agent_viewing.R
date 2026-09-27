@@ -82,7 +82,7 @@ local({
   values <- send("getColumnValues", list(sessionId = session_id, column = reference[[1L]], view = view, search = NULL, limit = 10L))
   assert_identical(values$kind, "columnValues", "cached column values failed")
   found <- send("findCells", list(sessionId = session_id, view = view, query = "a", matchCase = FALSE,
-    wholeCell = FALSE, direction = "next", columns = NULL, from = NULL, includeFrom = FALSE))
+    wholeCell = FALSE, direction = "next", columns = NULL, from = NULL, includeFrom = FALSE, includePosition = FALSE))
   assert_identical(found$matchCount, 2L, "Find changed cached membership")
   assert_identical(found$match, list(row = 0L, column = list(id = "r:c:0", name = "label"), ordinal = 1L),
     "Find did not follow the cached sorted order")
@@ -400,7 +400,7 @@ assert_identical(values_response$values[[1L]]$count, 2L, "column-value counts ch
 
 find_cells <- function(query, view = empty_view(), ...) {
   payload <- list(sessionId = session_id, view = view, query = query, matchCase = FALSE, wholeCell = FALSE,
-    direction = "next", columns = NULL, from = NULL, includeFrom = FALSE)
+    direction = "next", columns = NULL, from = NULL, includeFrom = FALSE, includePosition = FALSE)
   options <- list(...)
   payload[names(options)] <- options
   dispatch("findCells", payload)
@@ -425,6 +425,13 @@ assert_identical(find_cells("1.0", wholeCell = TRUE, columns = list(score_refere
 assert_identical(find_cells(".", columns = list(score_reference))$matchCount, 2L, "Find matched a missing number")
 by_group <- list(filters = I(list()), sorts = I(list(list(column = group_reference, direction = "asc", nulls = "last"))))
 assert_identical(find_cells("b", view = by_group)$match$row, 2L, "Find ignored the view order")
+unsorted_b <- find_cells("b", includePosition = TRUE)$match
+sorted_b <- find_cells("b", view = by_group, includePosition = TRUE)$match
+assert_identical(unsorted_b$position, unsorted_b$row, "Find moved an unfiltered match's dataframe row")
+assert_identical(sorted_b$row != unsorted_b$row, TRUE, "the sorted Find position case lost its reordering")
+assert_identical(sorted_b$position, unsorted_b$row, "Find reported the view row instead of the dataframe row")
+assert_identical(find_cells("b")$match$position, NULL, "Find reported a dataframe row nobody asked for")
+assert_identical(find_cells("b", includePosition = 1L)$code, "invalid_request", "Find accepted a non-boolean includePosition")
 assert_identical(find_cells("a", direction = "up")$code, "invalid_request", "Find accepted an unknown direction")
 assert_identical(find_cells(strrep("a", 1025L))$code, "invalid_request", "Find accepted an unbounded query")
 assert_identical(find_cells("a", from = list(row = 0L, column = list(id = "r:c:9", name = "missing")))$kind, "error",

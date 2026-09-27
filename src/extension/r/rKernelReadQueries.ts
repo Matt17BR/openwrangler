@@ -315,13 +315,25 @@ export class RKernelReadQueries {
         if (find.columns && !find.columns.some((candidate) => candidate.id === column.id)) {
           throw new Error("The R kernel matched a column outside the Find scope.");
         }
+        if ((match.position !== undefined) !== find.includePosition) {
+          throw new Error("The R kernel returned an unrequested or missing Find row position.");
+        }
       }
       return {
         kind: "cellsFound",
         revision: session.revision,
         viewRequestId: request.viewRequestId,
         matchCount: result.matchCount,
-        ...(match ? { match: { row: match.row, columnId: match.column.id, ordinal: match.ordinal } } : {})
+        ...(match
+          ? {
+              match: {
+                row: match.row,
+                columnId: match.column.id,
+                ordinal: match.ordinal,
+                ...(match.position === undefined ? {} : { position: match.position })
+              }
+            }
+          : {})
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
@@ -350,6 +362,7 @@ function rFindQuery(request: FindRequest, schema: readonly ColumnSchema[]): RKer
     from: request.from
       ? { row: Math.min(request.from.row, R_FRAME_CONTRACT_LIMITS.rows), column: reference(request.from.columnId) }
       : null,
-    includeFrom: request.includeFrom ?? false
+    includeFrom: request.includeFrom ?? false,
+    includePosition: request.includePosition ?? false
   };
 }

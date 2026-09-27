@@ -57,6 +57,7 @@ from .base import (
     PageColumnProjection,
     SessionDataShape,
     SummaryColumnProjection,
+    _open_wrangler_replace_pattern,
     bound_column_name,
     bound_column_position,
     categorical_visualization,
@@ -460,6 +461,156 @@ def _polars_display_text(expression: Any, dtype: Any) -> Any:
             .otherwise(text)
         )
     return text
+
+
+def _polars_replace_matches(frame, column, pattern, replacement, whole_cell, row=None):
+    """Replace the text Find matches in one column's cells, then convert each new text back to the column's type.
+
+    Each distinct value is spelled and converted once; missing values and NaN never match.
+    """
+    import polars as pl
+
+    schema = frame.collect_schema()
+    dtype = schema[column]
+    base = dtype.base_type()
+    value = _ow_polars_col(schema, column)
+    if not (
+        base in {pl.String, pl.Categorical, pl.Enum, pl.Boolean, pl.Date, pl.Datetime, pl.Decimal}
+        or dtype.is_integer()
+        or dtype.is_float()
+    ):
+        raise ValueError(f"Replace can't write text back into {dtype} column {column!r}.")
+    selected = frame
+    if row is not None:
+        height = frame.select(pl.len()).collect().item() if isinstance(frame, pl.LazyFrame) else frame.height
+        if not 0 <= row < height:
+            raise ValueError(f"Replace targets row {row + 1:,}, but the dataframe has {height:,} rows.")
+        selected = frame.slice(row, 1)
+    distinct = selected.select(value.unique().alias("value"))
+    if isinstance(distinct, pl.LazyFrame):
+        distinct = distinct.collect(engine="streaming")
+    if dtype.is_float():
+        # Distinct values merge signed zeros, which the grid spells as 0.0 and -0.0.
+        zeros = pl.DataFrame({"value": [0.0, -0.0]}, schema={"value": dtype})
+        distinct = pl.concat([distinct.filter(pl.col("value") != 0), zeros])
+    original = pl.col("value")
+    if base in {pl.Categorical, pl.Enum, pl.Date, pl.Decimal} or dtype.is_integer():
+        label = original.cast(pl.String)
+    elif base == pl.Boolean:
+        label = pl.when(original).then(pl.lit("True")).when(~original).then(pl.lit("False"))
+    elif base == pl.String:
+        label = original
+    else:
+        label = _polars_display_text(original, dtype)
+    if dtype.is_float():
+        label = pl.when(original.is_nan()).then(None).otherwise(label)
+    text = pl.col("label")
+    if whole_cell:
+        new_text = pl.when(text.str.contains(f"^(?:{pattern})$")).then(pl.lit(replacement))
+    else:
+        # A group keeps Polars off its literal fast path, which would skip the $$ escape.
+        grouped = f"(?:{pattern})"
+        new_text = pl.when(text.str.contains(grouped)).then(
+            text.str.replace_all(grouped, replacement.replace("$", "$$"))
+        )
+    changes = (
+        distinct.with_columns(label.alias("label"))
+        .with_columns(new_text.alias("text"))
+        .filter(pl.col("text").is_not_null() & (pl.col("text") != pl.col("label")))
+    )
+    if not changes.height:
+        return frame
+
+    text = pl.col("text")
+    problems = []
+    if base == pl.Boolean:
+        folded = text.str.to_lowercase()
+        problems.append((~folded.is_in(["true", "false"]), "True or False"))
+        typed = folded == "true"
+    elif dtype.is_integer():
+        signed = str(dtype).startswith("Int")
+        bits = int(str(dtype).lstrip("UInt"))
+        low, high = (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1) if signed else (0, 2**bits - 1)
+        typed = text.cast(dtype, strict=False)
+        problems.append((~text.str.contains(r"^[+-]?[0-9]+$"), "a whole number"))
+        problems.append((typed.is_null(), f"a whole number from {low} to {high}"))
+    elif dtype.is_float():
+        typed = text.cast(dtype, strict=False)
+        number = r"^(?:[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:[+-]?inf(?:inity)?|nan))$"
+        problems.append((~text.str.contains(number), "a number"))
+        overflow = typed.is_infinite() & ~text.str.to_lowercase().str.contains("inf", literal=True)
+        problems.append((overflow, "a number this column can store"))
+    elif base == pl.Decimal:
+        typed = text.cast(dtype, strict=False)
+        problems.append((~text.str.contains(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$"), "a decimal number"))
+        fraction = text.str.extract(r"\.([0-9]*)$", 1).fill_null("")
+        places = f"a decimal number with at most {dtype.scale} decimal places"
+        problems.append((fraction.str.slice(dtype.scale).str.contains("[1-9]"), places))
+        problems.append((typed.is_null(), f"a decimal number with at most {dtype.precision} digits"))
+    elif base == pl.Date:
+        typed = text.str.strptime(pl.Date, "%Y-%m-%d", strict=False)
+        problems.append(
+            (~text.str.contains(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | typed.is_null(), "a date like 2024-01-31")
+        )
+    elif base == pl.Datetime:
+        parts = text.str.extract_groups(
+            r"^(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})(?:[T ](?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})"
+            r"(?::(?P<second>[0-9]{2})(?:\.(?P<fraction>[0-9]{1,9}))?)?)?(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})?$"
+        )
+        digits = {"ms": 3, "us": 6, "ns": 9}[dtype.time_unit]
+        fraction = parts.struct.field("fraction").fill_null("").str.pad_end(9, "0")
+        offset = parts.struct.field("offset")
+        canonical = pl.concat_str(
+            parts.struct.field("date"),
+            pl.lit("T"),
+            parts.struct.field("hour").fill_null("00"),
+            pl.lit(":"),
+            parts.struct.field("minute").fill_null("00"),
+            pl.lit(":"),
+            parts.struct.field("second").fill_null("00"),
+            pl.lit("."),
+            fraction,
+        )
+        problems.append((parts.struct.field("date").is_null(), "a date and time like 2024-01-31T09:30:00"))
+        problems.append(
+            (fraction.str.slice(digits).str.contains("[1-9]"), f"a time with at most {digits} decimal places")
+        )
+        if dtype.time_zone is None:
+            problems.append((offset.is_not_null(), "a date and time without a UTC offset"))
+            typed = canonical.str.strptime(pl.Datetime(dtype.time_unit), "%Y-%m-%dT%H:%M:%S%.9f", strict=False)
+        else:
+            problems.append((offset.is_null(), "a date and time with a UTC offset such as +00:00"))
+            offset = pl.when(offset == "Z").then(pl.lit("+00:00")).otherwise(offset)
+            typed = (
+                pl.concat_str(canonical, offset)
+                .str.strptime(pl.Datetime(dtype.time_unit, "UTC"), "%Y-%m-%dT%H:%M:%S%.9f%:z", strict=False)
+                .dt.convert_time_zone(dtype.time_zone)
+            )
+        problems.append((typed.is_null(), "a valid date and time"))
+    elif base == pl.Enum:
+        typed = text.cast(dtype, strict=False)
+        problems.append((typed.is_null(), "one of the column's categories"))
+    else:
+        typed = text.cast(dtype)
+    for problem, expected in problems:
+        refused = changes.filter(problem)
+        if refused.height:
+            raise ValueError(f"Replacing in {column!r} gives {refused.item(0, 'text')!r}, which isn't {expected}.")
+    changes = changes.select("value", typed.alias("new"))
+
+    expression = value
+    if dtype.is_float():
+        negative = (pl.lit(1.0, dtype=dtype) / value) < 0
+        for zero in changes.filter(pl.col("value") == 0).iter_rows():
+            sign = negative if str(zero[0]).startswith("-") else ~negative
+            expression = pl.when((value == 0) & sign).then(pl.lit(zero[1], dtype=dtype)).otherwise(expression)
+        changes = changes.filter(pl.col("value") != 0)
+    if changes.height:
+        replaced = value.replace(changes.get_column("value"), changes.get_column("new"))
+        expression = replaced if expression is value else pl.when(value == 0).then(expression).otherwise(replaced)
+    if row is not None:
+        expression = pl.when(pl.int_range(pl.len()) == row).then(expression).otherwise(value)
+    return frame.with_columns(expression.alias(column))
 
 
 def _polars_with_display_label(frame: Any, column: str, dtype: Any, name: str) -> Any:
@@ -1674,6 +1825,20 @@ class PolarsEngine(DataFrameEngine):
             values.append(item)
         return values, counts.height > limit
 
+    def view_row_position(self, frame: Any, model: Mapping[str, Any], view: Any, row: int) -> int:
+        import polars as pl
+
+        if not model.get("filters") and not model.get("sort"):
+            return row
+        df = frame if isinstance(frame, pl.LazyFrame) else self.normalize(frame)
+        name = INTERNAL_ROW_ID_PREFIX + "find_position"
+        while name in df.collect_schema().names():
+            name += "_"
+        positioned = self.apply_filter_model(df.with_row_index(name), model).slice(row, 1).select(name)
+        if isinstance(positioned, pl.LazyFrame):
+            positioned = positioned.collect(engine="streaming")
+        return int(positioned.item())
+
     def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
         import polars as pl
 
@@ -2173,6 +2338,19 @@ class PolarsEngine(DataFrameEngine):
             if bool(oversized):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             return df.with_columns(source.str.extract(params["pattern"], params["group"]).alias(params["newColumn"]))
+        if kind == "replaceMatches":
+            schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+            for reference in params["columns"]:
+                column = bound_column_name(reference, kind)
+                temporal = isinstance(schema[column], pl.Datetime)
+                pattern = _open_wrangler_replace_pattern(params["find"], params["matchCase"], temporal)
+                try:
+                    df = _polars_replace_matches(
+                        df, column, pattern, params["replacement"], params["wholeCell"], params.get("row")
+                    )
+                except ValueError as error:
+                    raise EngineError(str(error)) from error
+            return df
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)
@@ -2397,6 +2575,18 @@ class PolarsEngine(DataFrameEngine):
             lines.extend([getsource(_polars_round_helpers), ""])
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend([getsource(_polars_min_max_helpers), ""])
+        if any(step["kind"] == "replaceMatches" for step in plan):
+            lines.extend(
+                [
+                    "from typing import Any",
+                    f"_POLARS_TIME_UNIT_DIGITS = {_POLARS_TIME_UNIT_DIGITS!r}",
+                    getsource(_polars_query_text),
+                    getsource(_polars_display_text),
+                    getsource(_open_wrangler_replace_pattern),
+                    getsource(_polars_replace_matches),
+                    "",
+                ]
+            )
         if any(step["kind"] == "denseRank" for step in plan):
             lines.extend(
                 [
@@ -3316,6 +3506,19 @@ class PolarsEngine(DataFrameEngine):
                     f".str.extract({params['pattern']!r}, {params['group']}).alias({output!r}))"
                 ),
             ]
+        if kind == "replaceMatches":
+            lines = []
+            for reference in params["columns"]:
+                column = bound_column_name(reference, kind)
+                lines.extend(
+                    [
+                        f"{prefix}df = _polars_replace_matches(df, {column!r}, _open_wrangler_replace_pattern(",
+                        f"{prefix}    {params['find']!r}, {params['matchCase']!r}, "
+                        f"isinstance(df.collect_schema()[{column!r}], pl.Datetime)),",
+                        f"{prefix}    {params['replacement']!r}, {params['wholeCell']!r}, {params.get('row')!r})",
+                    ]
+                )
+            return lines
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn", column)

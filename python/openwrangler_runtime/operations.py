@@ -9,7 +9,7 @@ from typing import Any, TypeGuard
 from .by_example import SynthesisError, normalize_by_example
 from .custom_code_scope import CustomCodeScopeError, validate_custom_code_scope
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
-from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
+from .limits import MAX_FIND_QUERY_CHARACTERS, MAX_VIEW_VALUE_TEXT_CHARACTERS
 from .operation_catalog_generated import OPERATION_DEFINITIONS
 from .pivot_longer import (
     MAX_PIVOT_LONGER_COLUMNS,
@@ -104,6 +104,7 @@ _COLUMN_REFERENCE_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "groupBy": ("keys",),
     "byExample": ("sourceColumns",),
     "pivotLonger": ("columns",),
+    "replaceMatches": ("columns",),
 }
 
 
@@ -272,6 +273,8 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     elif kind == "findReplace":
         if not isinstance(params["find"], str) or not isinstance(params["replacement"], str):
             raise OperationError("findReplace.find and replacement must be strings.")
+    elif kind == "replaceMatches":
+        _validate_replace_matches(params)
     elif (
         kind == "stripText"
         and params.get("characters") is not None
@@ -731,6 +734,32 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def _validate_replace_matches(params: Mapping[str, Any]) -> None:
+    for key, minimum in (("find", 1), ("replacement", 0)):
+        text = params[key]
+        if not isinstance(text, str) or not minimum <= len(text) <= MAX_FIND_QUERY_CHARACTERS:
+            raise OperationError(
+                f"replaceMatches.{key} must contain {minimum} to {MAX_FIND_QUERY_CHARACTERS:,} Unicode code points."
+            )
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise OperationError(f"replaceMatches.{key} must be valid Unicode text.") from error
+    for key in ("matchCase", "wholeCell"):
+        if not isinstance(params[key], bool):
+            raise OperationError(f"replaceMatches.{key} must be a boolean.")
+    if params["spelling"] == "r":
+        raise OperationError("This Replace step matches R display text. Replay it with an R library.")
+    if params["spelling"] not in {"portable", "python"}:
+        raise OperationError("replaceMatches.spelling must be portable, python, or r.")
+    if "row" in params:
+        row = params["row"]
+        if isinstance(row, bool) or not isinstance(row, int) or row < 0:
+            raise OperationError("replaceMatches.row must be a non-negative integer.")
+        if len(params["columns"]) != 1:
+            raise OperationError("replaceMatches.row requires exactly one column.")
+
+
 def _reject_duplicate_reference_identities(
     references: Any,
     label: str,
@@ -754,7 +783,7 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         )
     elif kind in {"dropMissingRows", "dropDuplicates"}:
         references.extend(("columns.name", item.get("name")) for item in params.get("columns", []))
-    elif kind in {"selectColumns", "dropColumns", "oneHotEncode", "markDuplicates", "pivotLonger"}:
+    elif kind in {"selectColumns", "dropColumns", "oneHotEncode", "markDuplicates", "pivotLonger", "replaceMatches"}:
         references.extend(("columns.name", item.get("name")) for item in params["columns"])
     elif kind in {
         "renameColumn",

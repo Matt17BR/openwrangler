@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
-from .engines.base import VIEW_COMPARABLE_TYPES, is_internal_row_id_label
+from .engines.base import (
+    REPLACE_MATCHES_TYPES,
+    VIEW_COMPARABLE_TYPES,
+    is_internal_row_id_label,
+    replace_matches_is_portable,
+)
 from .pivot_longer import PIVOT_LONGER_SCALAR_TYPES, portable_pivot_longer_name_key
 from .pivot_wider import PIVOT_WIDER_VALUE_TYPES, checked_pivot_wider_column_count
 
@@ -174,6 +179,21 @@ class _BindingContext:
             raise ColumnBindingError(
                 f"Column type mismatch for {label}: identity {column.identifier} is "
                 f"{column.semantic_type!r}, not {semantic_type!r}."
+            )
+
+    def require_replace_matches_column(
+        self, reference: Mapping[str, Any], params: Mapping[str, Any], label: str
+    ) -> None:
+        column = self._column_for(reference, label)
+        if column.semantic_type not in REPLACE_MATCHES_TYPES:
+            raise ColumnBindingError(
+                f"Replace can't write text back into {column.semantic_type} column {column.name!r}."
+            )
+        if params["spelling"] == "portable" and not replace_matches_is_portable(
+            column.semantic_type, params["find"], params["matchCase"], params["wholeCell"]
+        ):
+            raise ColumnBindingError(
+                f"Python and R show {column.name!r} differently where this Replace matches, so it can't be portable."
             )
 
     def require_group_key(self, reference: Mapping[str, Any], label: str) -> None:
@@ -604,6 +624,7 @@ def bind_step(
         "byExample",
         "pivotLonger",
         "pivotWider",
+        "replaceMatches",
     }:
         return bound
 
@@ -661,6 +682,12 @@ def bind_step(
                 context.reject_output_collision(output_name, label, replacing=replacing)
         if kind == "dropColumns" and len(params["columns"]) == len(context.columns):
             raise ColumnBindingError("dropColumns must leave at least one visible column.")
+        return bound
+
+    if kind == "replaceMatches":
+        params["columns"] = context.bind_many(params.get("columns"), "replaceMatches.columns")
+        for index, reference in enumerate(params["columns"]):
+            context.require_replace_matches_column(reference, params, f"replaceMatches.columns[{index}]")
         return bound
 
     if kind == "pivotLonger":

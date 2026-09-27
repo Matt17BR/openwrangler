@@ -67,15 +67,17 @@ button:not([class]),
   min-height: 24px;
 }
 
-button:not(:disabled) {
+button:not(:disabled, [aria-disabled="true"]) {
   cursor: pointer;
 }
 
-button:not(:disabled):hover {
+button:not(:disabled, [aria-disabled="true"]):hover {
   background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
 }
 
-button:disabled {
+/* aria-disabled keeps a button focusable while it waits, so focus doesn't fall back to the page. */
+button:disabled,
+button[aria-disabled="true"] {
   cursor: default;
   opacity: 0.45;
 }

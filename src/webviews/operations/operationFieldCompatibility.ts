@@ -1,3 +1,4 @@
+import { REPLACEABLE_COLUMN_TYPES } from "../../shared/find";
 import type { Aggregation, ColumnSchema, ColumnType, OperationKind } from "../../shared/protocol";
 
 export const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
@@ -47,6 +48,7 @@ export type TypeRestrictedOperationKind = Extract<
   | "oneHotEncode"
   | "multiLabelBinarize"
   | "findReplace"
+  | "replaceMatches"
   | "stripText"
   | "splitText"
   | "splitTextColumns"
@@ -115,6 +117,8 @@ export function operationColumnTypes(kind: TypeRestrictedOperationKind): Readonl
       return textColumnTypes;
     case "formatDatetime":
       return datetimeColumnTypes;
+    case "replaceMatches":
+      return REPLACEABLE_COLUMN_TYPES;
     case "pivotLonger":
     case "pivotWider":
       return pivotLongerColumnTypes;

@@ -29,7 +29,7 @@ The Pandas and Polars rows below are required for stable releases.
 | Mark duplicate groups                                       |    Yes |    Yes | Done   | Retained-row flags with native equality and generated parity; test:python/tests/test_mark_duplicates.py; record:docs/testing.md                                                                |
 | Fill missing values                                         |    Yes |    Yes | Done   | Typed global, fallback, directional, grouped, and interpolation methods; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                     |
 | One-hot and multi-label binarization                        |    Yes |    Yes | Done   | Null, blank, collision, and generated-code parity; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                                           |
-| Find/replace/strip/split/case transforms                    |    Yes |    Yes | Done   | Text transforms, multi-output split, and portable regex extraction; test:python/tests/test_operation_edges.py; record:docs/testing.md                                                          |
+| Find/replace/strip/split/case transforms                    |    Yes |    Yes | Done   | Text transforms, find-bar Replace, split, and portable regex; test:python/tests/test_operation_edges.py; test:python/tests/test_replace_matches.py                                             |
 | Scale/rank/round/floor/ceiling/datetime format              |    Yes |    Yes | Done   | Live/generated numeric and datetime contracts; test:python/tests/test_dense_rank.py; test:python/tests/test_round_number.py; record:docs/testing.md                                            |
 | Group and aggregate                                         |    Yes |    Yes | Done   | Ordered groups and normalized numeric aggregation; test:python/tests/test_group_numeric_parity.py; record:docs/testing.md                                                                      |
 | Custom engine-native code                                   |    Yes |    Yes | Done   | Trusted isolated input, output validation, and executable native code; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py                                        |
@@ -512,6 +512,11 @@ While new filters or sorts are loading, value-search text stays editable; Search
 Find (`Ctrl/Cmd+F`) searches the current view in Pandas, Polars, DuckDB and every R library, with the value-search
 matching rules, Match case, Match whole cell, and an all-columns or selected-column scope. It reports the match
 position and count, and moves to matches outside the loaded rows. PySpark views explain that Find is unavailable.
+Replace (`Ctrl+H`, or `Cmd+Option+F` on macOS) adds a Replace row to the find bar. Replace previews a cleaning step
+that edits only the current match's cell, then moves to the next match; Replace all previews one step for every match
+in the scope. Both keep each column's type, fail the preview with the value and column when a result doesn't fit it,
+generate native code for Pandas, Polars, DuckDB and every R library, and apply, discard or undo like any other step.
+In Viewing mode the Replace row offers Switch to Editing, and Viewing-only sources explain why they can't replace.
 Pandas and Polars keep values visible and searchable when they cannot be selected within the supported precision or
 range. Those actions are unavailable in the picker, summary and header profile; supported values use exact filter
 operands. Existing saved selections remain removable through the filter controls.

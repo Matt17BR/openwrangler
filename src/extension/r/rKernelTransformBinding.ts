@@ -32,6 +32,7 @@ import type {
   PivotLongerTransformStep,
   PivotWiderTransformStep,
   RenameColumnTransformStep,
+  ReplaceMatchesTransformStep,
   RoundNumberTransformStep,
   SelectColumnsTransformStep,
   SortRowsTransformStep,
@@ -76,6 +77,7 @@ export type RTransformStepWithoutByExample =
   | FormulaTransformStep
   | TextLengthTransformStep
   | FindReplaceTransformStep
+  | ReplaceMatchesTransformStep
   | StripTextTransformStep
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
@@ -857,6 +859,32 @@ export function rTransformStep(
           ? { decimals: step.params.decimals }
           : {}),
         ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "replaceMatches") {
+    if (step.params.spelling === "python") {
+      throw new TypeError("This Replace step matches Python display text. Replay it with a Python library.");
+    }
+    const columns = step.params.columns.map((reference) => {
+      const column = requireTransformColumn(reference, inputSchema, "Replace");
+      return Object.freeze({ id: column.id, name: column.name });
+    });
+    if (!columns[0]) throw new TypeError("Replace requires a non-empty R column selection.");
+    return Object.freeze({
+      id: step.id,
+      kind: "replaceMatches" as const,
+      params: Object.freeze({
+        columns: Object.freeze([columns[0], ...columns.slice(1)]) as readonly [
+          RKernelColumnReference,
+          ...RKernelColumnReference[]
+        ],
+        find: step.params.find,
+        replacement: step.params.replacement,
+        matchCase: step.params.matchCase,
+        wholeCell: step.params.wholeCell,
+        spelling: step.params.spelling,
+        ...(step.params.row === undefined ? {} : { row: step.params.row })
       })
     });
   }

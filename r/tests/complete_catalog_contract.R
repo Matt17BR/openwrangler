@@ -207,7 +207,7 @@ text_step <- function(frame, id, kind, new_column = NULL, ...) {
 catalog_kinds <- c(
   "sortRows", "filterRows", "dropMissingRows", "fillMissingValues", "dropDuplicates", "markDuplicates",
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "extractStructFields", "explodeList", "castColumn", "formula", "conditionalColumn",
-  "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "stripText", "splitText", "splitTextColumns",
+  "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "replaceMatches", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
   "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
 )
@@ -426,6 +426,17 @@ catalog_cases <- list(
     verify = function(output, input) assert_identical(
       output[["replaced text"]][[1L]], " Alpha:1 ", "Find and Replace changed literal semantics"
     )
+  ),
+  replaceMatches = list(
+    step = function(frame, id) step_with(id, "replaceMatches", list(
+      columns = I(list(column_reference(frame, "text"), column_reference(frame, "word"))),
+      find = "a", replacement = "@", matchCase = FALSE, wholeCell = FALSE, spelling = "portable"
+    )),
+    verify = function(output, input) {
+      assert_identical(output$text, c(" @lph@-1 ", "BET@-2", "g@mm@-3", NA, " Delt@-4 ", "bet@-2"), "Replace changed text cells wrongly")
+      assert_identical(output$word, c("@LPH@", "bET@", "g@MM@", NA, "dELT@", "ePSILON"), "Replace changed a second column wrongly")
+      assert_identical(output$category, input$category, "Replace touched a column it wasn't given")
+    }
   ),
   stripText = list(
     step = function(frame, id) step_with(id, "stripText", list(
@@ -944,6 +955,155 @@ local({
   for (library in c("base", "dplyr", "data.table", "collapse")) {
     for (index in seq_along(cases)) run_catalog_case(cases[[index]], "conditionalColumn", 6200L + index, library)
   }
+})
+
+# Replace edits each supported R type through its displayed text and parses the result back.
+local({
+  replace_step <- function(frame, id, names, find, replacement, match_case = FALSE, whole_cell = FALSE,
+                           spelling = "portable", row = NULL) {
+    params <- list(
+      columns = I(lapply(names, function(name) column_reference(frame, name))),
+      find = find, replacement = replacement, matchCase = match_case, wholeCell = whole_cell, spelling = spelling
+    )
+    if (!is.null(row)) params$row <- row
+    step_with(id, "replaceMatches", params)
+  }
+  precise_source <- function() data.frame(
+    precise = clock::naive_time_parse(sprintf("2026-03-29 02:30:00.%09d", 1:3), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond"),
+    instant = clock::as_sys_time(clock::naive_time_parse(sprintf("2026-03-29 02:30:00.%09d", 1:3), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond"))
+  )
+  cases <- list(
+    integer = list(
+      step = function(frame, id) replace_step(frame, id, "whole", "2", "20", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(unname(output$whole), c(1L, 20L, 20L, NA_integer_, 4L, 5L), "Replace changed integer cells wrongly")
+    ),
+    columns = list(
+      step = function(frame, id) replace_step(frame, id, c("whole", "fallback"), "5", "50", whole_cell = TRUE),
+      verify = function(output, input) {
+        assert_identical(unname(output$whole), c(1L, 2L, 2L, NA_integer_, 4L, 50L), "Replace missed the first column")
+        assert_identical(unname(output$fallback), c(9L, 8L, 7L, 6L, 50L, 4L), "Replace missed the second column")
+      }
+    ),
+    signedZero = list(
+      step = function(frame, id) replace_step(frame, id, "number", "2.75", "-0", whole_cell = TRUE),
+      verify = function(output, input) {
+        assert_identical(output$number, c(1.25, 0, 0, NA, -1.2, 5.5), "Replace changed float cells wrongly")
+        assert_identical(1 / output$number[2:3], c(-Inf, -Inf), "Replace lost a negative zero")
+      }
+    ),
+    floatText = list(
+      step = function(frame, id) replace_step(frame, id, "number", ".", ""),
+      verify = function(output, input) assert_identical(output$number, c(125, 275, 275, NA, -12, 55), "Replace changed float text wrongly")
+    ),
+    boolean = list(
+      step = function(frame, id) replace_step(frame, id, "flag", "true", "false", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(output$flag, c(FALSE, FALSE, FALSE, NA, FALSE, FALSE), "Replace changed booleans wrongly")
+    ),
+    date = list(
+      step = function(frame, id) replace_step(frame, id, "day", "2026-01-0", "2027-02-1"),
+      verify = function(output, input) assert_identical(output$day, as.Date("2027-02-11") + 0:5, "Replace changed dates wrongly")
+    ),
+    datetime = list(
+      step = function(frame, id) replace_step(frame, id, "moment", "t12", "T00", spelling = "r"),
+      verify = function(output, input) {
+        expected <- input$moment
+        expected[[1L]] <- as.POSIXct("2026-01-01 00:00:00", tz = "UTC")
+        assert_identical(output$moment, expected, "Replace changed datetimes or their time zone wrongly")
+      }
+    ),
+    ordered = list(
+      step = function(frame, id) replace_step(frame, id, "category", "alpha", "beta", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(output$category, factor(
+        c("zeta", "beta", "beta", NA, "zeta", "beta"), levels = levels(input$category), ordered = TRUE
+      ), "Replace changed an ordered factor wrongly")
+    ),
+    factor = list(
+      source = function() data.frame(value = factor(c("x", "y", NA, "x"))),
+      step = function(frame, id) replace_step(frame, id, "value", "x", "z", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(output$value, factor(c("z", "y", NA, "z"), levels = c("x", "y", "z")),
+        "Replace didn't add a level to an unordered factor")
+    ),
+    integer64 = list(
+      step = function(frame, id) replace_step(frame, id, "wide", "9007199254740993", "-9223372036854775807", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(unname(output$wide),
+        bit64::as.integer64(c("-9223372036854775807", "2", "2", NA, "4", "5")), "Replace changed integer64 cells wrongly")
+    ),
+    cell = list(
+      step = function(frame, id) replace_step(frame, id, "text", "a", "A", row = 2L),
+      verify = function(output, input) {
+        expected <- input$text
+        expected[[3L]] <- "gAmmA-3"
+        assert_identical(output$text, expected, "Replace edited cells other than its row")
+      }
+    ),
+    unicode = list(
+      source = function() data.frame(value = c("Stra\u00dfe", "\u00c9COLE", "\u00e9cole", NA, "\u00e9t\u00e9")),
+      step = function(frame, id) replace_step(frame, id, "value", "\u00e9", "e"),
+      verify = function(output, input) assert_identical(output$value, c("Stra\u00dfe", "\u00c9COLE", "ecole", NA, "ete"),
+        "Replace folded a non-ASCII letter")
+    ),
+    precise = list(
+      source = precise_source,
+      step = function(frame, id) replace_step(frame, id, c("precise", "instant"), ".000000002", ".000000009", spelling = "r"),
+      verify = function(output, input) {
+        expected <- clock::naive_time_parse(sprintf("2026-03-29 02:30:00.%09d", c(1L, 9L, 3L)), format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond")
+        assert_identical(output$precise, expected, "Replace changed a nanosecond naive time wrongly")
+        assert_identical(output$instant, clock::as_sys_time(expected), "Replace changed a nanosecond instant wrongly")
+      }
+    )
+  )
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) {
+      tryCatch(run_catalog_case(cases[[index]], "replaceMatches", 6250L + index, library),
+        error = function(error) stop(sprintf("the %s %s Replace case failed: %s", library, names(cases)[[index]], conditionMessage(error)), call. = FALSE))
+    }
+  }
+
+  refusals <- list(
+    list(step = function(frame) replace_step(frame, "refuse", "whole", "2", "two", whole_cell = TRUE), message = "gives 'two', which isn't"),
+    list(step = function(frame) replace_step(frame, "refuse", "category", "alpha", "omega", whole_cell = TRUE), message = "one of the column's categories"),
+    list(step = function(frame) replace_step(frame, "refuse", "elapsed", "1", "2"), message = "Replace can't write text back into duration column 'elapsed'."),
+    list(step = function(frame) replace_step(frame, "refuse", "moment", "12", "13"), message = "Python and R show 'moment' differently"),
+    list(step = function(frame) replace_step(frame, "refuse", "text", "a", "b", spelling = "python"), message = "Replay it with a Python library"),
+    list(step = function(frame) replace_step(frame, "refuse", "text", "a", "b", row = 6L), message = "Replace targets row 7, but the dataframe has 6 rows.")
+  )
+  assign("catalog_frame", catalog_source(), envir = source_environment)
+  for (index in seq_along(refusals)) {
+    current <- session_id(6280L + index)
+    opened <- dispatch("openSession", list(sessionId = current, variableName = "catalog_frame", page = page_window()))
+    assert_identical(opened$kind, "page", "the Replace refusal source did not open")
+    refused <- dispatch("previewStep", list(
+      sessionId = current, revision = 0L, step = refusals[[index]]$step(catalog_source()), page = page_window()
+    ))
+    assert_identical(refused$kind, "error", sprintf("Replace accepted a step that must fail with %s", refusals[[index]]$message))
+    assert_true(grepl(refusals[[index]]$message, refused$message, fixed = TRUE),
+      sprintf("Replace failed with %s instead of %s", refused$message, refusals[[index]]$message))
+    assert_identical(dispatch("closeSession", list(sessionId = current))$kind, "closed", "the Replace refusal session did not close")
+  }
+
+  # The webview and the Python runtime read the same portability cases; R has no decimal columns.
+  portability <- jsonlite::fromJSON("fixtures/replace-portability-contract.json", simplifyVector = FALSE)$cases
+  portability_columns <- c(string = "text", integer = "whole", date = "day", float = "number", boolean = "flag", datetime = "moment")
+  for (index in seq_along(portability)) {
+    case <- portability[[index]]
+    if (identical(case$type, "decimal")) next
+    current <- session_id(6400L + index)
+    opened <- dispatch("openSession", list(sessionId = current, variableName = "catalog_frame", page = page_window()))
+    assert_identical(opened$kind, "page", "the Replace portability source did not open")
+    step <- replace_step(catalog_source(), "portability", portability_columns[[case$type]], case$find, case$find,
+      match_case = case$matchCase, whole_cell = case$wholeCell)
+    previewed <- dispatch("previewStep", list(sessionId = current, revision = 0L, step = step, page = page_window()))
+    label <- sprintf("the %s Replace of '%s'", case$type, case$find)
+    if (isTRUE(case$portable)) {
+      assert_identical(previewed$kind, "stepPreview", sprintf("%s wasn't portable in R: %s", label, paste(previewed$message, collapse = "")))
+    } else {
+      assert_identical(previewed$kind, "error", sprintf("%s was portable in R", label))
+      assert_true(grepl("Python and R show", previewed$message, fixed = TRUE),
+        sprintf("%s failed with %s instead of the portability refusal", label, previewed$message))
+    }
+    assert_identical(dispatch("closeSession", list(sessionId = current))$kind, "closed", "the Replace portability session did not close")
+  }
+  remove(list = "catalog_frame", envir = source_environment)
 })
 
 local({

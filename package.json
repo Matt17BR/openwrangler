@@ -159,6 +159,7 @@
     "onCommand:openWrangler.redoStep",
     "onCommand:openWrangler.goToRow",
     "onCommand:openWrangler.find",
+    "onCommand:openWrangler.replace",
     "onCommand:openWrangler.openViewSort",
     "onCommand:openWrangler.moveViewSortUp",
     "onCommand:openWrangler.moveViewSortDown",
@@ -395,6 +396,11 @@
         "icon": "$(search)"
       },
       {
+        "command": "openWrangler.replace",
+        "title": "Open Wrangler: Replace",
+        "icon": "$(replace)"
+      },
+      {
         "command": "openWrangler.openViewSort",
         "title": "Open Wrangler: Edit View Sorts",
         "icon": "$(list-ordered)"
@@ -493,6 +499,12 @@
         "command": "openWrangler.find",
         "key": "ctrl+f",
         "mac": "cmd+f",
+        "when": "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "command": "openWrangler.replace",
+        "key": "ctrl+h",
+        "mac": "cmd+alt+f",
         "when": "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       }
     ],

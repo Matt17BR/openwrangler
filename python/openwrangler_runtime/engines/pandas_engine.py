@@ -50,6 +50,7 @@ from . import (
     _pandas_min_max_helpers,
     _pandas_object_type_helpers,
     _pandas_pivot_helpers,
+    _pandas_replace_matches_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
 from ._pandas_directional_fill_helpers import _open_wrangler_fill_directional_gaps
@@ -61,6 +62,7 @@ from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min
 from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
 from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_names_valid as _pandas_pivot_wider_names_valid
 from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_result as _pandas_pivot_wider_result
+from ._pandas_replace_matches_helpers import _open_wrangler_replace_matches as _pandas_replace_matches
 from .base import (
     _NUMPY_DURATION_SECONDS,
     DEFAULT_STRIP_CHARACTERS,
@@ -77,6 +79,7 @@ from .base import (
     RowAxis,
     SessionDataShape,
     SummaryColumnProjection,
+    _open_wrangler_replace_pattern,
     bound_column_name,
     bound_column_position,
     categorical_visualization,
@@ -693,6 +696,10 @@ class _PandasRowView:
         if self._window_source is None:
             self._window_source = _pandas_contiguous_text(self.source)
         return _pandas_take_rows(self._window_source.iloc[:, columns], self._leading_positions(stop)[start:stop])
+
+    def position(self, row: int) -> int:
+        """The source position of one row; a leading row of a lazily sorted view needs only a partial sort."""
+        return int(self._leading_positions(row + 1)[row])
 
     def _leading_positions(self, stop: int) -> Any:
         if self._positions is not None or stop > _PANDAS_LEADING_ROW_LIMIT:
@@ -1960,6 +1967,9 @@ class PandasEngine(DataFrameEngine):
             )
         return values, len(counts) > limit
 
+    def view_row_position(self, frame: Any, model: Mapping[str, Any], view: Any, row: int) -> int:
+        return view.position(row) if isinstance(view, _PandasRowView) else row
+
     def find_masks(self, frame: Any, positions: Sequence[int], query: FindQuery) -> list[Any | None]:
         import numpy as np
 
@@ -2261,6 +2271,23 @@ class PandasEngine(DataFrameEngine):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             extracted = source.str.extract(f"({params['pattern']})", expand=True)
             return pd.concat([df, extracted.iloc[:, params["group"]].rename(params["newColumn"])], axis=1)
+        if kind == "replaceMatches":
+            for reference in params["columns"]:
+                position = self._bound_frame_position(df, reference, kind)
+                series = df.iloc[:, position]
+                semantic_type = _pandas_semantic_type(series)
+                pattern = _open_wrangler_replace_pattern(
+                    params["find"], params["matchCase"], semantic_type == "datetime"
+                )
+                try:
+                    result = _pandas_replace_matches(
+                        series, semantic_type, pattern, params["replacement"], params["wholeCell"], params.get("row")
+                    )
+                except ValueError as error:
+                    raise EngineError(str(error)) from error
+                if result is not series:
+                    df.isetitem(position, result)
+            return df
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2506,11 +2533,11 @@ class PandasEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
         needs_missing_helpers = any(
-            step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn"} for step in plan
+            step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn", "replaceMatches"} for step in plan
         )
         needs_view_value_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
         needs_semantic_type_helpers = any(
-            step["kind"] == "conditionalColumn"
+            step["kind"] in {"conditionalColumn", "replaceMatches"}
             or (step["kind"] == "filterRows" and bool(step["params"]["filterModel"].get("filters")))
             for step in plan
         )
@@ -2681,7 +2708,16 @@ class PandasEngine(DataFrameEngine):
             for step in plan
         )
         needs_dictionary_values = needs_scalar_values or any(
-            step["kind"] in {"roundNumber", "floorNumber", "ceilNumber", "minMaxScale", "formula", "formatDatetime"}
+            step["kind"]
+            in {
+                "roundNumber",
+                "floorNumber",
+                "ceilNumber",
+                "minMaxScale",
+                "formula",
+                "formatDatetime",
+                "replaceMatches",
+            }
             for step in plan
         )
         if needs_row_queries or needs_dictionary_values or needs_rank_helpers or needs_duplicate_keys:
@@ -2751,6 +2787,8 @@ class PandasEngine(DataFrameEngine):
             )
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend([getsource(_pandas_min_max_helpers), ""])
+        if any(step["kind"] == "replaceMatches" for step in plan):
+            lines.extend([getsource(_open_wrangler_replace_pattern), getsource(_pandas_replace_matches_helpers), ""])
         if any(
             step["kind"] == "groupBy"
             and any(aggregation["operation"] == "sum" for aggregation in step["params"]["aggregations"])
@@ -3621,6 +3659,21 @@ class PandasEngine(DataFrameEngine):
                 ),
                 f"{prefix}del {source}",
             ]
+        if kind == "replaceMatches":
+            lines = []
+            for reference in params["columns"]:
+                position = bound_column_position(reference, kind)
+                lines.extend(
+                    [
+                        f"{prefix}_type = _pandas_semantic_type(df.iloc[:, {position}])",
+                        f"{prefix}df.isetitem({position}, _open_wrangler_replace_matches(",
+                        f"{prefix}    df.iloc[:, {position}], _type,",
+                        f"{prefix}    _open_wrangler_replace_pattern({params['find']!r}, {params['matchCase']!r}, "
+                        "_type == 'datetime'),",
+                        f"{prefix}    {params['replacement']!r}, {params['wholeCell']!r}, {params.get('row')!r}))",
+                    ]
+                )
+            return lines
         if kind in {"findReplace", "stripText", "splitText", "capitalizeText", "lowerText", "upperText"}:
             position = bound_column_position(params["column"], kind)
             column = bound_column_name(params["column"], kind)

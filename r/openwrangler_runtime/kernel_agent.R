@@ -3242,6 +3242,59 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (identical(kind, "replaceMatches")) {
+      params <- exact_record(
+        step$params,
+        c("columns", "find", "replacement", "matchCase", "wholeCell", "spelling"),
+        "request.payload.step.params",
+        optional_fields = "row"
+      )
+      if (!is.list(params$columns) || is.object(params$columns) || !is.null(names(params$columns)) ||
+          length(params$columns) == 0L || length(params$columns) > limits$columns) {
+        abort("invalid_request", "request.payload.step.params.columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(params$columns), function(index) decode_column_reference(
+        params$columns[[index]], sprintf("request.payload.step.params.columns[%d]", index), limits$columnIdBytes))
+      if (anyDuplicated(vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE))) {
+        abort("invalid_request", "request.payload.step.params.columns contains a repeated column identity")
+      }
+      minimums <- c(find = 1L, replacement = 0L)
+      texts <- list()
+      for (field in names(minimums)) {
+        text <- bounded_text(params[[field]], sprintf("request.payload.step.params.%s", field), 4096L)
+        characters <- nchar(text, type = "chars")
+        if (characters < minimums[[field]] || characters > 1024L) {
+          abort("invalid_request", sprintf("request.payload.step.params.%s must contain %d to 1,024 characters", field, minimums[[field]]))
+        }
+        texts[[field]] <- text
+      }
+      for (field in c("matchCase", "wholeCell")) {
+        value <- params[[field]]
+        if (!is.logical(value) || length(value) != 1L || is.na(value)) {
+          abort("invalid_request", sprintf("request.payload.step.params.%s must be a boolean", field))
+        }
+      }
+      spelling <- bounded_text(params$spelling, "request.payload.step.params.spelling", 16L)
+      if (identical(spelling, "python")) {
+        abort("invalid_request", "This Replace step matches Python display text. Replay it with a Python library.", TRUE)
+      }
+      if (!spelling %in% c("portable", "r")) {
+        abort("invalid_request", "request.payload.step.params.spelling must be portable, python, or r")
+      }
+      retained <- list(
+        columns = columns,
+        find = texts$find,
+        replacement = texts$replacement,
+        matchCase = params$matchCase,
+        wholeCell = params$wholeCell,
+        spelling = spelling
+      )
+      if ("row" %in% names(params)) {
+        if (length(columns) != 1L) abort("invalid_request", "request.payload.step.params.row requires exactly one column")
+        retained$row <- whole_number(params$row, "request.payload.step.params.row", limits$rows)
+      }
+      return(list(id = step_id, kind = kind, params = retained))
+    }
     if (identical(kind, "markDuplicates")) {
       params <- exact_record(step$params, c("columns", "newColumn"), "request.payload.step.params")
       if (!is.list(params$columns) || is.object(params$columns) || !is.null(names(params$columns)) ||
@@ -4245,6 +4298,48 @@ openwrangler_r_kernel_agent <- local({
     )
     if ("inputFormat" %in% names(step$params)) bound$inputFormat <- step$params$inputFormat
     bound
+  }
+
+  # Python and R spell only float infinities, booleans and datetimes differently, which these searches never reach.
+  replace_matches_is_portable <- function(type, find, match_case, whole_cell) {
+    if (type %in% c("string", "integer", "date")) return(TRUE)
+    if (identical(type, "float")) return(all(utf8ToInt(find) %in% utf8ToInt("0123456789.+-eE")))
+    identical(type, "boolean") && isTRUE(whole_cell) && !isTRUE(match_case)
+  }
+
+  bind_replace_matches_step <- function(frame_contract, capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    params <- step$params
+    positions <- vapply(params$columns, function(reference) {
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", "A Replace column reference no longer matches the active R dataframe", TRUE)
+      }
+      type <- schema[[matches[[1L]]]]$type
+      name <- frame_contract$replace_matches_helpers$replace_matches_quote(reference$name)
+      if (!type %in% c("string", "integer", "float", "boolean", "date", "datetime")) {
+        abort("invalid_request", sprintf("Replace can't write text back into %s column %s.", type, name), TRUE)
+      }
+      if (identical(params$spelling, "portable") &&
+          !replace_matches_is_portable(type, params$find, params$matchCase, params$wholeCell)) {
+        abort("invalid_request", sprintf("Python and R show %s differently where this Replace matches, so it can't be portable.", name), TRUE)
+      }
+      as.integer(matches[[1L]])
+    }, integer(1L), USE.NAMES = FALSE)
+    list(
+      id = step$id,
+      kind = step$kind,
+      positions = positions,
+      names = vapply(params$columns, `[[`, character(1L), "name", USE.NAMES = FALSE),
+      outputIds = vapply(params$columns, `[[`, character(1L), "id", USE.NAMES = FALSE),
+      find = params$find,
+      replacement = params$replacement,
+      matchCase = params$matchCase,
+      wholeCell = params$wholeCell,
+      row = params$row,
+      inPlace = TRUE
+    )
   }
 
   bind_drop_step <- function(capture, step) {
@@ -5844,6 +5939,29 @@ openwrangler_r_kernel_agent <- local({
           source_positions = seq_along(capture$descriptor$schema),
           fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill || interpolation_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "replaceMatches")) {
+      bound <- bind_replace_matches_step(frame_contract, capture, step)
+      result <- frame_contract$replace_matches_at(
+        source,
+        bound$positions,
+        bound$names,
+        bound$find,
+        bound$matchCase,
+        bound$replacement,
+        bound$wholeCell,
+        bound$row,
+        library = library
+      )
+      return(list(
+        capture = capture_result(
+          result,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema),
+          replace_positions = bound$positions
         ),
         bound = bound
       ))
@@ -8924,6 +9042,14 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
       lines <- c(lines, cast_code_helper_lines(frame_contract))
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "replaceMatches"), logical(1L)))) {
+      helpers <- frame_contract$replace_matches_helpers
+      lines <- c(lines, "  .ow_replace_helpers <- base::evalq({")
+      for (name in names(helpers)) {
+        lines <- c(lines, sprintf("    %s <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
+      }
+      lines <- c(lines, "    base::list(replace = replace_matches_values)", "  }, base::new.env(parent = base::baseenv()))")
+    }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn") && !is.null(step$inputFormat), logical(1L)))) {
       lines <- c(lines, "  .ow_cast_fixed_date_text <-", paste0("  ", deparse(frame_contract$cast_fixed_date_text, width.cutoff = 500L)))
     }
@@ -10354,6 +10480,30 @@ openwrangler_r_kernel_agent <- local({
           if (!identical(library, "base")) "  if (!inherits(.ow_result, \"tbl_df\")) .ow_fill_result <- base::unname(.ow_fill_result)",
           if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_fill_position, list(.ow_fill_result), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
         )
+      } else if (identical(step$kind, "replaceMatches")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_replace_positions <- c(%s)", paste(sprintf("%dL", step$positions), collapse = ", ")),
+          sprintf("  .ow_replace_names <- c(%s)", paste(vapply(step$names, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")),
+          "  if (any(.ow_replace_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_replace_positions], .ow_replace_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (inherits(.ow_result, \"data.table\") && any(.ow_replace_names %in% data.table::key(.ow_result))) stop(\"Replace can't change a data.table key column; clone it first.\", call. = FALSE)",
+          sprintf(
+            "  .ow_replace_columns <- lapply(seq_along(.ow_replace_positions), function(.ow_index) .ow_replace_helpers$replace(.ow_result[[.ow_replace_positions[[.ow_index]]]], .ow_replace_names[[.ow_index]], %s, %s, %s, %s, %s))",
+            r_string(step$find),
+            if (isTRUE(step$matchCase)) "TRUE" else "FALSE",
+            r_string(step$replacement),
+            if (isTRUE(step$wholeCell)) "TRUE" else "FALSE",
+            if (is.null(step$row)) "NULL" else sprintf("%.0f", step$row)
+          ),
+          if (!identical(library, "base")) c(
+            "  if (!inherits(.ow_result, \"tbl_df\")) .ow_replace_columns <- lapply(.ow_replace_columns, function(.ow_column) if (inherits(.ow_column, \"clock_time_point\")) .ow_column else base::unname(.ow_column))",
+            "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_replace_positions, .ow_replace_columns, names(.ow_result), .ow_library)"
+          ) else c(
+            "  for (.ow_index in seq_along(.ow_replace_positions)) {",
+            "    if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_replace_positions[[.ow_index]], value = .ow_replace_columns[[.ow_index]]) else .ow_result[[.ow_replace_positions[[.ow_index]]]] <- .ow_replace_columns[[.ow_index]]",
+            "  }"
+          )
+        )
       } else if (identical(step$kind, "castColumn")) {
         lines <- c(
           lines,
@@ -10609,7 +10759,8 @@ openwrangler_r_kernel_agent <- local({
         "ceilNumber",
         "formatDatetime",
         "fillMissingValues",
-        "castColumn"
+        "castColumn",
+        "replaceMatches"
       ) &&
         isTRUE(bound$inPlace)
     ) {
@@ -10618,9 +10769,11 @@ openwrangler_r_kernel_agent <- local({
       }
       if (is.null(before_page)) before_page <- materialize(frame_contract, before, page)
       if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
-      before_position <- match(bound$outputId, before_page$page$columnIds)
-      after_position <- match(bound$outputId, after_page$page$columnIds)
-      if (is.na(before_position) || is.na(after_position)) {
+      output_ids <- if (is.null(bound$outputIds)) bound$outputId else bound$outputIds
+      output_names <- if (is.null(bound$outputIds)) bound$newName else bound$names
+      before_positions <- match(output_ids, before_page$page$columnIds)
+      after_positions <- match(output_ids, after_page$page$columnIds)
+      if (anyNA(before_positions) || anyNA(after_positions)) {
         truncated <- TRUE
       } else {
         before_rows <- before_page$page$rows
@@ -10632,18 +10785,20 @@ openwrangler_r_kernel_agent <- local({
           if (is.na(before_index)) next
           matched_before[[before_index]] <- TRUE
           matched_after <- matched_after + 1L
-          old <- before_rows[[before_index]]$values[[before_position]]
-          new <- after_row$values[[after_position]]
-          if (!identical(old, new)) {
-            changed_cells <- changed_cells + 1L
-            if (length(cells) < 500L) {
-              cells[[length(cells) + 1L]] <- list(
-                rowNumber = after_row$rowNumber,
-                columnId = bound$outputId,
-                column = bound$newName,
-                before = old,
-                after = new
-              )
+          for (column_index in seq_along(output_ids)) {
+            old <- before_rows[[before_index]]$values[[before_positions[[column_index]]]]
+            new <- after_row$values[[after_positions[[column_index]]]]
+            if (!identical(old, new)) {
+              changed_cells <- changed_cells + 1L
+              if (length(cells) < 500L) {
+                cells[[length(cells) + 1L]] <- list(
+                  rowNumber = after_row$rowNumber,
+                  columnId = output_ids[[column_index]],
+                  column = output_names[[column_index]],
+                  before = old,
+                  after = new
+                )
+              }
             }
           }
         }
@@ -11367,7 +11522,7 @@ openwrangler_r_kernel_agent <- local({
       if (identical(kind, "findCells")) {
         payload <- exact_record(
           request$payload,
-          c("sessionId", "view", "query", "matchCase", "wholeCell", "direction", "columns", "from", "includeFrom"),
+          c("sessionId", "view", "query", "matchCase", "wholeCell", "direction", "columns", "from", "includeFrom", "includePosition"),
           "request.payload"
         )
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
@@ -11379,7 +11534,7 @@ openwrangler_r_kernel_agent <- local({
         if (!nzchar(text) || nchar(text, type = "chars") > 1024L) {
           abort("invalid_request", "request.payload.query must contain 1 to 1,024 characters")
         }
-        for (field in c("matchCase", "wholeCell", "includeFrom")) {
+        for (field in c("matchCase", "wholeCell", "includeFrom", "includePosition")) {
           value <- payload[[field]]
           if (!is.logical(value) || length(value) != 1L || is.na(value)) {
             abort("invalid_request", sprintf("request.payload.%s must be a boolean", field))
@@ -11421,7 +11576,8 @@ openwrangler_r_kernel_agent <- local({
           payload$includeFrom,
           identical(payload$direction, "previous"),
           filter_cache,
-          get(session_id, envir = find_caches, inherits = FALSE)
+          get(session_id, envir = find_caches, inherits = FALSE),
+          payload$includePosition
         )
         response <- list(
           transportVersion = transport_version,

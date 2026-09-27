@@ -3,6 +3,7 @@ import type {
   DataDiff,
   LiveGridPage,
   OperationKind,
+  ReplaceMatchesTransformStep,
   SessionMetadata,
   SessionOpenedResponse,
   StepInspectionResponse,
@@ -44,7 +45,15 @@ import {
   type ConfirmedFilterHistory
 } from "./filters/filterHistory";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
-import type { GridFindQuery, GridFindRequest, GridFindSettlement } from "./grid/useGridFind";
+import { findReplaceStep } from "./grid/findReplaceStep";
+import {
+  isReplaceShortcut,
+  type GridFindQuery,
+  type GridFindRequest,
+  type GridFindSettlement,
+  type GridReplaceAvailability,
+  type GridReplaceRequest
+} from "./grid/useGridFind";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
 import type { ProfileValueMode } from "./profileValueMode";
 import { OperationBuilder } from "./operations/OperationBuilder";
@@ -233,6 +242,14 @@ export function App() {
   const [findRequest, setFindRequest] = useState<GridFindRequest | undefined>();
   const requestFindRef = useRef<(action: GridFindRequest["action"]) => boolean>(() => false);
   const findRequestIds = useRef(new Set<string>());
+  // The draft the find bar previewed, which its next Replace applies before previewing another.
+  const [findReplaceDraftId, setFindReplaceDraftId] = useState<string | undefined>();
+  const [queuedFindReplace, setQueuedFindReplace] = useState<
+    { step: ReplaceMatchesTransformStep; sessionId: string; appliedStepId: string } | undefined
+  >();
+  const findReplaceAdvance = useRef<string | undefined>(undefined);
+  const findReplaceSequence = useRef(0);
+  const previewFindReplaceRef = useRef<(step: ReplaceMatchesTransformStep) => void>(() => undefined);
   const pendingFind = useRef<{ viewRequestId: string; settle(settlement: GridFindSettlement): void }>(undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
@@ -1177,6 +1194,8 @@ export function App() {
           requestGoToRowRef.current();
         } else if (response.action === "find") {
           requestFindRef.current("open");
+        } else if (response.action === "replace") {
+          requestFindRef.current("replace");
         } else if (response.action === "openFilters") {
           if (stepInspectionTargetRef.current) return;
           const currentMetadata = metadataRef.current;
@@ -2083,6 +2102,64 @@ export function App() {
     });
   };
 
+  const previewFindReplace = (step: ReplaceMatchesTransformStep) => {
+    setFindReplaceDraftId(step.id);
+    findReplaceAdvance.current = step.id;
+    previewStep(step);
+  };
+  useEffect(() => {
+    previewFindReplaceRef.current = previewFindReplace;
+  });
+
+  const replaceFromFind = (request: GridReplaceRequest) => {
+    const current = metadataRef.current;
+    if (!current || copiedPlanPendingRef.current || stepInspectionTargetRef.current || queuedFindReplace) return;
+    const pending = current.draftStep;
+    if (pending ? pending.id !== findReplaceDraftId : !canStartOperation(current, "replaceMatches")) return;
+    findReplaceSequence.current += 1;
+    const built = findReplaceStep({
+      id: `replaceMatches-${Date.now().toString(36)}-${findReplaceSequence.current.toString(36)}`,
+      schema: current.schema,
+      backend: current.backend,
+      options: request.criteria,
+      replacement: request.replacement,
+      scope: request.criteria.scope,
+      ...(request.cell ? { cell: request.cell } : {})
+    });
+    if ("error" in built) {
+      setForegroundError({ message: built.error });
+      return;
+    }
+    if (!pending) {
+      previewFindReplace(built.step);
+      return;
+    }
+    setQueuedFindReplace({ step: built.step, sessionId: current.sessionId, appliedStepId: pending.id });
+    sendPlanAction("applyDraft");
+  };
+
+  useEffect(() => {
+    if (!queuedFindReplace || loading || mutationPending || projectionLoading || importOptionsPending) return;
+    if (foregroundRequest.current) return;
+    setQueuedFindReplace(undefined);
+    const current = metadataRef.current;
+    // A failed apply leaves its draft in place, so the queued Replace is dropped with the error.
+    if (
+      current?.sessionId !== queuedFindReplace.sessionId ||
+      current.draftStep !== undefined ||
+      current.steps.at(-1)?.id !== queuedFindReplace.appliedStepId
+    )
+      return;
+    previewFindReplaceRef.current(queuedFindReplace.step);
+  }, [importOptionsPending, loading, mutationPending, projectionLoading, queuedFindReplace]);
+
+  useEffect(() => {
+    const awaited = findReplaceAdvance.current;
+    if (awaited === undefined || loading || metadata?.draftStep?.id !== awaited) return;
+    findReplaceAdvance.current = undefined;
+    setFindRequest((current) => ({ action: "advance", requestId: (current?.requestId ?? 0) + 1 }));
+  }, [loading, metadata]);
+
   const deleteInspectedStep = () => {
     const target = stepInspectionTargetRef.current;
     if (target) deleteStep(target.stepId);
@@ -2164,6 +2241,10 @@ export function App() {
       }
     } else if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === "g") {
       handled = requestGoToRowRef.current();
+    } else if (isReplaceShortcut(event)) {
+      // macOS fields use Ctrl+H to delete backward, so only keep it from the workbench there.
+      if (editableTarget) event.stopPropagation();
+      else handled = requestFindRef.current("replace");
     } else if (modifier && !event.altKey && !event.shiftKey && key === "f") {
       // Keep Ctrl+F inside editable fields away from the workbench as well as from grid Find.
       if (editableTarget) event.stopPropagation();
@@ -2201,6 +2282,38 @@ export function App() {
     setLiveSessionReconnectPending(true);
     vscode.postMessage({ kind: "reconnectLiveSource" });
   };
+
+  const replaceAvailability = ((): GridReplaceAvailability | undefined => {
+    if (!metadata || inspectionMode) return undefined;
+    if (metadata.mode !== "editing") {
+      return sessionModeAction(metadata)?.target === "editing"
+        ? {
+            kind: "switch",
+            busy: sessionModeChangePending,
+            switchToEditing: (trigger) => requestSessionModeChange("editing", trigger)
+          }
+        : { kind: "unavailable", reason: cleaningUnavailableReason(metadata) };
+    }
+    if (!supportsOperation(metadata.capabilities, "replaceMatches")) {
+      return {
+        kind: "unavailable",
+        reason: `Replace is unavailable for ${dataBackendLabel(metadata.backend)} dataframes.`
+      };
+    }
+    if (metadata.draftStep && metadata.draftStep.id !== findReplaceDraftId) {
+      return { kind: "unavailable", reason: "Apply or discard the current draft to replace." };
+    }
+    return {
+      kind: "ready",
+      busy:
+        loading ||
+        mutationPending ||
+        projectionLoading ||
+        importOptionsPending ||
+        copiedPlanPending ||
+        queuedFindReplace !== undefined
+    };
+  })();
 
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
   const sourceLabel = metadata ? sourceDisplayLabel(metadata.source) : undefined;
@@ -2760,6 +2873,8 @@ export function App() {
                     ? undefined
                     : `Find is unavailable for ${dataBackendLabel(displayMetadata.backend)} dataframes.`
                 }
+                {...(replaceAvailability ? { replace: replaceAvailability } : {})}
+                onReplace={replaceFromFind}
                 onGoToColumnHandled={handleColumnReveal}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={

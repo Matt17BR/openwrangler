@@ -35,7 +35,8 @@ export type NonSortEditorAction =
   | "undoStep"
   | "redoStep"
   | "goToRow"
-  | "find";
+  | "find"
+  | "replace";
 
 type ViewSortEditorActionMessage = {
   kind: "editorAction";
@@ -392,6 +393,7 @@ export function decodeAppHostMessage(value: unknown) {
         case "redoStep":
         case "goToRow":
         case "find":
+        case "replace":
           return value as OtherEditorActionMessage;
         case "changeViewSort":
           return (value.sortAction === "moveUp" || value.sortAction === "moveDown" || value.sortAction === "remove") &&

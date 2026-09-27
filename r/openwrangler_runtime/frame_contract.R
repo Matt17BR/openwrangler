@@ -4297,6 +4297,7 @@ openwrangler_r_frame_contract <- local({
     datetime_format_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
+    replace_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL,
     preserve_data_table_element_names = FALSE,
@@ -4339,6 +4340,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(datetime_format_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
+            !is.null(replace_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
         )
@@ -4392,6 +4394,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(fallback_fill_positions) && is.null(source_positions)) {
       abort("internal-error", "R fallback-fill outputs require explicit source mappings")
+    }
+    if (!is.null(replace_positions) && is.null(source_positions)) {
+      abort("internal-error", "R Replace outputs require explicit source mappings")
     }
     if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
       abort("internal-error", "R cast outputs require positions and target dtypes together")
@@ -4764,6 +4769,22 @@ openwrangler_r_frame_contract <- local({
         }
         fallback_fill_positions <- as.integer(fallback_fill_positions)
       }
+      if (is.null(replace_positions)) {
+        replace_positions <- integer()
+      } else {
+        if (
+          !is.numeric(replace_positions) ||
+            anyNA(replace_positions) ||
+            any(!is.finite(replace_positions)) ||
+            any(replace_positions != floor(replace_positions)) ||
+            any(replace_positions < 1L) ||
+            any(replace_positions > length(output_schema)) ||
+            anyDuplicated(replace_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid Replace output positions")
+        }
+        replace_positions <- as.integer(replace_positions)
+      }
       transformed_positions <- c(
         categorical_positions,
         by_example_positions,
@@ -4778,6 +4799,7 @@ openwrangler_r_frame_contract <- local({
         datetime_format_positions,
         fill_missing_positions,
         fallback_fill_positions,
+        replace_positions,
         cast_positions
       )
       if (anyDuplicated(transformed_positions)) {
@@ -5026,7 +5048,7 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
           }
-        } else if (index %in% c(fill_missing_positions, fallback_fill_positions)) {
+        } else if (index %in% c(fill_missing_positions, fallback_fill_positions, replace_positions)) {
           source_semantics <- source_column$semantics
           output_semantics <- output_column$semantics
           factor_semantics_match <- FALSE
@@ -5044,7 +5066,7 @@ openwrangler_r_frame_contract <- local({
               identical(source_without_levels, output_without_levels) &&
                 length(output_levels) >= length(source_levels) &&
                 (
-                  index %in% fallback_fill_positions ||
+                  index %in% c(fallback_fill_positions, replace_positions) ||
                     length(output_levels) <= length(source_levels) + 1L
                 ) &&
                 identical(output_levels[seq_along(source_levels)], source_levels)
@@ -5083,6 +5105,8 @@ openwrangler_r_frame_contract <- local({
           FALSE
         } else if (index %in% fallback_fill_positions) {
           column_has_missing(snapshot[[index]], output_column$semantics)
+        } else if (index %in% replace_positions) {
+          isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% text_transform_positions) {
@@ -12410,7 +12434,8 @@ openwrangler_r_frame_contract <- local({
     include_from = FALSE,
     backward = FALSE,
     filter_cache = NULL,
-    find_cache = NULL
+    find_cache = NULL,
+    include_position = FALSE
   ) {
     validate_capture(capture)
     descriptor <- capture$descriptor
@@ -12444,7 +12469,7 @@ openwrangler_r_frame_contract <- local({
         matched <- c(matched, position)
         bits[[length(bits) + 1L]] <- find_pack(mask)
       }
-      found <- list(rows = as.integer(view$totalRows), positions = matched, bits = bits)
+      found <- list(rows = as.integer(view$totalRows), positions = matched, bits = bits, viewRows = view$rows)
       if (!is.null(find_cache)) {
         find_cache$capture <- capture
         find_cache$key <- key
@@ -12457,14 +12482,309 @@ openwrangler_r_frame_contract <- local({
     column_descriptor <- descriptor$schema[[found$positions[[cell$index]]]]
     before <- sum(vapply(found$bits, find_count_before, numeric(1L), row = cell$row))
     same_row <- sum(vapply(found$bits[seq_len(cell$index)], find_row_is_set, logical(1L), row = cell$row))
-    list(
-      matchCount = count,
-      match = list(
-        row = cell$row,
-        column = list(id = column_descriptor$id, name = column_descriptor$name),
-        ordinal = before + same_row
-      )
+    match <- list(
+      row = cell$row,
+      column = list(id = column_descriptor$id, name = column_descriptor$name),
+      ordinal = before + same_row
     )
+    if (isTRUE(include_position)) {
+      match$position <- if (is.null(found$viewRows)) cell$row else found$viewRows[[cell$row + 1L]] - 1L
+    }
+    list(matchCount = count, match = match)
+  }
+
+  # The text Find highlights as a PCRE pattern: without match case only ASCII letters fold, and in a datetime a
+  # space and the time's T match each other. Python's engines build the same pattern.
+  replace_matches_pattern <- function(find, match_case, temporal) {
+    needle <- if (match_case) find else base::chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", find)
+    if (temporal) {
+      separator <- if (match_case) "(?<![A-Za-z])T(?![A-Za-z])" else "(?<![a-z])t(?![a-z])"
+      needle <- base::gsub(separator, " ", needle, perl = TRUE)
+    }
+    codes <- base::utf8ToInt(needle)
+    parts <- base::vapply(codes, function(code) {
+      character <- base::intToUtf8(code)
+      if (temporal && code == 32L) return("[T ]")
+      if (!match_case && code >= 97L && code <= 122L) {
+        return(base::paste0("[", character, base::intToUtf8(code - 32L), "]"))
+      }
+      if (code %in% base::utf8ToInt("\\.+*?()|[]{}^$")) return(base::paste0("\\", character))
+      character
+    }, base::character(1L), USE.NAMES = FALSE)
+    base::paste0(parts, collapse = "")
+  }
+
+  # Python's repr of a string, so Replace errors read the same in every engine.
+  replace_matches_quote <- function(text) {
+    quote <- if (base::grepl("'", text, fixed = TRUE) && !base::grepl("\"", text, fixed = TRUE)) "\"" else "'"
+    text <- base::gsub("\\", "\\\\", text, fixed = TRUE)
+    if (quote == "'") text <- base::gsub("'", "\\'", text, fixed = TRUE)
+    text <- base::gsub("\n", "\\n", text, fixed = TRUE)
+    text <- base::gsub("\r", "\\r", text, fixed = TRUE)
+    text <- base::gsub("\t", "\\t", text, fixed = TRUE)
+    base::paste0(quote, text, quote)
+  }
+
+  # Replaces the text Find highlights in one R column, then reads each new text back as the column's type. Each
+  # distinct value is spelled and converted once; row is a zero-based position when one cell changes.
+  replace_matches_values <- function(column, name, find, match_case, replacement, whole_cell, row = NULL) {
+    refuse <- function(text, expected) {
+      abort("invalid-view-value", base::sprintf(
+        "Replacing in %s gives %s, which isn't %s.",
+        replace_matches_quote(name), replace_matches_quote(text), expected
+      ))
+    }
+    kind <- if (base::inherits(column, "clock_time_point")) {
+      "clock"
+    } else if (base::is.factor(column)) {
+      "factor"
+    } else if (base::inherits(column, "integer64")) {
+      "integer64"
+    } else if (base::inherits(column, "POSIXct")) {
+      "datetime"
+    } else if (base::inherits(column, "Date")) {
+      "date"
+    } else if (base::is.object(column)) {
+      base::class(column)[[1L]]
+    } else if (base::is.logical(column)) {
+      "logical"
+    } else if (base::is.integer(column)) {
+      "integer"
+    } else if (base::is.double(column)) {
+      "double"
+    } else if (base::is.character(column)) {
+      "character"
+    } else {
+      base::typeof(column)
+    }
+    if (!kind %in% c("clock", "factor", "integer64", "datetime", "date", "logical", "integer", "double", "character")) {
+      type <- if (base::identical(kind, "difftime")) "duration" else kind
+      abort("invalid-view-query", base::sprintf("Replace can't write text back into %s column %s.", type, replace_matches_quote(name)))
+    }
+    count <- storage_length(column)
+    if (!base::is.null(row) && row >= count) {
+      abort("invalid-view-query", base::sprintf(
+        "Replace targets row %s, but the dataframe has %s rows.",
+        base::format(row + 1, big.mark = ",", scientific = FALSE, trim = TRUE),
+        base::format(count, big.mark = ",", scientific = FALSE, trim = TRUE)
+      ))
+    }
+    storage <- if (kind == "clock") NULL else base::unclass(column)
+    missing <- if (kind == "clock") {
+      base::is.na(base::unclass(column)[[1L]])
+    } else if (kind == "integer64") {
+      base::get("is.na.integer64", base::asNamespace("bit64"), inherits = FALSE)(column)
+    } else {
+      base::is.na(storage)
+    }
+    candidates <- if (base::is.null(row)) base::which(!missing) else base::setdiff(row + 1L, base::which(missing))
+    if (base::length(candidates) == 0L) return(column)
+    # match() merges signed zeros, but the grid shows -0.0 apart; the unused NA keeps it apart.
+    # Integer64 storage is a double's bits, some of which read as NaN, so its text identifies each value.
+    identities <- if (kind == "clock") {
+      base::complex(real = base::unclass(column)[[1L]][candidates], imaginary = base::unclass(column)[[2L]][candidates])
+    } else if (kind == "integer64") {
+      base::get("as.character.integer64", base::asNamespace("bit64"), inherits = FALSE)(column[candidates])
+    } else {
+      storage[candidates]
+    }
+    if (kind == "double") identities[identities == 0 & 1 / identities < 0] <- NA_real_
+    group <- base::match(identities, identities)
+    first <- base::which(group == base::seq_along(group))
+    distinct <- candidates[first]
+    labels <- if (kind == "logical") {
+      base::ifelse(storage[distinct], "TRUE", "FALSE")
+    } else if (kind == "integer") {
+      base::as.character(storage[distinct])
+    } else if (kind == "integer64") {
+      identities[first]
+    } else if (kind == "character") {
+      base::enc2utf8(storage[distinct])
+    } else if (kind == "factor") {
+      base::enc2utf8(base::levels(column)[storage[distinct]])
+    } else if (kind == "double") {
+      values <- storage[distinct]
+      shown <- display_double_values(values)
+      shown[values == Inf] <- "Inf"
+      shown[values == -Inf] <- "-Inf"
+      shown
+    } else if (kind == "date") {
+      pad_iso_years(base::format.Date(column[distinct], format = "%Y-%m-%d"))
+    } else if (kind == "datetime") {
+      display_datetime_values(column[distinct], base::attr(column, "tzone", exact = TRUE), "Replace value")
+    } else {
+      clock_display_values(vctrs::vec_slice(column, distinct))
+    }
+    if (base::any(!base::validUTF8(labels))) abort("invalid-text", "Replace found text that isn't valid UTF-8")
+    pattern <- replace_matches_pattern(find, match_case, kind %in% c("datetime", "clock"))
+    replacement <- base::enc2utf8(replacement)
+    texts <- if (whole_cell) {
+      base::ifelse(base::grepl(base::paste0("^(?:", pattern, ")$"), labels, perl = TRUE), replacement, labels)
+    } else {
+      base::gsub(pattern, base::gsub("\\", "\\\\", replacement, fixed = TRUE), labels, perl = TRUE)
+    }
+    changed <- base::which(texts != labels)
+    if (base::length(changed) == 0L) return(column)
+    texts <- base::enc2utf8(texts[changed])
+    for (text in texts) {
+      if (base::nchar(text, type = "bytes") > maximum_text_bytes) {
+        abort("invalid-view-value", base::sprintf(
+          "Replacing in %s gives text longer than %s UTF-8 bytes.",
+          replace_matches_quote(name), base::format(maximum_text_bytes, big.mark = ",")
+        ))
+      }
+    }
+    first_refused <- function(ok, expected) {
+      bad <- base::which(!ok)
+      if (base::length(bad) != 0L) refuse(texts[[bad[[1L]]]], expected)
+    }
+    whole_number <- "^[+-]?[0-9]+$"
+    moment <- "^([0-9]{4})-([0-9]{2})-([0-9]{2})(?:[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\\.([0-9]{1,9}))?)?)?(Z|[+-][0-9]{2}:[0-9]{2})?$"
+    moment_parts <- function(expected_shape, digits, offset) {
+      parts <- base::regmatches(texts, base::regexec(moment, texts, perl = TRUE))
+      first_refused(base::lengths(parts) != 0L, expected_shape)
+      field <- function(index, default = "") base::vapply(parts, function(part) {
+        if (part[[index]] == "") default else part[[index]]
+      }, base::character(1L), USE.NAMES = FALSE)
+      offsets <- field(9L)
+      if (base::identical(offset, "forbidden")) first_refused(offsets == "", "a date and time without a UTC offset")
+      if (base::identical(offset, "required")) {
+        first_refused(offsets != "", "a date and time with a UTC offset such as +00:00")
+      }
+      fraction <- base::substr(base::paste0(field(8L), "000000000"), 1L, 9L)
+      first_refused(base::grepl(base::paste0("^[0-9]{", digits, "}0*$"), fraction, perl = TRUE),
+        if (digits == 0L) "a time in whole seconds" else base::sprintf("a time with at most %d decimal places", digits))
+      days <- base::as.Date(base::paste0(field(2L), "-", field(3L), "-", field(4L)), format = "%Y-%m-%d")
+      hours <- base::as.integer(field(5L, "00"))
+      minutes <- base::as.integer(field(6L, "00"))
+      seconds <- base::as.integer(field(7L, "00"))
+      zone <- base::ifelse(offsets %in% c("", "Z"), "+00:00", offsets)
+      zone_hours <- base::as.integer(base::substr(zone, 2L, 3L))
+      zone_minutes <- base::as.integer(base::substr(zone, 5L, 6L))
+      first_refused(
+        field(2L) != "0000" & !base::is.na(days) &
+          base::format.Date(days, "%m-%d") == base::paste0(field(3L), "-", field(4L)) &
+          hours <= 23L & minutes <= 59L & seconds <= 59L & zone_hours <= 23L & zone_minutes <= 59L,
+        "a valid date and time"
+      )
+      base::list(
+        days = days, hours = hours, minutes = minutes, seconds = seconds, fraction = fraction,
+        offset = base::ifelse(base::substr(zone, 1L, 1L) == "-", -1, 1) * (zone_hours * 3600 + zone_minutes * 60),
+        text = base::sprintf("%s-%s-%sT%02d:%02d:%02d", field(2L), field(3L), field(4L), hours, minutes, seconds)
+      )
+    }
+    typed <- if (kind %in% c("character", "factor")) {
+      texts
+    } else if (kind == "logical") {
+      lowered <- base::chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", texts)
+      first_refused(lowered %in% c("true", "false"), "TRUE or FALSE")
+      lowered == "true"
+    } else if (kind == "integer") {
+      first_refused(base::grepl(whole_number, texts, perl = TRUE), "a whole number")
+      numbers <- base::as.numeric(texts)
+      first_refused(base::abs(numbers) <= 2147483647, "a whole number from -2147483647 to 2147483647")
+      base::as.integer(numbers)
+    } else if (kind == "integer64") {
+      first_refused(base::grepl(whole_number, texts, perl = TRUE), "a whole number")
+      first_refused(base::vapply(texts, function(text) {
+        compare_integer_text(text, "-9223372036854775807") >= 0L && compare_integer_text(text, "9223372036854775807") <= 0L
+      }, base::logical(1L), USE.NAMES = FALSE), "a whole number from -9223372036854775807 to 9223372036854775807")
+      base::unclass(bit64::as.integer64(base::sub("^\\+", "", texts)))
+    } else if (kind == "double") {
+      number <- "^(?:[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:[+-]?inf(?:inity)?|nan))$"
+      first_refused(base::grepl(number, texts, perl = TRUE), "a number")
+      numbers <- base::as.numeric(base::sub("(?i)^([+-]?)inf(inity)?$", "\\1Inf", base::sub("(?i)^nan$", "NaN", texts, perl = TRUE), perl = TRUE))
+      first_refused(!base::is.infinite(numbers) | base::grepl("(?i)inf", texts, perl = TRUE), "a number this column can store")
+      numbers
+    } else if (kind == "date") {
+      shaped <- base::grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", texts, perl = TRUE) & !base::startsWith(texts, "0000-")
+      days <- base::rep(NA_real_, base::length(texts))
+      days[shaped] <- base::as.double(base::as.Date(texts[shaped], format = "%Y-%m-%d"))
+      shown <- base::rep("", base::length(texts))
+      shown[shaped & !base::is.na(days)] <- pad_iso_years(base::format.Date(base::structure(days[shaped & !base::is.na(days)], class = "Date"), "%Y-%m-%d"))
+      first_refused(shown == texts, "a date like 2024-01-31")
+      days
+    } else if (kind == "datetime") {
+      parts <- moment_parts("a date and time like 2024-01-31T09:30:00+00:00", 6L, "required")
+      base::as.double(parts$days) * 86400 + parts$hours * 3600 + parts$minutes * 60 + parts$seconds - parts$offset +
+        base::as.double(base::substr(parts$fraction, 1L, 6L)) / 1e6
+    } else {
+      precision <- base::attr(column, "precision", exact = TRUE)
+      digits <- base::switch(base::as.character(precision), `8` = 3L, `9` = 6L, `10` = 9L)
+      naive <- base::identical(base::attr(column, "clock", exact = TRUE), 1L)
+      parts <- moment_parts(
+        if (naive) "a date and time like 2024-01-31T09:30:00" else "a date and time like 2024-01-31T09:30:00+00:00",
+        digits, if (naive) "forbidden" else "required"
+      )
+      text <- base::paste0(parts$text, ".", base::substr(parts$fraction, 1L, digits))
+      unit <- base::switch(base::as.character(precision), `8` = "millisecond", `9` = "microsecond", `10` = "nanosecond")
+      parsed <- clock::naive_time_parse(text, format = "%Y-%m-%dT%H:%M:%S", precision = unit)
+      if (!naive) parsed <- clock::as_sys_time(parsed) - clock::duration_seconds(parts$offset)
+      first_refused(!base::is.na(parsed), "a valid date and time")
+      parsed
+    }
+    slot <- base::integer(base::length(group))
+    slot[first[changed]] <- base::seq_along(changed)
+    picks <- slot[group]
+    rows <- base::which(picks != 0L)
+    targets <- candidates[rows]
+    picks <- picks[rows]
+    if (kind == "clock") return(vctrs::vec_assign(column, targets, typed[picks]))
+    if (kind == "factor") {
+      levels <- base::levels(column)
+      added <- base::setdiff(base::unique(typed), levels)
+      if (base::length(added) != 0L && base::is.ordered(column)) {
+        refuse(added[[1L]], "one of the column's categories")
+      }
+      codes <- storage
+      codes[targets] <- base::match(typed[picks], c(levels, added))
+      base::attributes(codes) <- base::attributes(column)
+      base::attr(codes, "levels") <- c(levels, added)
+      return(codes)
+    }
+    result <- storage
+    result[targets] <- typed[picks]
+    base::attributes(result) <- base::attributes(column)
+    result
+  }
+
+  replace_matches_at <- function(value, positions, old_names, find, match_case, replacement, whole_cell, row = NULL, library = "base") {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    schema <- inspected$descriptor$schema
+    for (index in seq_along(positions)) {
+      position <- positions[[index]]
+      if (position < 1L || position > length(schema) || !identical(schema[[position]]$name, old_names[[index]])) {
+        abort("stale-column", "the Replace column no longer matches the R dataframe")
+      }
+    }
+    source_key <- if (identical(inspected$flavor, "r.data.table")) data.table::key(value) %||% character() else character()
+    keyed <- intersect(old_names, source_key)
+    if (length(keyed) != 0L) {
+      abort("invalid-view-query", sprintf("Replace can't change %s, a data.table key column; clone it first.", replace_matches_quote(keyed[[1L]])))
+    }
+    result <- isolated_snapshot(value, inspected$flavor)
+    columns <- lapply(seq_along(positions), function(index) {
+      replace_matches_values(result[[positions[[index]]]], old_names[[index]], find, match_case, replacement, whole_cell, row)
+    })
+    if (!identical(library, "base")) {
+      if (!identical(inspected$flavor, "r.tibble")) {
+        columns <- lapply(columns, function(column) if (inherits(column, "clock_time_point")) column else unname(column))
+      }
+      return(library_assign(result, positions, columns, names(result), library))
+    }
+    for (index in seq_along(positions)) {
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = positions[[index]], value = columns[[index]])
+      } else {
+        result[[positions[[index]]]] <- columns[[index]]
+      }
+    }
+    result
   }
 
   materialize_page <- function(
@@ -12754,6 +13074,26 @@ openwrangler_r_frame_contract <- local({
     materialize_dataset_stats = materialize_dataset_stats,
     materialize_column_values = materialize_column_values,
     find_cells = find_cells,
+    replace_matches_at = replace_matches_at,
+    replace_matches_helpers = list(
+      abort = abort,
+      storage_length = storage_length,
+      bounded_utf8 = bounded_utf8,
+      indexed_value_label = indexed_value_label,
+      maximum_text_bytes = maximum_text_bytes,
+      display_double_values = display_double_values,
+      pad_iso_years = pad_iso_years,
+      format_iso_datetime = format_iso_datetime,
+      iso_offsets = iso_offsets,
+      trim_iso_fraction = trim_iso_fraction,
+      display_datetime_values = display_datetime_values,
+      clock_display_values = clock_display_values,
+      normalize_integer_text = normalize_integer_text,
+      compare_integer_text = compare_integer_text,
+      replace_matches_pattern = replace_matches_pattern,
+      replace_matches_quote = replace_matches_quote,
+      replace_matches_values = replace_matches_values
+    ),
     encode_page = encode_page,
     encode_view_page = encode_view_page,
     limits = list(

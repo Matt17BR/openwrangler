@@ -224,9 +224,30 @@ describe("R kernel read queries", () => {
         direction: "previous",
         columns: [valueColumn],
         from: { row: 0, column: valueColumn },
-        includeFrom: false
+        includeFrom: false,
+        includePosition: false
       },
       { cancellation: undefined, ...options }
+    );
+
+    transport.findCells.mockResolvedValueOnce({
+      matchCount: 3,
+      match: { row: 0, column: valueColumn, ordinal: 2, position: 4 }
+    });
+    await expect(
+      queries.findCells({ ...findRequest("find-position"), includePosition: true }, options)
+    ).resolves.toMatchObject({ match: { row: 0, columnId: "r:c:0", ordinal: 2, position: 4 } });
+    expect(transport.findCells).toHaveBeenLastCalledWith(
+      sessionId,
+      expect.objectContaining({ includePosition: true }),
+      expect.anything()
+    );
+    transport.findCells.mockResolvedValueOnce({
+      matchCount: 3,
+      match: { row: 0, column: valueColumn, ordinal: 2, position: 4 }
+    });
+    await expect(queries.findCells(findRequest("find-unrequested"), options)).rejects.toThrow(
+      "The R kernel returned an unrequested or missing Find row position."
     );
 
     transport.findCells.mockResolvedValueOnce({

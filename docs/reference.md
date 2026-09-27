@@ -41,6 +41,7 @@
 | `openWrangler.redoStep`                       | Open Wrangler: Redo Latest Undone Step                         |
 | `openWrangler.goToRow`                        | Open Wrangler: Go to Row                                       |
 | `openWrangler.find`                           | Open Wrangler: Find                                            |
+| `openWrangler.replace`                        | Open Wrangler: Replace                                         |
 | `openWrangler.openViewSort`                   | Open Wrangler: Edit View Sorts                                 |
 | `openWrangler.moveViewSortUp`                 | Open Wrangler: Move View Sort Up                               |
 | `openWrangler.moveViewSortDown`               | Open Wrangler: Move View Sort Down                             |
@@ -65,6 +66,7 @@
 | `openWrangler.undoStep`       | `ctrl+alt+z`    | `cmd+alt+z`   | `activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan`                                                            |
 | `openWrangler.goToRow`        | `ctrl+g`        | `ctrl+g`      | `activeCustomEditorId == openWrangler.viewer`                                                                                          |
 | `openWrangler.find`           | `ctrl+f`        | `cmd+f`       | `activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus` |
+| `openWrangler.replace`        | `ctrl+h`        | `cmd+alt+f`   | `activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus` |
 
 ## Settings
 
@@ -111,6 +113,7 @@
 | `oneHotEncode`        | One-hot encode          | Categorical / text | `columns`                                                                                                 | `prefixSeparator`, `dropOriginal`       |
 | `multiLabelBinarize`  | Multi-label binarize    | Categorical / text | `column`, `delimiter`                                                                                     | `prefix`, `dropOriginal`                |
 | `findReplace`         | Find and replace        | Categorical / text | `column`, `find`, `replacement`                                                                           | `regex`, `newColumn`                    |
+| `replaceMatches`      | Replace matches         | Categorical / text | `columns`, `find`, `replacement`, `matchCase`, `wholeCell`, `spelling`                                    | `row`                                   |
 | `stripText`           | Strip text              | Categorical / text | `column`                                                                                                  | `characters`, `newColumn`               |
 | `splitText`           | Split text              | Categorical / text | `column`, `delimiter`, `index`, `newColumn`                                                               | None                                    |
 | `splitTextColumns`    | Split text into columns | Categorical / text | `column`, `delimiter`, `newColumns`                                                                       | None                                    |

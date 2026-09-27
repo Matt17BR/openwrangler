@@ -748,6 +748,7 @@ class SessionManager:
         column_ids: Sequence[str] | None = None,
         start: Mapping[str, Any] | None = None,
         include_start: bool = False,
+        include_position: bool = False,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with session.access.shared(), self._validated_source_read(session):
@@ -784,6 +785,10 @@ class SessionManager:
                     "columnId": schema[cell[1]]["id"],
                     "ordinal": matches.ordinal(cell),
                 }
+                if include_position:
+                    response["match"]["position"] = session.engine.view_row_position(
+                        session.display_frame, self._normalize_filter_model(filter_model), frame, cell[0]
+                    )
             return response
 
     def get_dataset_stats(

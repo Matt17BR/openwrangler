@@ -81,6 +81,7 @@ export type TransformStep =
   | OneHotEncodeTransformStep
   | MultiLabelBinarizeTransformStep
   | FindReplaceTransformStep
+  | ReplaceMatchesTransformStep
   | StripTextTransformStep
   | SplitTextTransformStep
   | SplitTextColumnsTransformStep
@@ -124,6 +125,7 @@ export type OperationKind =
   | "oneHotEncode"
   | "multiLabelBinarize"
   | "findReplace"
+  | "replaceMatches"
   | "stripText"
   | "splitText"
   | "splitTextColumns"
@@ -332,6 +334,11 @@ export type MultiLabelBinarizeTransformStep = TransformStepTemplate & {
 export type FindReplaceTransformStep = TransformStepTemplate & {
   kind: "findReplace";
   params: FindReplaceParams;
+  [k: string]: unknown;
+};
+export type ReplaceMatchesTransformStep = TransformStepTemplate & {
+  kind: "replaceMatches";
+  params: ReplaceMatchesParams;
   [k: string]: unknown;
 };
 export type StripTextTransformStep = TransformStepTemplate & {
@@ -700,6 +707,10 @@ export interface FindRequest {
   columnIds?: [string, ...string[]];
   from?: GridCell;
   includeFrom?: boolean;
+  /**
+   * Also report the match's zero-based row position before viewing filters and sorts.
+   */
+  includePosition?: boolean;
 }
 export interface GridCell {
   row: number;
@@ -828,6 +839,21 @@ export interface FindReplaceParams {
   replacement: string;
   regex?: boolean;
   newColumn?: string;
+}
+export interface ReplaceMatchesParams {
+  columns: NonEmptyColumnReferenceArray;
+  find: string;
+  replacement: string;
+  matchCase: boolean;
+  wholeCell: boolean;
+  /**
+   * Whose displayed values the step matches. Portable steps change only text, integer and date columns, which every engine spells alike; python and r steps replay only on engines with that spelling.
+   */
+  spelling: "portable" | "python" | "r";
+  /**
+   * Zero-based position of the only row to change in the step's input. Requires exactly one column.
+   */
+  row?: number;
 }
 export interface StripTextParams {
   column: ColumnReference;
@@ -1564,6 +1590,7 @@ export interface FoundCell {
   row: number;
   columnId: string;
   ordinal: number;
+  position?: number;
 }
 export interface StepPreviewResponse {
   kind: "stepPreview";
@@ -1737,7 +1764,7 @@ export const openWranglerRequestShapes = Object.freeze([
       "wholeCell",
       "direction"
     ]),
-    optional: Object.freeze(["columnIds", "from", "includeFrom"])
+    optional: Object.freeze(["columnIds", "from", "includeFrom", "includePosition"])
   }),
   Object.freeze({
     kind: "previewStep",

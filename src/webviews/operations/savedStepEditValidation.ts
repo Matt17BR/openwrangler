@@ -198,6 +198,13 @@ function savedOperationTypeError(
         operationColumnTypes(step.kind),
         "datetime formatting requires a date or datetime column"
       );
+    case "replaceMatches":
+      return incompatibleReferenceType(
+        step.params.columns.map((reference) => ({ label: "input column", reference })),
+        columnsById,
+        operationColumnTypes(step.kind),
+        "Replace can write text back only into text, number, boolean, date, or datetime columns"
+      );
     case "pivotLonger": {
       const selected = step.params.columns.map((reference) => columnsById.get(reference.id));
       if (selected.some((column) => column === undefined)) return undefined;

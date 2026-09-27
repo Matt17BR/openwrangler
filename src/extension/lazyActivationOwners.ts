@@ -74,6 +74,7 @@ const NATIVE_VIEW_COMMANDS = [
   "openWrangler.redoStep",
   "openWrangler.goToRow",
   "openWrangler.find",
+  "openWrangler.replace",
   "openWrangler.copyCode",
   "openWrangler.exportCode",
   "openWrangler.insertRDocumentCode",

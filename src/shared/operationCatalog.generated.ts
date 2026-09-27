@@ -216,6 +216,15 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze(["regex", "newColumn"])
   }),
   Object.freeze({
+    kind: "replaceMatches",
+    title: "Replace matches",
+    description: "Replace Find matches in chosen columns or one cell, keeping each column's type.",
+    group: "Categorical / text",
+    icon: "replace",
+    required: Object.freeze(["columns", "find", "replacement", "matchCase", "wholeCell", "spelling"]),
+    optional: Object.freeze(["row"])
+  }),
+  Object.freeze({
     kind: "stripText",
     title: "Strip text",
     description: "Remove surrounding whitespace or selected characters.",
