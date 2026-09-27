@@ -1761,7 +1761,7 @@ the verified variable binding, reads its current values, and refuses changed sha
 The first editing draft isolates the original with `data.table::copy()` for data tables. Other frames copy each atomic
 column and its attributes directly, without dispatching caller S3 methods; list and other object columns are copied
 through R serialization. An operation result built from that copy or from new vectors is captured without a second
-copy; Custom Code results and captures that restore element names are copied again. Committed and draft
+copy; Custom Code results, captures that restore element names, and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Committed and draft
 results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops inert column-element
 names according to native data-table copy semantics; the explicit retention exceptions are described below.
 

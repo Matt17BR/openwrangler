@@ -4423,8 +4423,16 @@ openwrangler_r_frame_contract <- local({
       expected_schema <- preflight_nested_source_columns(value, expected_schema)
     }
     # An owned value is an operation result built from the operation's own copy or new vectors. Captured frames are
-    # never modified in place, so it needs no second copy unless element names are restored below.
-    snapshot <- if (owned && is.null(source_element_names)) value else isolated_snapshot(value, flavor)
+    # never modified in place, so it needs no second copy unless element names are restored below. data.table::copy
+    # also drops column element names, so a data.table that has them keeps the copy.
+    copy_drops_names <- identical(flavor, "r.data.table") && any(vapply(unclass(value), function(column) {
+      !is.null(attr(column, "names", exact = TRUE))
+    }, logical(1L)))
+    snapshot <- if (owned && is.null(source_element_names) && !copy_drops_names) {
+      value
+    } else {
+      isolated_snapshot(value, flavor)
+    }
     if (!is.null(source_element_names)) {
       for (position in seq_along(source_element_names)) {
         if (!is.null(source_element_names[[position]])) {
