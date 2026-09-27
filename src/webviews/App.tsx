@@ -232,7 +232,8 @@ export function App() {
   const requestGoToRowRef = useRef<() => boolean>(() => false);
   const [findRequest, setFindRequest] = useState<GridFindRequest | undefined>();
   const requestFindRef = useRef<(action: GridFindRequest["action"]) => boolean>(() => false);
-  const pendingFinds = useRef(new Map<string, (settlement: GridFindSettlement) => void>());
+  const findRequestIds = useRef(new Set<string>());
+  const pendingFind = useRef<{ viewRequestId: string; settle(settlement: GridFindSettlement): void }>(undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -860,10 +861,12 @@ export function App() {
         (decoded.kind === "cellsFound" || decoded.kind === "error" || decoded.kind === "cancelled") &&
         decoded.viewRequestId !== undefined
       ) {
-        const settleFind = pendingFinds.current.get(decoded.viewRequestId);
-        if (settleFind) {
-          pendingFinds.current.delete(decoded.viewRequestId);
-          settleFind(decoded);
+        if (findRequestIds.current.delete(decoded.viewRequestId)) {
+          const pending = pendingFind.current;
+          if (pending?.viewRequestId === decoded.viewRequestId) {
+            pendingFind.current = undefined;
+            pending.settle(decoded);
+          }
           return;
         }
       }
@@ -1973,7 +1976,10 @@ export function App() {
       if (!current) return Promise.resolve({ kind: "cancelled", targetRequestId: "find" });
       const viewRequestId = nextViewRequestId();
       return new Promise((resolve) => {
-        pendingFinds.current.set(viewRequestId, resolve);
+        const superseded = pendingFind.current;
+        superseded?.settle({ kind: "cancelled", targetRequestId: "find", viewRequestId: superseded.viewRequestId });
+        findRequestIds.current.add(viewRequestId);
+        pendingFind.current = { viewRequestId, settle: resolve };
         vscode.postMessage({
           kind: "runtimeRequest",
           viewContextId: current.view.viewContextId,
@@ -1985,11 +1991,12 @@ export function App() {
   );
 
   useEffect(() => {
-    const pending = pendingFinds.current;
+    const requestIds = findRequestIds.current;
     return () => {
-      for (const [viewRequestId, settle] of pending)
-        settle({ kind: "cancelled", targetRequestId: "find", viewRequestId });
-      pending.clear();
+      const pending = pendingFind.current;
+      pendingFind.current = undefined;
+      requestIds.clear();
+      pending?.settle({ kind: "cancelled", targetRequestId: "find", viewRequestId: pending.viewRequestId });
     };
   }, [activeViewContextId]);
 
