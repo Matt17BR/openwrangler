@@ -787,12 +787,15 @@ local({
         row_agent <- openwrangler_r_kernel_agent$new_agent(clock_contract, environment)
         opened <- dispatch_with(row_agent, "openSession", list(sessionId = session_id, variableName = "frame", page = page_window(), library = library))
         assert_identical(opened$kind, "page", "Precise row workflow failed to open")
-        refused <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(),
-          step = list(id = "precise-format", kind = "formatDatetime", params = list(column = reference, format = "%Y-%m-%d", newColumn = "formatted"))))
-        assert_identical(refused$code, "invalid_request", "Format Datetime unexpectedly admitted a precise timestamp")
+        formatted <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(),
+          step = list(id = "precise-format", kind = "formatDatetime", params = list(column = reference, format = "%Y-%m-%d %H:%M:%OS9", newColumn = "formatted"))))
+        assert_identical(formatted$kind, "stepPreview", "Format Datetime refused a precise timestamp")
+        assert_identical(unname(get("snapshot", envir = clock_capture, inherits = FALSE)$formatted),
+          if (is.null(case$sourceRows)) text else text[case$sourceRows], "Format Datetime changed a precise timestamp at the int64 limits")
+        discarded <- dispatch_with(row_agent, "discardDraft", list(sessionId = session_id, revision = formatted$revision, page = page_window()))
         current <- dispatch_with(row_agent, "getPage", list(sessionId = session_id, page = page_window()))
-        assert_identical(current$page, opened$page, "Unsupported precise temporal operation changed the published frame")
-        preview <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = 0L, page = page_window(), step = case$step))
+        assert_identical(current$page, opened$page, "A discarded precise Format Datetime changed the published frame")
+        preview <- dispatch_with(row_agent, "previewStep", list(sessionId = session_id, revision = discarded$revision, page = page_window(), step = case$step))
         assert_identical(preview$kind, "stepPreview", "Precise row operation failed to preview")
         result <- get("snapshot", envir = clock_capture, inherits = FALSE)
         assert_identical(result$amount, expected$amount[case$rows], "Precise row operation selected or ordered the wrong values")

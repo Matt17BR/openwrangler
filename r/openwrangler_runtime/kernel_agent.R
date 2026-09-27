@@ -3658,8 +3658,8 @@ openwrangler_r_kernel_agent <- local({
     }
     position <- as.integer(matches[[1L]])
     column <- schema[[position]]
-    if (!column$semantics$kind %in% c("date", "datetime")) {
-      abort("invalid_request", "Format Datetime requires an R Date or POSIXct column", TRUE)
+    if (!column$semantics$kind %in% c("date", "datetime", "clock_datetime")) {
+      abort("invalid_request", "Format Datetime requires an R Date, POSIXct or clock timestamp column", TRUE)
     }
     in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, column$name)
     key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
@@ -3683,6 +3683,8 @@ openwrangler_r_kernel_agent <- local({
       outputId = step$outputId,
       semanticKind = column$semantics$kind,
       timezone = column$semantics$timezone,
+      clock = column$semantics$clock,
+      precision = column$semantics$precision,
       format = step$params$format
     )
   }
@@ -3833,7 +3835,7 @@ openwrangler_r_kernel_agent <- local({
     })
     positions <- vapply(columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
     if (anyDuplicated(positions)) abort("invalid_request", "Pivot longer input columns must be unique", TRUE)
-    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime")
     first_semantics <- columns[[1L]]$semantics
     if (
       !first_semantics$kind %in% supported ||
@@ -3866,6 +3868,7 @@ openwrangler_r_kernel_agent <- local({
       selectedNames = vapply(columns, `[[`, character(1L), "name", USE.NAMES = FALSE),
       retainedPositions = as.integer(retained_positions),
       removedNames = input_names[positions],
+      clockValues = identical(first_semantics$kind, "clock_datetime"),
       labelName = step$params$labelColumn,
       valueName = step$params$valueColumn,
       outputIds = step$outputIds,
@@ -3898,7 +3901,7 @@ openwrangler_r_kernel_agent <- local({
     if (!names_from$semantics$kind %in% c("character", "factor")) {
       abort("invalid_request", "Pivot wider names-from requires an R character or factor column", TRUE)
     }
-    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    supported <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime")
     if (!values_from$semantics$kind %in% supported) {
       abort("invalid_request", "Pivot wider values-from requires a portable scalar R column", TRUE)
     }
@@ -3927,6 +3930,7 @@ openwrangler_r_kernel_agent <- local({
       valuesFrom = values_from,
       retainedPositions = as.integer(retained_positions),
       integer64Keys = any(vapply(schema[retained_positions], function(column) identical(column$semantics$kind, "integer64"), logical(1L))),
+      clockKeys = any(vapply(schema[retained_positions], function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L))),
       removedNames = c(names_from$name, values_from$name),
       outputKeys = output_keys,
       outputNames = output_names,
@@ -4027,10 +4031,10 @@ openwrangler_r_kernel_agent <- local({
       )
     } else if (identical(replacement_kind, "directional")) {
       semantic_kind %in% c(
-        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
       )
     } else if (identical(replacement_kind, "fallbackColumns")) {
-      semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime")
+      semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime")
     } else {
       switch(
         semantic_kind,
@@ -4042,6 +4046,7 @@ openwrangler_r_kernel_agent <- local({
         logical = replacement_kind %in% c("mostFrequent", "boolean"),
         date = identical(replacement_kind, "date"),
         datetime = identical(replacement_kind, "datetime"),
+        clock_datetime = identical(replacement_kind, "datetime"),
         FALSE
       )
     }
@@ -4060,6 +4065,10 @@ openwrangler_r_kernel_agent <- local({
         if (semantic_kind %in% c("integer", "integer64")) return(fallback_kind %in% c("integer", "integer64"))
         identical(fallback_kind, semantic_kind)
       }
+      compatible_fallback_clock <- function(fallback) {
+        !identical(semantic_kind, "clock_datetime") ||
+          (identical(fallback$semantics$clock, column$semantics$clock) && identical(fallback$semantics$precision, column$semantics$precision))
+      }
       fallback_columns <- lapply(seq_along(step$params$replacement$columns), function(index) {
         reference <- step$params$replacement$columns[[index]]
         fallback_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
@@ -4074,7 +4083,7 @@ openwrangler_r_kernel_agent <- local({
         if (identical(fallback$id, column$id)) {
           abort("invalid_request", "The fill target cannot also be a fallback column", TRUE)
         }
-        if (!compatible_fallback_kind(fallback$semantics$kind)) {
+        if (!compatible_fallback_kind(fallback$semantics$kind) || !compatible_fallback_clock(fallback)) {
           abort(
             "invalid_request",
             sprintf("Fallback column %s is incompatible with the selected R column", fallback$name),
@@ -4085,7 +4094,9 @@ openwrangler_r_kernel_agent <- local({
           id = fallback$id,
           position = fallback_position,
           oldName = fallback$name,
-          semanticKind = fallback$semantics$kind
+          semanticKind = fallback$semantics$kind,
+          clock = fallback$semantics$clock,
+          precision = fallback$semantics$precision
         )
       })
     }
@@ -4120,7 +4131,7 @@ openwrangler_r_kernel_agent <- local({
     group_keys <- list()
     if (identical(replacement_kind, "groupedStatistic")) {
       supported_key_kinds <- c(
-        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
       )
       group_keys <- lapply(seq_along(step$params$replacement$keys), function(index) {
         reference <- step$params$replacement$keys[[index]]
@@ -4173,10 +4184,10 @@ openwrangler_r_kernel_agent <- local({
       if (identical(coordinate_column$id, column$id)) {
         abort("invalid_request", "The fill target cannot also be the interpolation coordinate", TRUE)
       }
-      if (!coordinate_column$semantics$kind %in% c("integer", "double", "date", "datetime")) {
+      if (!coordinate_column$semantics$kind %in% c("integer", "double", "date", "datetime", "clock_datetime")) {
         abort(
           "invalid_request",
-          "Linear interpolation requires a numeric, Date, or POSIXct coordinate column",
+          "Linear interpolation requires a numeric, Date, POSIXct or clock timestamp coordinate column",
           TRUE
         )
       }
@@ -4201,6 +4212,8 @@ openwrangler_r_kernel_agent <- local({
       outputId = step$params$column$id,
       columnType = column$type,
       semanticKind = semantic_kind,
+      clock = column$semantics$clock,
+      precision = column$semantics$precision,
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
       replacement = replacement,
@@ -4285,7 +4298,7 @@ openwrangler_r_kernel_agent <- local({
     schema <- capture$descriptor$schema
     schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
     supported_scalar_kinds <- c(
-      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
     )
     bind_reference <- function(reference, label) {
       matches <- which(schema_ids == reference$id)
@@ -4324,7 +4337,7 @@ openwrangler_r_kernel_agent <- local({
       ) {
         abort(
           "invalid_request",
-          sprintf("R %s columns do not support the %s aggregation", column$semanticsKind, aggregation$operation),
+          sprintf("R %s columns do not support the %s aggregation", if (identical(column$semanticsKind, "clock_datetime")) "datetime" else column$semanticsKind, aggregation$operation),
           TRUE
         )
       }
@@ -4383,6 +4396,7 @@ openwrangler_r_kernel_agent <- local({
         "logical",
         "date",
         "datetime",
+        "clock_datetime",
         "difftime"
       )) {
         abort(
@@ -4396,7 +4410,9 @@ openwrangler_r_kernel_agent <- local({
         name = reference$name,
         position = position,
         semanticKind = semantic_kind,
-        resultKind = semantic_kind
+        resultKind = semantic_kind,
+        clock = schema[[position]]$semantics$clock,
+        precision = schema[[position]]$semantics$precision
       )
     })
     selected_ids <- vapply(source_columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
@@ -4498,6 +4514,7 @@ openwrangler_r_kernel_agent <- local({
 
     bound_program <- bind_expression(step$params$program, "byExample.program")
     result_kind <- if (identical(bound_program$type, "null")) "logical" else bound_program$type
+    result_source <- if (identical(result_kind, "clock_datetime")) source_columns[[bound_program$program$`_owSourceIndex`]] else list()
     existing_names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
     if (step$params$newColumn %in% existing_names || step$outputId %in% schema_ids) {
       abort("invalid_request", "The by-example output column already exists", TRUE)
@@ -4509,7 +4526,9 @@ openwrangler_r_kernel_agent <- local({
       newName = step$params$newColumn,
       outputId = step$outputId,
       program = bound_program$program,
-      resultKind = result_kind
+      resultKind = result_kind,
+      clock = result_source$clock,
+      precision = result_source$precision
     )
   }
 
@@ -4621,7 +4640,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   generated_by_example_evaluate <- function(program, columns) {
-    storage_length <- function(value) base::length(base::unclass(value))
+    storage_length <- function(value) if (base::inherits(value, "clock_time_point")) vctrs::vec_size(value) else base::length(base::unclass(value))
     if (!base::is.list(columns) || base::length(columns) < 1L || base::length(columns) > 16L) {
       base::stop("Open Wrangler by-example received invalid source columns", call. = FALSE)
     }
@@ -4632,7 +4651,7 @@ openwrangler_r_kernel_agent <- local({
     bound_result_kind <- program$`_owResultType`
     result_kind <- if (base::identical(bound_result_kind, "null")) "logical" else bound_result_kind
     if (!base::is.character(result_kind) || base::length(result_kind) != 1L || !result_kind %in% c(
-      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "clock_datetime", "difftime"
     )) {
       base::stop(base::sprintf(
         "Open Wrangler by-example has an invalid bound result kind (%s; value %s; length %d; class %s)",
@@ -4642,7 +4661,7 @@ openwrangler_r_kernel_agent <- local({
         base::paste(base::class(result_kind), collapse = ",")
       ), call. = FALSE)
     }
-    result_slot_bytes <- if (result_kind %in% c("logical", "integer", "factor")) 4 else 8
+    result_slot_bytes <- if (result_kind %in% c("logical", "integer", "factor")) 4 else if (base::identical(result_kind, "clock_datetime")) 16 else 8
     projected_slot_bytes <- base::as.double(row_count) * result_slot_bytes
     if (!base::is.finite(projected_slot_bytes) || projected_slot_bytes > 67108864) {
       base::stop("Open Wrangler by-example exceeds its aggregate output budget", call. = FALSE)
@@ -4659,6 +4678,7 @@ openwrangler_r_kernel_agent <- local({
         logical = base::is.logical(value) && !base::is.object(value),
         date = base::identical(base::class(value), "Date"),
         datetime = base::identical(base::class(value), c("POSIXct", "POSIXt")),
+        clock_datetime = base::inherits(value, "clock_time_point"),
         difftime = base::identical(base::class(value), "difftime"),
         FALSE
       )
@@ -4868,6 +4888,7 @@ openwrangler_r_kernel_agent <- local({
     }
 
     source_chunk <- function(source, indexes) {
+      if (base::inherits(source, "clock_time_point")) return(vctrs::vec_slice(source, indexes))
       source_attributes <- base::attributes(source)
       source_names <- if (base::is.null(source_attributes)) {
         NULL
@@ -5989,13 +6010,17 @@ openwrangler_r_kernel_agent <- local({
       )
     }
     if (identical(specification$semanticsKind, "clock_datetime") && !is.null(specification$precision)) {
-      lines <- c(lines, sprintf(
-        "  if (!identical(attr(%s, \"clock\", exact = TRUE), %dL) || !identical(attr(%s, \"precision\", exact = TRUE), %dL)) stop(\"Open Wrangler precise timestamp type, precision or timezone meaning is stale\", call. = FALSE)",
-        variable, if (identical(specification$clock, "naive")) 1L else 0L, variable,
-        switch(specification$precision, millisecond = 8L, microsecond = 9L, nanosecond = 10L)
-      ))
+      lines <- c(lines, clock_type_guard(variable, specification))
     }
     lines
+  }
+
+  clock_type_guard <- function(variable, specification) {
+    sprintf(
+      "  if (!identical(attr(%s, \"clock\", exact = TRUE), %dL) || !identical(attr(%s, \"precision\", exact = TRUE), %dL)) stop(\"Open Wrangler precise timestamp type, precision or timezone meaning is stale\", call. = FALSE)",
+      variable, if (identical(specification$clock, "naive")) 1L else 0L, variable,
+      switch(specification$precision, millisecond = 8L, microsecond = 9L, nanosecond = 10L)
+    )
   }
 
   row_comparable <- function(variable, specification) {
@@ -6459,6 +6484,7 @@ openwrangler_r_kernel_agent <- local({
     c(
       paste0("  .ow_format_iso_datetime <- ", paste(deparse(frame_contract$format_iso_datetime, width.cutoff = 500L), collapse = "\n")),
       "  .ow_cast_kind <- function(.ow_value) {",
+      "    if (inherits(.ow_value, \"clock_time_point\")) return(\"clock\")",
       "    if (is.factor(.ow_value)) return(\"factor\")",
       "    if (inherits(.ow_value, \"integer64\")) return(\"integer64\")",
       "    if (inherits(.ow_value, \"POSIXct\")) return(\"POSIXct\")",
@@ -6472,6 +6498,7 @@ openwrangler_r_kernel_agent <- local({
       "  }",
       "  .ow_cast_raw_type <- function(.ow_value, .ow_kind) {",
       "    if (identical(.ow_kind, \"factor\") && is.ordered(.ow_value)) return(\"ordered factor\")",
+      "    if (identical(.ow_kind, \"clock\")) return(sprintf(\"%s[%s]\", class(.ow_value)[[1L]], c(\"ms\", \"us\", \"ns\")[[attr(.ow_value, \"precision\", exact = TRUE) - 7L]]))",
       "    .ow_kind",
       "  }",
       "  .ow_cast_utf8 <- function(.ow_value) {",
@@ -6543,12 +6570,12 @@ openwrangler_r_kernel_agent <- local({
       "      return(.ow_cast_canonical_datetimes(as.POSIXct(.ow_dates, tz = \"UTC\")))",
       "    }",
       "    .ow_allowed <- switch(.ow_target,",
-      "      string = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\", \"Date\", \"POSIXct\", \"difftime\"),",
+      "      string = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\", \"Date\", \"POSIXct\", \"clock\", \"difftime\"),",
       "      integer = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\"),",
       "      float = c(\"logical\", \"integer\", \"double\", \"character\", \"factor\"),",
       "      boolean = c(\"logical\", \"integer\", \"double\", \"character\", \"factor\"),",
-      "      date = c(\"character\", \"factor\", \"Date\", \"POSIXct\"),",
-      "      datetime = c(\"character\", \"factor\", \"Date\", \"POSIXct\"),",
+      "      date = c(\"character\", \"factor\", \"Date\", \"POSIXct\", \"clock\"),",
+      "      datetime = c(\"character\", \"factor\", \"Date\", \"POSIXct\", \"clock\"),",
       "      stop(\"Open Wrangler Cast received an unsupported target type\", call. = FALSE)",
       "    )",
       "    if (!.ow_kind %in% .ow_allowed) stop(sprintf(\"castColumn cannot convert an R %s column to %s\", .ow_cast_raw_type(.ow_value, .ow_kind), .ow_target), call. = FALSE)",
@@ -6564,6 +6591,7 @@ openwrangler_r_kernel_agent <- local({
       "        return(.ow_dates)",
       "      }",
       "      if (identical(.ow_kind, \"POSIXct\")) return(.ow_format_iso_datetime(.ow_value, \"UTC\", utc_suffix = TRUE))",
+      "      if (identical(.ow_kind, \"clock\")) return(.ow_clock_helpers$clock_display(.ow_value))",
       "      .ow_duration <- as.double(.ow_value, units = attr(.ow_value, \"units\"))",
       "      .ow_number <- .ow_cast_double_text(.ow_duration)",
       "      .ow_number[is.nan(.ow_duration)] <- NA_character_",
@@ -6587,8 +6615,10 @@ openwrangler_r_kernel_agent <- local({
       "    if (identical(.ow_target, \"date\")) {",
       "      if (identical(.ow_kind, \"Date\")) return(.ow_cast_canonical_dates(.ow_value))",
       "      if (identical(.ow_kind, \"POSIXct\")) return(.ow_cast_canonical_dates(as.Date(.ow_value, tz = \"UTC\")))",
+      "      if (identical(.ow_kind, \"clock\")) return(.ow_cast_canonical_dates(clock::as_date(.ow_value)))",
       "      return(.ow_cast_date_text(.ow_text))",
       "    }",
+      "    if (identical(.ow_kind, \"clock\")) return(.ow_value)",
       "    if (identical(.ow_kind, \"POSIXct\")) return(.ow_cast_canonical_datetimes(structure(as.double(.ow_value), class = c(\"POSIXct\", \"POSIXt\"), tzone = \"UTC\")))",
       "    if (identical(.ow_kind, \"Date\")) return(.ow_cast_canonical_datetimes(as.POSIXct(.ow_cast_canonical_dates(.ow_value), tz = \"UTC\")))",
       "    .ow_cast_datetime_text(.ow_text)",
@@ -6627,7 +6657,7 @@ openwrangler_r_kernel_agent <- local({
           paste0("  ", subnormal_lines),
           "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
           "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
-          "    .ow_coordinate_values <- as.double(.ow_coordinate)",
+          "    .ow_coordinate_values <- if (inherits(.ow_coordinate, \"clock_time_point\")) .ow_clock_helpers$clock_offsets(.ow_coordinate) else as.double(.ow_coordinate)",
           "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
           "    if (base::anyDuplicated.default(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
           "    .ow_rows <- if (identical(.ow_library, \"base\")) order(.ow_coordinate_values, method = \"radix\") else .ow_library_helpers$library_order(list(.ow_coordinate_values), 1L, .ow_library)",
@@ -6867,6 +6897,9 @@ openwrangler_r_kernel_agent <- local({
         "      if (is.na(.ow_fill)) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
         "    } else if (.ow_semantic_kind == \"datetime\") {",
         "      .ow_fill <- .ow_fill_datetime(.ow_replacement$value, .ow_timezone)",
+        "    } else if (.ow_semantic_kind == \"clock_datetime\") {",
+        "      .ow_clock_semantics <- list(clock = if (identical(attr(.ow_values, \"clock\", exact = TRUE), 1L)) \"naive\" else \"sys\", precision = c(\"millisecond\", \"microsecond\", \"nanosecond\")[[attr(.ow_values, \"precision\", exact = TRUE) - 7L]])",
+        "      .ow_fill <- .ow_clock_helpers$clock_parse_value(.ow_replacement$value, .ow_clock_semantics, \"replacement\")",
         "    } else stop(\"Open Wrangler cannot fill this R column type\", call. = FALSE)",
         "    .ow_values[.ow_missing] <- .ow_fill",
         "    .ow_values",
@@ -7596,7 +7629,7 @@ openwrangler_r_kernel_agent <- local({
       } else if (!identical(.ow_library, "base")) {
         do.call(c, lapply(.ow_group_results, function(.ow_group) .ow_group$values[[.ow_aggregation_index]]))
       } else {
-        do.call(c, lapply(.ow_groups, function(.ow_group_rows) .ow_reduce(.ow_source, .ow_group_rows, .ow_spec)))
+        do.call(c, unname(lapply(.ow_groups, function(.ow_group_rows) .ow_reduce(.ow_source, .ow_group_rows, .ow_spec))))
       }
       .ow_output[[length(.ow_output) + 1L]] <- .ow_values
     }
@@ -8542,7 +8575,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   clock_code_helper_lines <- function(frame_contract) {
-    helpers <- frame_contract$clock_helpers[setdiff(names(frame_contract$clock_helpers), c("clock_display", "clock_parse"))]
+    helpers <- frame_contract$clock_helpers[setdiff(names(frame_contract$clock_helpers), "clock_parse")]
     lines <- "  .ow_clock_helpers <- base::evalq({"
     for (name in names(helpers)) {
       lines <- c(lines, sprintf("    `%s` <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
@@ -9259,6 +9292,7 @@ openwrangler_r_kernel_agent <- local({
           logical = "base::is.logical(.ow_by_example_values) && !base::is.object(.ow_by_example_values)",
           date = "base::identical(base::class(.ow_by_example_values), \"Date\")",
           datetime = "base::identical(base::class(.ow_by_example_values), c(\"POSIXct\", \"POSIXt\"))",
+          clock_datetime = ".ow_clock_helpers$clock_is_column(.ow_by_example_values)",
           difftime = "base::identical(base::class(.ow_by_example_values), \"difftime\")",
           abort("runtime_error", "The bound R by-example result kind is unsupported")
         )
@@ -9285,7 +9319,7 @@ openwrangler_r_kernel_agent <- local({
             "  if (.ow_storage_length(.ow_by_example_values) != .ow_by_example_row_count || !(%s)) base::stop(\"Open Wrangler by-example returned an invalid result type or row count\", call. = FALSE)",
             type_guard
           ),
-          "  .ow_by_example_output_bytes <- .ow_by_example_row_count * if (base::is.logical(.ow_by_example_values) || base::is.integer(.ow_by_example_values)) 4 else 8",
+          if (identical(step$resultKind, "clock_datetime")) "  .ow_by_example_output_bytes <- .ow_by_example_row_count * 16" else "  .ow_by_example_output_bytes <- .ow_by_example_row_count * if (base::is.logical(.ow_by_example_values) || base::is.integer(.ow_by_example_values)) 4 else 8",
           if (identical(step$resultKind, "character")) {
             sprintf(
               paste0(
@@ -9298,84 +9332,89 @@ openwrangler_r_kernel_agent <- local({
           if (identical(step$resultKind, "character")) {
             "  .ow_by_example_output_bytes <- .ow_by_example_output_bytes + base::sum(base::as.double(base::nchar(.ow_by_example_values[!base::is.na(.ow_by_example_values)], type = \"bytes\")))"
           } else character(),
-          sprintf("  .ow_by_example_result_kind <- %s", r_string(step$resultKind)),
-          "  .ow_by_example_attribute_names <- base::names(base::attributes(.ow_by_example_values))",
-          "  if (base::is.null(.ow_by_example_attribute_names)) .ow_by_example_attribute_names <- base::character()",
-          "  if (base::anyNA(.ow_by_example_attribute_names) || base::any(.ow_by_example_attribute_names == \"\") || base::anyDuplicated.default(.ow_by_example_attribute_names)) base::stop(\"Open Wrangler by-example returned malformed output attributes\", call. = FALSE)",
-          "  .ow_by_example_semantic_attribute_names <- .ow_by_example_attribute_names[.ow_by_example_attribute_names != \"names\"]",
-          "  .ow_by_example_attributes_valid <- if (.ow_by_example_result_kind == \"factor\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"levels\", \"class\")) } else if (.ow_by_example_result_kind %in% c(\"integer64\", \"date\")) { base::identical(.ow_by_example_semantic_attribute_names, \"class\") } else if (.ow_by_example_result_kind == \"datetime\") { base::identical(.ow_by_example_semantic_attribute_names, \"class\") || (base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"tzone\"))) } else if (.ow_by_example_result_kind == \"difftime\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"units\")) } else { base::length(.ow_by_example_semantic_attribute_names) == 0L }",
-          "  if (!base::isTRUE(.ow_by_example_attributes_valid)) base::stop(\"Open Wrangler by-example returned unsupported output attributes\", call. = FALSE)",
-          "  .ow_by_example_metadata_text <- function(.ow_metadata, .ow_label, .ow_maximum_bytes, .ow_allow_asis = FALSE) {",
-          "    .ow_metadata_attributes <- base::attributes(.ow_metadata)",
-          "    if (!base::is.null(.ow_metadata_attributes)) {",
-          "      if (!base::isTRUE(.ow_allow_asis) || !base::identical(base::names(.ow_metadata_attributes), \"class\") || !base::identical(base::.subset2(.ow_metadata_attributes, \"class\"), \"AsIs\") || !base::is.null(base::attributes(base::.subset2(.ow_metadata_attributes, \"class\")))) base::stop(base::sprintf(\"Open Wrangler by-example returned unsupported nested attributes on %s\", .ow_label), call. = FALSE)",
-          "      .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + 8 + base::nchar(\"AsIs\", type = \"bytes\")",
-          "    }",
-          "    .ow_plain <- base::unclass(.ow_metadata)",
-          "    if (!base::is.character(.ow_plain) || base::anyNA(.ow_plain)) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
-          "    .ow_plain <- base::vapply(base::seq_len(base::length(.ow_plain)), function(.ow_metadata_index) {",
-          "      .ow_item <- base::.subset2(.ow_plain, .ow_metadata_index)",
-          "      if (base::identical(base::Encoding(.ow_item), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
-          "      .ow_from <- if (base::identical(base::Encoding(.ow_item), \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "      .ow_utf8 <- base::iconv(.ow_item, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          "      if (base::is.na(.ow_utf8) || base::nchar(.ow_utf8, type = \"bytes\") > .ow_maximum_bytes) base::stop(base::sprintf(\"Open Wrangler by-example returned oversized or invalid %s\", .ow_label), call. = FALSE)",
-          "      .ow_utf8",
-          "    }, base::character(1L), USE.NAMES = FALSE)",
-          "    .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + base::as.double(base::length(.ow_plain)) * 8 + base::sum(base::as.double(base::nchar(.ow_plain, type = \"bytes\")))",
-          "    .ow_plain",
-          "  }",
-          "  if (.ow_by_example_result_kind %in% c(\"factor\", \"integer64\", \"date\", \"datetime\", \"difftime\")) {",
-          sprintf(
-            "    .ow_by_example_class <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"class\", exact = TRUE), \"output class\", %dL)",
-            maximum_name_bytes
+          if (identical(step$resultKind, "clock_datetime")) c(
+            clock_type_guard(".ow_by_example_values", step),
+            "  .ow_by_example_value_names <- NULL"
+          ) else c(
+            sprintf("  .ow_by_example_result_kind <- %s", r_string(step$resultKind)),
+            "  .ow_by_example_attribute_names <- base::names(base::attributes(.ow_by_example_values))",
+            "  if (base::is.null(.ow_by_example_attribute_names)) .ow_by_example_attribute_names <- base::character()",
+            "  if (base::anyNA(.ow_by_example_attribute_names) || base::any(.ow_by_example_attribute_names == \"\") || base::anyDuplicated.default(.ow_by_example_attribute_names)) base::stop(\"Open Wrangler by-example returned malformed output attributes\", call. = FALSE)",
+            "  .ow_by_example_semantic_attribute_names <- .ow_by_example_attribute_names[.ow_by_example_attribute_names != \"names\"]",
+            "  .ow_by_example_attributes_valid <- if (.ow_by_example_result_kind == \"factor\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"levels\", \"class\")) } else if (.ow_by_example_result_kind %in% c(\"integer64\", \"date\")) { base::identical(.ow_by_example_semantic_attribute_names, \"class\") } else if (.ow_by_example_result_kind == \"datetime\") { base::identical(.ow_by_example_semantic_attribute_names, \"class\") || (base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"tzone\"))) } else if (.ow_by_example_result_kind == \"difftime\") { base::length(.ow_by_example_semantic_attribute_names) == 2L && base::all(.ow_by_example_semantic_attribute_names %in% c(\"class\", \"units\")) } else { base::length(.ow_by_example_semantic_attribute_names) == 0L }",
+            "  if (!base::isTRUE(.ow_by_example_attributes_valid)) base::stop(\"Open Wrangler by-example returned unsupported output attributes\", call. = FALSE)",
+            "  .ow_by_example_metadata_text <- function(.ow_metadata, .ow_label, .ow_maximum_bytes, .ow_allow_asis = FALSE) {",
+            "    .ow_metadata_attributes <- base::attributes(.ow_metadata)",
+            "    if (!base::is.null(.ow_metadata_attributes)) {",
+            "      if (!base::isTRUE(.ow_allow_asis) || !base::identical(base::names(.ow_metadata_attributes), \"class\") || !base::identical(base::.subset2(.ow_metadata_attributes, \"class\"), \"AsIs\") || !base::is.null(base::attributes(base::.subset2(.ow_metadata_attributes, \"class\")))) base::stop(base::sprintf(\"Open Wrangler by-example returned unsupported nested attributes on %s\", .ow_label), call. = FALSE)",
+            "      .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + 8 + base::nchar(\"AsIs\", type = \"bytes\")",
+            "    }",
+            "    .ow_plain <- base::unclass(.ow_metadata)",
+            "    if (!base::is.character(.ow_plain) || base::anyNA(.ow_plain)) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
+            "    .ow_plain <- base::vapply(base::seq_len(base::length(.ow_plain)), function(.ow_metadata_index) {",
+            "      .ow_item <- base::.subset2(.ow_plain, .ow_metadata_index)",
+            "      if (base::identical(base::Encoding(.ow_item), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler by-example returned invalid %s\", .ow_label), call. = FALSE)",
+            "      .ow_from <- if (base::identical(base::Encoding(.ow_item), \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "      .ow_utf8 <- base::iconv(.ow_item, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+            "      if (base::is.na(.ow_utf8) || base::nchar(.ow_utf8, type = \"bytes\") > .ow_maximum_bytes) base::stop(base::sprintf(\"Open Wrangler by-example returned oversized or invalid %s\", .ow_label), call. = FALSE)",
+            "      .ow_utf8",
+            "    }, base::character(1L), USE.NAMES = FALSE)",
+            "    .ow_by_example_output_bytes <<- .ow_by_example_output_bytes + base::as.double(base::length(.ow_plain)) * 8 + base::sum(base::as.double(base::nchar(.ow_plain, type = \"bytes\")))",
+            "    .ow_plain",
+            "  }",
+            "  if (.ow_by_example_result_kind %in% c(\"factor\", \"integer64\", \"date\", \"datetime\", \"difftime\")) {",
+            sprintf(
+              "    .ow_by_example_class <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"class\", exact = TRUE), \"output class\", %dL)",
+              maximum_name_bytes
+            ),
+            "    if (!base::identical(.ow_by_example_class, base::class(.ow_by_example_values))) base::stop(\"Open Wrangler by-example returned invalid output class metadata\", call. = FALSE)",
+            "  }",
+            "  if (.ow_by_example_result_kind == \"factor\") {",
+            sprintf(
+              "    .ow_by_example_levels <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"levels\", exact = TRUE), \"factor levels\", %dL, TRUE)",
+              maximum_text_bytes
+            ),
+            sprintf(
+              "    if (base::length(.ow_by_example_levels) > %dL || base::anyDuplicated.default(.ow_by_example_levels)) base::stop(\"Open Wrangler by-example returned invalid factor levels\", call. = FALSE)",
+              maximum_factor_levels
+            ),
+            "    .ow_by_example_factor_codes <- base::unclass(.ow_by_example_values)",
+            "    if (base::any(!base::is.na(.ow_by_example_factor_codes) & (.ow_by_example_factor_codes < 1L | .ow_by_example_factor_codes > base::length(.ow_by_example_levels)))) base::stop(\"Open Wrangler by-example returned invalid factor codes\", call. = FALSE)",
+            "  }",
+            "  if (.ow_by_example_result_kind == \"datetime\" && \"tzone\" %in% .ow_by_example_semantic_attribute_names) {",
+            sprintf(
+              "    .ow_by_example_timezone <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"tzone\", exact = TRUE), \"datetime timezone\", %dL, TRUE)",
+              maximum_name_bytes
+            ),
+            "    if (base::length(.ow_by_example_timezone) != 1L) base::stop(\"Open Wrangler by-example returned invalid datetime timezone metadata\", call. = FALSE)",
+            "  }",
+            "  if (.ow_by_example_result_kind == \"difftime\") {",
+            sprintf(
+              "    .ow_by_example_units <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"units\", exact = TRUE), \"duration units\", %dL, TRUE)",
+              maximum_name_bytes
+            ),
+            "    if (base::length(.ow_by_example_units) != 1L || !base::.subset2(.ow_by_example_units, 1L) %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(\"Open Wrangler by-example returned invalid duration units\", call. = FALSE)",
+            "  }",
+            "  .ow_by_example_value_names <- base::attr(.ow_by_example_values, \"names\", exact = TRUE)",
+            "  if (!base::is.null(.ow_by_example_value_names)) {",
+            "    if (!base::is.character(.ow_by_example_value_names) || base::is.object(.ow_by_example_value_names) || !base::is.null(base::attributes(.ow_by_example_value_names)) || base::length(.ow_by_example_value_names) != .ow_by_example_row_count) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
+            "    .ow_by_example_value_names <- base::vapply(base::seq_len(.ow_by_example_row_count), function(.ow_name_index) {",
+            "      .ow_name <- base::.subset2(.ow_by_example_value_names, .ow_name_index)",
+            "      if (base::is.na(.ow_name)) return(NA_character_)",
+            "      if (base::identical(base::Encoding(.ow_name), \"bytes\")) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
+            "      .ow_name_from <- if (base::identical(base::Encoding(.ow_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "      .ow_name_utf8 <- base::iconv(.ow_name, from = .ow_name_from, to = \"UTF-8\", sub = NA_character_)",
+            sprintf(
+              "      if (base::is.na(.ow_name_utf8) || base::nchar(.ow_name_utf8, type = \"bytes\") > %dL) base::stop(\"Open Wrangler by-example returned oversized or invalid output names\", call. = FALSE)",
+              maximum_text_bytes
+            ),
+            "      .ow_name_utf8",
+            "    }, base::character(1L), USE.NAMES = FALSE)",
+            "    .ow_by_example_output_bytes <- .ow_by_example_output_bytes + .ow_by_example_row_count * 8 + base::sum(base::as.double(base::nchar(.ow_by_example_value_names[!base::is.na(.ow_by_example_value_names)], type = \"bytes\")))",
+            "    base::attr(.ow_by_example_values, \"names\") <- NULL",
+            "    base::attr(.ow_by_example_values, \"names\") <- .ow_by_example_value_names",
+            "  }"
           ),
-          "    if (!base::identical(.ow_by_example_class, base::class(.ow_by_example_values))) base::stop(\"Open Wrangler by-example returned invalid output class metadata\", call. = FALSE)",
-          "  }",
-          "  if (.ow_by_example_result_kind == \"factor\") {",
-          sprintf(
-            "    .ow_by_example_levels <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"levels\", exact = TRUE), \"factor levels\", %dL, TRUE)",
-            maximum_text_bytes
-          ),
-          sprintf(
-            "    if (base::length(.ow_by_example_levels) > %dL || base::anyDuplicated.default(.ow_by_example_levels)) base::stop(\"Open Wrangler by-example returned invalid factor levels\", call. = FALSE)",
-            maximum_factor_levels
-          ),
-          "    .ow_by_example_factor_codes <- base::unclass(.ow_by_example_values)",
-          "    if (base::any(!base::is.na(.ow_by_example_factor_codes) & (.ow_by_example_factor_codes < 1L | .ow_by_example_factor_codes > base::length(.ow_by_example_levels)))) base::stop(\"Open Wrangler by-example returned invalid factor codes\", call. = FALSE)",
-          "  }",
-          "  if (.ow_by_example_result_kind == \"datetime\" && \"tzone\" %in% .ow_by_example_semantic_attribute_names) {",
-          sprintf(
-            "    .ow_by_example_timezone <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"tzone\", exact = TRUE), \"datetime timezone\", %dL, TRUE)",
-            maximum_name_bytes
-          ),
-          "    if (base::length(.ow_by_example_timezone) != 1L) base::stop(\"Open Wrangler by-example returned invalid datetime timezone metadata\", call. = FALSE)",
-          "  }",
-          "  if (.ow_by_example_result_kind == \"difftime\") {",
-          sprintf(
-            "    .ow_by_example_units <- .ow_by_example_metadata_text(base::attr(.ow_by_example_values, \"units\", exact = TRUE), \"duration units\", %dL, TRUE)",
-            maximum_name_bytes
-          ),
-          "    if (base::length(.ow_by_example_units) != 1L || !base::.subset2(.ow_by_example_units, 1L) %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(\"Open Wrangler by-example returned invalid duration units\", call. = FALSE)",
-          "  }",
-          "  .ow_by_example_value_names <- base::attr(.ow_by_example_values, \"names\", exact = TRUE)",
-          "  if (!base::is.null(.ow_by_example_value_names)) {",
-          "    if (!base::is.character(.ow_by_example_value_names) || base::is.object(.ow_by_example_value_names) || !base::is.null(base::attributes(.ow_by_example_value_names)) || base::length(.ow_by_example_value_names) != .ow_by_example_row_count) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
-          "    .ow_by_example_value_names <- base::vapply(base::seq_len(.ow_by_example_row_count), function(.ow_name_index) {",
-          "      .ow_name <- base::.subset2(.ow_by_example_value_names, .ow_name_index)",
-          "      if (base::is.na(.ow_name)) return(NA_character_)",
-          "      if (base::identical(base::Encoding(.ow_name), \"bytes\")) base::stop(\"Open Wrangler by-example returned invalid output names\", call. = FALSE)",
-          "      .ow_name_from <- if (base::identical(base::Encoding(.ow_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "      .ow_name_utf8 <- base::iconv(.ow_name, from = .ow_name_from, to = \"UTF-8\", sub = NA_character_)",
-          sprintf(
-            "      if (base::is.na(.ow_name_utf8) || base::nchar(.ow_name_utf8, type = \"bytes\") > %dL) base::stop(\"Open Wrangler by-example returned oversized or invalid output names\", call. = FALSE)",
-            maximum_text_bytes
-          ),
-          "      .ow_name_utf8",
-          "    }, base::character(1L), USE.NAMES = FALSE)",
-          "    .ow_by_example_output_bytes <- .ow_by_example_output_bytes + .ow_by_example_row_count * 8 + base::sum(base::as.double(base::nchar(.ow_by_example_value_names[!base::is.na(.ow_by_example_value_names)], type = \"bytes\")))",
-          "    base::attr(.ow_by_example_values, \"names\") <- NULL",
-          "    base::attr(.ow_by_example_values, \"names\") <- .ow_by_example_value_names",
-          "  }",
           sprintf(
             "  if (!base::is.finite(.ow_by_example_output_bytes) || .ow_by_example_output_bytes > %dL) base::stop(\"Open Wrangler by-example exceeds its aggregate output budget\", call. = FALSE)",
             maximum_operation_output_bytes
@@ -9656,6 +9695,7 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_pivot_output_keys <- vapply(c(.ow_pivot_label_name, .ow_pivot_value_name), .ow_pivot_name_key, character(1L), USE.NAMES = FALSE)",
           "  if (anyDuplicated(.ow_pivot_output_keys) || any(.ow_pivot_output_keys %in% .ow_pivot_input_keys)) stop(\"Open Wrangler Pivot longer output names collide under the portable rule\", call. = FALSE)",
           "  .ow_pivot_signature <- function(.ow_value) {",
+          "    if (inherits(.ow_value, \"clock_time_point\")) return(list(kind = \"clock\", clock = attr(.ow_value, \"clock\", exact = TRUE), precision = attr(.ow_value, \"precision\", exact = TRUE), classes = class(.ow_value)))",
           "    if (is.factor(.ow_value)) return(list(kind = \"factor\", levels = levels(.ow_value), ordered = is.ordered(.ow_value), classes = class(.ow_value)))",
           "    if (inherits(.ow_value, \"POSIXct\")) return(list(kind = \"datetime\", timezone = attr(.ow_value, \"tzone\", exact = TRUE), classes = class(.ow_value)))",
           "    if (inherits(.ow_value, \"difftime\")) return(list(kind = \"difftime\", units = attr(.ow_value, \"units\", exact = TRUE), classes = class(.ow_value)))",
@@ -9671,6 +9711,7 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_pivot_retained <- setdiff(seq_len(ncol(.ow_result)), .ow_pivot_positions)",
           if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_pivot_longer(.ow_result, .ow_pivot_retained, .ow_pivot_positions, .ow_pivot_label_name, .ow_pivot_value_name, .ow_library)" else c(
             "  .ow_pivot_row_indices <- if (.ow_pivot_rows == 0L) integer() else rep.int(seq_len(.ow_pivot_rows), length(.ow_pivot_positions))",
+            if (isTRUE(step$clockValues)) "  .ow_pivot_values <- do.call(vctrs::vec_c, unname(.ow_pivot_selected))" else c(
             "  .ow_pivot_storage <- lapply(.ow_pivot_selected, function(.ow_column) { attributes(.ow_column) <- NULL; .ow_column })",
             "  .ow_pivot_storage_type <- typeof(.ow_pivot_storage[[1L]])",
             "  if (any(!vapply(.ow_pivot_storage, function(.ow_column) identical(typeof(.ow_column), .ow_pivot_storage_type), logical(1L)))) stop(\"Open Wrangler Pivot longer selected columns have incompatible R storage\", call. = FALSE)",
@@ -9678,7 +9719,8 @@ openwrangler_r_kernel_agent <- local({
             "  .ow_pivot_cursor <- 1L",
             "  for (.ow_pivot_column in .ow_pivot_storage) { .ow_pivot_next <- .ow_pivot_cursor + length(.ow_pivot_column); if (length(.ow_pivot_column) != 0L) .ow_pivot_values[.ow_pivot_cursor:(.ow_pivot_next - 1L)] <- .ow_pivot_column; .ow_pivot_cursor <- .ow_pivot_next }",
             "  .ow_pivot_first <- .ow_pivot_selected[[1L]]",
-            "  if (is.factor(.ow_pivot_first)) { attr(.ow_pivot_values, \"levels\") <- levels(.ow_pivot_first); attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) } else if (inherits(.ow_pivot_first, \"POSIXct\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); .ow_pivot_tzone <- attr(.ow_pivot_first, \"tzone\", exact = TRUE); if (!is.null(.ow_pivot_tzone)) attr(.ow_pivot_values, \"tzone\") <- .ow_pivot_tzone } else if (inherits(.ow_pivot_first, \"difftime\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); attr(.ow_pivot_values, \"units\") <- attr(.ow_pivot_first, \"units\", exact = TRUE) } else if (inherits(.ow_pivot_first, \"Date\") || inherits(.ow_pivot_first, \"integer64\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) }",
+            "  if (is.factor(.ow_pivot_first)) { attr(.ow_pivot_values, \"levels\") <- levels(.ow_pivot_first); attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) } else if (inherits(.ow_pivot_first, \"POSIXct\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); .ow_pivot_tzone <- attr(.ow_pivot_first, \"tzone\", exact = TRUE); if (!is.null(.ow_pivot_tzone)) attr(.ow_pivot_values, \"tzone\") <- .ow_pivot_tzone } else if (inherits(.ow_pivot_first, \"difftime\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first); attr(.ow_pivot_values, \"units\") <- attr(.ow_pivot_first, \"units\", exact = TRUE) } else if (inherits(.ow_pivot_first, \"Date\") || inherits(.ow_pivot_first, \"integer64\")) { attr(.ow_pivot_values, \"class\") <- class(.ow_pivot_first) }"
+            ),
             "  if (!identical(.ow_pivot_signature(.ow_pivot_values), .ow_pivot_signatures[[1L]])) stop(\"Open Wrangler Pivot longer changed R scalar metadata\", call. = FALSE)",
             "  .ow_pivot_labels <- rep(.ow_pivot_selected_names, each = .ow_pivot_rows)",
             "  if (inherits(.ow_result, \"data.table\")) {",
@@ -9724,7 +9766,7 @@ openwrangler_r_kernel_agent <- local({
             "  if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"Open Wrangler Pivot wider requires data.table\", call. = FALSE)",
             "  .ow_wider_identifier_values <- lapply(.ow_wider_retained, function(.ow_position) { .ow_column <- .ow_result[[.ow_position]]; if (is.double(.ow_column) && !is.object(.ow_column)) .ow_column[is.nan(.ow_column)] <- NA_real_; .ow_column })",
             "  if (length(.ow_wider_retained) == 0L) { .ow_wider_groups <- if (nrow(.ow_result) == 0L) integer() else rep.int(1L, nrow(.ow_result)) } else {",
-            "    .ow_wider_identifiers <- data.table::as.data.table(.ow_wider_identifier_values)",
+            if (isTRUE(step$clockKeys)) "    .ow_wider_identifiers <- data.table::as.data.table(lapply(.ow_wider_identifier_values, function(.ow_column) if (inherits(.ow_column, \"clock_time_point\")) as.integer(vctrs::vec_group_id(.ow_column)) else .ow_column))" else "    .ow_wider_identifiers <- data.table::as.data.table(.ow_wider_identifier_values)",
             "    .ow_wider_identifier_names <- paste0(\"ow_identifier_\", seq_along(.ow_wider_retained))",
             "    data.table::setnames(.ow_wider_identifiers, .ow_wider_identifier_names)",
             "    .ow_wider_identifiers[, (\"__open_wrangler_internal_row_id_pivot_wider_group\") := .GRP, by = .ow_wider_identifier_names]",
@@ -9734,11 +9776,13 @@ openwrangler_r_kernel_agent <- local({
             "  .ow_wider_key_ordinals <- match(.ow_wider_names, .ow_wider_keys)",
             "  if (anyDuplicated(paste0(.ow_wider_groups, \":\", .ow_wider_key_ordinals))) stop(\"Pivot wider found duplicate identifier-and-key rows\", call. = FALSE)",
             "  .ow_wider_value_source <- .ow_result[[.ow_wider_values_position]]",
+            if (identical(step$valueSemantics$kind, "clock_datetime")) "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- vctrs::vec_slice(.ow_wider_value_source, rep.int(NA_integer_, length(.ow_wider_group_rows))); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_source[.ow_rows]; .ow_storage })" else c(
             "  .ow_wider_value_storage <- .ow_wider_value_source; attributes(.ow_wider_value_storage) <- NULL",
             "  .ow_wider_restore <- function(.ow_storage) { if (is.factor(.ow_wider_value_source)) { attr(.ow_storage, \"levels\") <- levels(.ow_wider_value_source); attr(.ow_storage, \"class\") <- class(.ow_wider_value_source) } else if (inherits(.ow_wider_value_source, \"POSIXct\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_tzone <- attr(.ow_wider_value_source, \"tzone\", exact = TRUE); if (!is.null(.ow_tzone)) attr(.ow_storage, \"tzone\") <- .ow_tzone } else if (inherits(.ow_wider_value_source, \"difftime\")) { attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); attr(.ow_storage, \"units\") <- attr(.ow_wider_value_source, \"units\", exact = TRUE) } else if (inherits(.ow_wider_value_source, \"Date\") || inherits(.ow_wider_value_source, \"integer64\")) attr(.ow_storage, \"class\") <- class(.ow_wider_value_source); .ow_storage }",
             "  .ow_wider_missing <- function(.ow_size) { .ow_storage <- vector(typeof(.ow_wider_value_storage), .ow_size); if (.ow_size != 0L) { if (inherits(.ow_wider_value_source, \"integer64\")) .ow_storage[] <- unclass(bit64::as.integer64(NA_character_))[[1L]] else if (typeof(.ow_storage) == \"integer\") .ow_storage[] <- NA_integer_ else if (typeof(.ow_storage) == \"logical\") .ow_storage[] <- NA else if (typeof(.ow_storage) == \"character\") .ow_storage[] <- NA_character_ else .ow_storage[] <- NA_real_ }; .ow_storage }",
-            "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })",
-            "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = .ow_identifier, value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }"
+            "  .ow_wider_values <- lapply(seq_along(.ow_wider_keys), function(.ow_output) { .ow_storage <- .ow_wider_missing(length(.ow_wider_group_rows)); .ow_rows <- which(.ow_wider_key_ordinals == .ow_output); if (length(.ow_rows) != 0L) .ow_storage[.ow_wider_groups[.ow_rows]] <- .ow_wider_value_storage[.ow_rows]; .ow_wider_restore(.ow_storage) })"
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, with = FALSE]; data.table::setkeyv(.ow_result, NULL); for (.ow_identifier in seq_along(.ow_wider_identifier_values)) data.table::set(.ow_result, j = .ow_identifier, value = .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]); for (.ow_output in seq_along(.ow_wider_output_names)) data.table::set(.ow_result, j = .ow_wider_output_names[[.ow_output]], value = .ow_wider_values[[.ow_output]]) } else { .ow_result <- .ow_result[.ow_wider_group_rows, .ow_wider_retained, drop = FALSE]; .ow_wider_classes <- class(.ow_result); class(.ow_result) <- NULL; for (.ow_identifier in seq_along(.ow_wider_identifier_values)) .ow_result[[.ow_identifier]] <- .ow_wider_identifier_values[[.ow_identifier]][.ow_wider_group_rows]; class(.ow_result) <- .ow_wider_classes; .ow_names <- names(.ow_result); for (.ow_output in seq_along(.ow_wider_output_names)) .ow_result[[length(.ow_result) + 1L]] <- .ow_wider_values[[.ow_output]]; names(.ow_result) <- c(.ow_names, .ow_wider_output_names) }"
           ),
           "  attr(.ow_result, \"row.names\") <- if (nrow(.ow_result) == 0L) integer() else c(NA_integer_, -as.integer(nrow(.ow_result)))",
           sprintf("  .ow_result_ids <- c(.ow_result_ids[.ow_wider_retained], c(%s))", output_ids)
@@ -10063,7 +10107,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (.ow_storage_length(.ow_result) < .ow_datetime_position || !identical(.ow_datetime_frame_names[[.ow_datetime_position]], .ow_datetime_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  .ow_datetime_source <- .ow_result[[.ow_datetime_position]]",
           row_type_guard(".ow_datetime_source", list(semanticsKind = step$semanticKind)),
-          exact_formula_datetime_type_guard(".ow_datetime_source", step),
+          if (identical(step$semanticKind, "clock_datetime")) clock_type_guard(".ow_datetime_source", step) else exact_formula_datetime_type_guard(".ow_datetime_source", step),
           "  .ow_datetime_source_count <- .ow_storage_length(.ow_datetime_source)",
           sprintf(
             "  .ow_datetime_output_bytes <- as.double(.ow_datetime_source_count) * %dL",
@@ -10090,63 +10134,83 @@ openwrangler_r_kernel_agent <- local({
           } else {
             character()
           },
-          "  .ow_datetime_source_storage <- unclass(.ow_datetime_source)",
-          "  .ow_datetime_values <- rep.int(NA_character_, .ow_datetime_source_count)",
-          "  .ow_datetime_start <- 1L",
-          "  while (.ow_datetime_start <= .ow_datetime_source_count) {",
-          sprintf(
-            "    .ow_datetime_end <- min(.ow_datetime_source_count, .ow_datetime_start + %dL - 1L)",
-            maximum_operation_output_chunk_rows
-          ),
-          "    .ow_datetime_positions <- seq.int(.ow_datetime_start, .ow_datetime_end)",
-          "    .ow_datetime_chunk_count <- length(.ow_datetime_positions)",
-          "    .ow_datetime_chunk_numeric <- .ow_datetime_source_storage[.ow_datetime_positions]",
-          if (identical(step$semanticKind, "date")) {
-            "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = \"Date\")"
-          } else {
-            "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = c(\"POSIXct\", \"POSIXt\"), tzone = .ow_datetime_timezone)"
-          },
-          "    if (any(is.nan(.ow_datetime_chunk_numeric)) || any(!is.na(.ow_datetime_chunk_numeric) & !is.finite(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a non-finite value\", call. = FALSE)",
-          "    .ow_datetime_chunk_present <- !is.na(.ow_datetime_chunk_numeric)",
-          if (identical(step$semanticKind, "date")) {
-            c(
-              "    if (any(.ow_datetime_chunk_present & .ow_datetime_chunk_numeric != floor(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a fractional Date\", call. = FALSE)",
-              "    .ow_datetime_contract_display <- tryCatch(base::format.Date(.ow_datetime_chunk_source, format = \"%Y-%m-%d\"), error = function(.ow_error) NULL)",
-              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & (is.na(.ow_datetime_contract_display) | !grepl(\"^[0-9]{1,4}-[0-9]{2}-[0-9]{2}$\", .ow_datetime_contract_display)))) stop(\"Open Wrangler Format Datetime received a Date outside the supported range\", call. = FALSE)"
+          if (identical(step$semanticKind, "clock_datetime")) c(
+            "  .ow_datetime_values <- .ow_clock_helpers$clock_format(.ow_datetime_source, .ow_datetime_format)",
+            "  .ow_datetime_special <- !is.na(.ow_datetime_values) & grepl(\"[^ -~]\", .ow_datetime_values, perl = TRUE)",
+            "  .ow_datetime_values[.ow_datetime_special] <- vapply(.ow_datetime_values[.ow_datetime_special], function(.ow_value) {",
+            "    if (!is.character(.ow_value) || length(.ow_value) != 1L || is.na(.ow_value) || identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Format Datetime returned invalid text\", call. = FALSE)",
+            "    .ow_encoding <- Encoding(.ow_value)",
+            "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+            "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Format Datetime produced invalid or oversized text\", call. = FALSE)",
+            "    .ow_utf8",
+            "  }, character(1L), USE.NAMES = FALSE)",
+            "  if (any(nchar(.ow_datetime_values, type = \"bytes\") > 8192L, na.rm = TRUE)) stop(\"Open Wrangler Format Datetime produced invalid or oversized text\", call. = FALSE)",
+            "  .ow_datetime_output_bytes <- .ow_datetime_output_bytes + sum(as.double(nchar(.ow_datetime_values[!is.na(.ow_datetime_values)], type = \"bytes\")))",
+            sprintf(
+              "  if (!is.finite(.ow_datetime_output_bytes) || .ow_datetime_output_bytes > %dL) stop(\"Open Wrangler Format Datetime exceeds the %d-byte aggregate output budget\", call. = FALSE)",
+              maximum_operation_output_bytes,
+              maximum_operation_output_bytes
             )
-          } else {
-            c(
-              "    .ow_datetime_contract_display <- tryCatch(base::format.POSIXct(.ow_datetime_chunk_source, tz = .ow_datetime_timezone, format = \"%Y-%m-%dT%H:%M:%OS6\", usetz = FALSE), error = function(.ow_error) NULL)",
-              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & is.na(.ow_datetime_contract_display))) stop(\"Open Wrangler Format Datetime received a POSIXct value outside the supported range\", call. = FALSE)"
-            )
-          },
-          if (identical(step$semanticKind, "date")) {
-            "    .ow_datetime_chunk_values <- base::format.Date(.ow_datetime_chunk_source, format = .ow_datetime_format)"
-          } else {
-            "    .ow_datetime_chunk_values <- base::format.POSIXct(.ow_datetime_chunk_source, format = .ow_datetime_format, tz = .ow_datetime_timezone, usetz = FALSE)"
-          },
-          "    if (!is.character(.ow_datetime_chunk_values) || length(.ow_datetime_chunk_values) != .ow_datetime_chunk_count) stop(\"Open Wrangler Format Datetime returned an invalid text result\", call. = FALSE)",
-          "    .ow_datetime_chunk_values <- vapply(seq_along(.ow_datetime_chunk_values), function(.ow_index) {",
-          "      if (is.na(.ow_datetime_chunk_numeric[[.ow_index]])) return(NA_character_)",
-          "      .ow_value <- .ow_datetime_chunk_values[[.ow_index]]",
-          "      if (!is.character(.ow_value) || length(.ow_value) != 1L || is.na(.ow_value) || identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Format Datetime returned invalid text\", call. = FALSE)",
-          "      .ow_encoding <- Encoding(.ow_value)",
-          "      .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
-          "      .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
-          "      if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Format Datetime produced invalid or oversized text\", call. = FALSE)",
-          "      .ow_utf8",
-          "    }, character(1L), USE.NAMES = FALSE)",
-          "    .ow_datetime_chunk_bytes <- sum(as.double(nchar(.ow_datetime_chunk_values[!is.na(.ow_datetime_chunk_values)], type = \"bytes\")))",
-          "    .ow_datetime_next_output_bytes <- .ow_datetime_output_bytes + .ow_datetime_chunk_bytes",
-          sprintf(
-            "    if (!is.finite(.ow_datetime_next_output_bytes) || .ow_datetime_next_output_bytes > %dL) stop(\"Open Wrangler Format Datetime exceeds the %d-byte aggregate output budget\", call. = FALSE)",
-            maximum_operation_output_bytes,
-            maximum_operation_output_bytes
-          ),
-          "    .ow_datetime_output_bytes <- .ow_datetime_next_output_bytes",
-          "    .ow_datetime_values[.ow_datetime_positions] <- .ow_datetime_chunk_values",
-          "    .ow_datetime_start <- .ow_datetime_end + 1L",
-          "  }"
+          ) else c(
+            "  .ow_datetime_source_storage <- unclass(.ow_datetime_source)",
+            "  .ow_datetime_values <- rep.int(NA_character_, .ow_datetime_source_count)",
+            "  .ow_datetime_start <- 1L",
+            "  while (.ow_datetime_start <= .ow_datetime_source_count) {",
+            sprintf(
+              "    .ow_datetime_end <- min(.ow_datetime_source_count, .ow_datetime_start + %dL - 1L)",
+              maximum_operation_output_chunk_rows
+            ),
+            "    .ow_datetime_positions <- seq.int(.ow_datetime_start, .ow_datetime_end)",
+            "    .ow_datetime_chunk_count <- length(.ow_datetime_positions)",
+            "    .ow_datetime_chunk_numeric <- .ow_datetime_source_storage[.ow_datetime_positions]",
+            if (identical(step$semanticKind, "date")) {
+              "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = \"Date\")"
+            } else {
+              "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = c(\"POSIXct\", \"POSIXt\"), tzone = .ow_datetime_timezone)"
+            },
+            "    if (any(is.nan(.ow_datetime_chunk_numeric)) || any(!is.na(.ow_datetime_chunk_numeric) & !is.finite(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a non-finite value\", call. = FALSE)",
+            "    .ow_datetime_chunk_present <- !is.na(.ow_datetime_chunk_numeric)",
+            if (identical(step$semanticKind, "date")) {
+              c(
+                "    if (any(.ow_datetime_chunk_present & .ow_datetime_chunk_numeric != floor(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a fractional Date\", call. = FALSE)",
+                "    .ow_datetime_contract_display <- tryCatch(base::format.Date(.ow_datetime_chunk_source, format = \"%Y-%m-%d\"), error = function(.ow_error) NULL)",
+                "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & (is.na(.ow_datetime_contract_display) | !grepl(\"^[0-9]{1,4}-[0-9]{2}-[0-9]{2}$\", .ow_datetime_contract_display)))) stop(\"Open Wrangler Format Datetime received a Date outside the supported range\", call. = FALSE)"
+              )
+            } else {
+              c(
+                "    .ow_datetime_contract_display <- tryCatch(base::format.POSIXct(.ow_datetime_chunk_source, tz = .ow_datetime_timezone, format = \"%Y-%m-%dT%H:%M:%OS6\", usetz = FALSE), error = function(.ow_error) NULL)",
+                "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & is.na(.ow_datetime_contract_display))) stop(\"Open Wrangler Format Datetime received a POSIXct value outside the supported range\", call. = FALSE)"
+              )
+            },
+            if (identical(step$semanticKind, "date")) {
+              "    .ow_datetime_chunk_values <- base::format.Date(.ow_datetime_chunk_source, format = .ow_datetime_format)"
+            } else {
+              "    .ow_datetime_chunk_values <- base::format.POSIXct(.ow_datetime_chunk_source, format = .ow_datetime_format, tz = .ow_datetime_timezone, usetz = FALSE)"
+            },
+            "    if (!is.character(.ow_datetime_chunk_values) || length(.ow_datetime_chunk_values) != .ow_datetime_chunk_count) stop(\"Open Wrangler Format Datetime returned an invalid text result\", call. = FALSE)",
+            "    .ow_datetime_chunk_values <- vapply(seq_along(.ow_datetime_chunk_values), function(.ow_index) {",
+            "      if (is.na(.ow_datetime_chunk_numeric[[.ow_index]])) return(NA_character_)",
+            "      .ow_value <- .ow_datetime_chunk_values[[.ow_index]]",
+            "      if (!is.character(.ow_value) || length(.ow_value) != 1L || is.na(.ow_value) || identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Format Datetime returned invalid text\", call. = FALSE)",
+            "      .ow_encoding <- Encoding(.ow_value)",
+            "      .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+            "      .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+            "      if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Format Datetime produced invalid or oversized text\", call. = FALSE)",
+            "      .ow_utf8",
+            "    }, character(1L), USE.NAMES = FALSE)",
+            "    .ow_datetime_chunk_bytes <- sum(as.double(nchar(.ow_datetime_chunk_values[!is.na(.ow_datetime_chunk_values)], type = \"bytes\")))",
+            "    .ow_datetime_next_output_bytes <- .ow_datetime_output_bytes + .ow_datetime_chunk_bytes",
+            sprintf(
+              "    if (!is.finite(.ow_datetime_next_output_bytes) || .ow_datetime_next_output_bytes > %dL) stop(\"Open Wrangler Format Datetime exceeds the %d-byte aggregate output budget\", call. = FALSE)",
+              maximum_operation_output_bytes,
+              maximum_operation_output_bytes
+            ),
+            "    .ow_datetime_output_bytes <- .ow_datetime_next_output_bytes",
+            "    .ow_datetime_values[.ow_datetime_positions] <- .ow_datetime_chunk_values",
+            "    .ow_datetime_start <- .ow_datetime_end + 1L",
+            "  }"
+          )
         )
         if (isTRUE(step$inPlace)) {
           lines <- c(
@@ -10192,6 +10256,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (ncol(.ow_result) < .ow_fill_position || !identical(names(.ow_result)[[.ow_fill_position]], .ow_fill_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  .ow_fill_source <- .ow_result[[.ow_fill_position]]",
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
+          if (identical(step$semanticKind, "clock_datetime")) clock_type_guard(".ow_fill_source", step),
           "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
         )
         if (interpolation_fill) {
@@ -10216,7 +10281,8 @@ openwrangler_r_kernel_agent <- local({
               lines,
               sprintf("  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler fallback column reference is stale\", call. = FALSE)", fallback$position, fallback$position, r_string(fallback$oldName)),
               sprintf("  %s <- .ow_result[[%dL]]", fallback_variable, fallback$position),
-              row_type_guard(fallback_variable, list(semanticsKind = fallback$semanticKind))
+              row_type_guard(fallback_variable, list(semanticsKind = fallback$semanticKind)),
+              if (identical(fallback$semanticKind, "clock_datetime")) clock_type_guard(fallback_variable, fallback)
             )
           }
           fallback_list <- sprintf("list(%s)", paste(fallback_variables, collapse = ", "))

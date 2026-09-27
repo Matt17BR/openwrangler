@@ -1726,10 +1726,12 @@ records, so the shared library helpers replace each clock column with a row-posi
 restore the clock values, sliced by the resulting positions, when converting back. Row keys are computed from the clock
 values themselves. Generated code deparses the same helpers. Actual data.table frames containing clock records remain
 unsupported.
-Every library supports structural cleaning, exact filtering/sorting and missing/duplicate handling.
-Temporal formatting, casts, Fill, grouping, pivoting and By Example
-do not acquire clock semantics implicitly; unsupported operations refuse before publication. Other operations remain
-available when clock columns are not inputs or grouping/identifier keys.
+Every library supports the complete catalog on clock columns, with the Python engines' refusals for datetime
+aggregates and fills. Format Datetime and Convert Type to text format whole UTC seconds with `strftime` and append
+the exact fraction from the tick remainder. Literal and fallback fills require the target's clock and precision.
+Grouping, pivot identifiers and fill keys use vctrs identities, and Pivot longer stacks values with `vctrs::vec_c`.
+Interpolation coordinates use offsets from the earliest instant, which stay exact in a double for spans up to about
+104 days at nanosecond precision. By Example evaluates a clock copy once on the whole column.
 
 Plain-double `NA`, `NaN` and both infinities remain distinct. Non-finite classed temporal values, fractional Dates,
 reserved integer missing-value sentinels used as values, recursive containers, unsupported attributes and malformed names

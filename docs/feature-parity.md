@@ -735,20 +735,23 @@ semantics. An active R terminal has no source document for generated-code insert
 In **2.6**, base data.frame and tibble columns can retain exact `clock_naive_time` and `clock_sys_time` values at
 millisecond, microsecond or nanosecond precision. Parquet local timestamps keep their timezone-free meaning;
 nanosecond timestamps preserve adjacent ticks, nulls and the full signed 64-bit range. UTC-adjusted values display
-with `+00:00`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. These columns
-support base R and dplyr cleaning, including Rename, Select/Drop/Clone Columns, Filter/Sort
-Rows, Drop Missing Rows and duplicate handling, with matching generated R. CSV keeps exact ISO text and Parquet
-keeps timestamp precision and civil/instant meaning.
+with `+00:00`. Millisecond and microsecond clock values must fall within calendar years 0000 to 9999. CSV keeps exact
+ISO text and Parquet keeps timestamp precision and civil/instant meaning.
 
 POSIXct grid text, copied cells, profiles and Convert Type to text round to microseconds, avoiding a one-microsecond
 display error from native R's truncating format. Source values keep their original precision. Explicit Format Datetime
 and existing One Hot column names retain their native formatting.
 
-All four R libraries open, view, clean and export these Parquet files with the same operations. Actual data.table
-frames and nested values containing clock records remain unsupported.
+All four R libraries open, view, clean and export these columns with the same operations and matching generated R.
+Actual data.table frames and nested values containing clock records remain unsupported.
 
-Format Datetime, Convert Type, Fill, Group By, pivots and By Example do not support clock columns. Other operations
-remain available when clock columns are not inputs or grouping/identifier keys.
+In **2.7**, Format Datetime, Convert Type, Fill, Group By, Pivot longer/wider and By Example also accept clock columns.
+Format Datetime's `%OS1` to `%OS9` print exact fraction digits. Convert Type to text writes every fraction digit of the
+column's precision, with `Z` for UTC values; converting to Date keeps the calendar day. Fill accepts a timestamp literal or
+fallback column with the same precision and meaning, fills forward or backward, and uses clock columns as group keys
+or interpolation coordinates. Group By uses clock columns as keys and computes their min, max, count, distinct count,
+first and last. As in the Python engines, Group By refuses their mean, median and sum, Fill refuses mean, median, most
+frequent, grouped and interpolated clock targets, and By Example only copies a clock column.
 
 In **2.6**, ordinary list columns can contain atomic vectors of one native type, including factors, temporal values and integer64.
 Typed empty vectors retain their type; `list()` is an untyped empty value and outer `NULL` is missing. Flat named records

@@ -735,7 +735,7 @@ for (library in c("dplyr", "data.table", "collapse")) {
 }
 
 # Every operation carries an untouched nanosecond timestamp column through each
-# library exactly as base does. No library accepts it as a Pivot wider identifier.
+# library exactly as base does, including as a Pivot wider identifier.
 precise_passenger_outputs <- list()
 retained_generated_code <- catalog_generated_code
 for (library in c("base", "dplyr", "data.table", "collapse")) {
@@ -750,19 +750,6 @@ for (library in c("base", "dplyr", "data.table", "collapse")) {
         format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond")
       frame
     }
-    if (identical(kind, "pivotWider")) {
-      input <- case$source()
-      assign("catalog_frame", input, envir = source_environment)
-      opened <- dispatch("openSession", list(sessionId = session_id(7000L + index), variableName = "catalog_frame", page = page_window(), library = library))
-      assert_identical(opened$kind, "page", sprintf("%s precise Pivot wider source did not open", library))
-      refused <- dispatch("previewStep", list(sessionId = session_id(7000L + index), revision = 0L,
-        step = case$step(input, "precise-pivot-wider"), page = page_window()))
-      assert_identical(refused$message, "Pivot wider identifier columns require portable scalar R values",
-        sprintf("%s admitted a precise timestamp as a Pivot wider identifier", library))
-      assert_identical(dispatch("closeSession", list(sessionId = session_id(7000L + index)))$kind, "closed", "precise Pivot wider did not close")
-      remove("catalog_frame", envir = source_environment)
-      next
-    }
     output <- tryCatch({
       run_catalog_case(case, kind, 7000L + index, library)
       snapshot_from_latest_capture(paste(library, kind, "with a precise timestamp"))
@@ -776,6 +763,161 @@ for (library in c("base", "dplyr", "data.table", "collapse")) {
   }
 }
 catalog_generated_code <- retained_generated_code
+
+# Nanosecond timestamps are the operated column in every operation Python admits
+# for datetimes. Each case checks exact values, live-versus-generated identity and
+# the same result in every library.
+local({
+  parse_precise <- function(text) clock::naive_time_parse(text, format = "%Y-%m-%d %H:%M:%S", precision = "nanosecond")
+  precise_source <- function() {
+    frame <- data.frame(group = c("a", "a", "b", "b"), key = c("u", "v", "u", "v"), weight = c(1, NA, 3, 4))
+    frame$precise <- parse_precise(c("2026-03-29 02:30:00.000000001", NA, "2026-03-29 02:30:01.999999999", "2026-03-30 00:00:00"))
+    frame$backup <- parse_precise(c("2027-01-01 00:00:00.25", "2027-01-01 00:00:01.000000007", NA, "2027-01-02 00:00:00"))
+    frame$stamp <- parse_precise(c("2026-01-01 00:00:00", "2026-01-01 00:00:00.000000001", "2026-01-01 00:00:00.000000004", "2026-01-01 00:00:01"))
+    frame$slot <- parse_precise(c("2026-01-01 00:00:00.000000001", "2026-01-01 00:00:00.000000001", "2026-01-02 00:00:00", "2026-01-02 00:00:00"))
+    frame
+  }
+  precise_text <- c("2026-03-29T02:30:00.000000001", NA, "2026-03-29T02:30:01.999999999", "2026-03-30T00:00:00.000000000")
+  fill_step <- function(replacement) function(frame, id) {
+    built <- replacement(frame)
+    target <- if (built$kind %in% c("groupedStatistic", "linearInterpolation")) "weight" else "precise"
+    step_with(id, "fillMissingValues", list(column = column_reference(frame, target), replacement = built))
+  }
+  wider_output <- function(key) list(
+    key = list(kind = "typedSelection", version = 1L, columnType = "string",
+      cell = list(kind = "string", raw = key, display = key, isNull = FALSE, isNaN = FALSE)),
+    name = paste0("at ", key)
+  )
+  cases <- list(
+    formatDatetime = list(
+      step = function(frame, id) step_with(id, "formatDatetime", list(
+        column = column_reference(frame, "precise"), format = "%Y-%m-%d %H:%M:%S|%OS3|%OS9|%%", newColumn = "formatted")),
+      verify = function(output, input) assert_identical(unname(output$formatted),
+        c("2026-03-29 02:30:00|00.000|00.000000001|%", NA, "2026-03-29 02:30:01|01.999|01.999999999|%", "2026-03-30 00:00:00|00.000|00.000000000|%"),
+        "Format Datetime rounded or truncated a nanosecond timestamp")
+    ),
+    castString = list(
+      step = function(frame, id) step_with(id, "castColumn", list(column = column_reference(frame, "precise"), dtype = "string")),
+      verify = function(output, input) assert_identical(unname(output$precise), precise_text, "Convert Type to text lost timestamp digits")
+    ),
+    castDate = list(
+      step = function(frame, id) step_with(id, "castColumn", list(column = column_reference(frame, "precise"), dtype = "date")),
+      verify = function(output, input) assert_identical(unname(output$precise), as.Date(c("2026-03-29", NA, "2026-03-29", "2026-03-30")),
+        "Convert Type to date did not floor timestamps to their day")
+    ),
+    castDatetime = list(
+      step = function(frame, id) step_with(id, "castColumn", list(column = column_reference(frame, "precise"), dtype = "datetime")),
+      verify = function(output, input) assert_identical(output$precise, input$precise, "Convert Type to datetime changed a nanosecond timestamp")
+    ),
+    fillLiteral = list(
+      step = fill_step(function(frame) list(kind = "datetime", value = "2026-01-01T00:00:00.123456789")),
+      verify = function(output, input) assert_identical(format(output$precise),
+        replace(precise_text, 2L, "2026-01-01T00:00:00.123456789"), "Fill Missing Values changed a nanosecond literal")
+    ),
+    fillFallback = list(
+      step = fill_step(function(frame) list(kind = "fallbackColumns", columns = I(list(column_reference(frame, "backup"))))),
+      verify = function(output, input) assert_identical(format(output$precise),
+        replace(precise_text, 2L, "2027-01-01T00:00:01.000000007"), "Fill Missing Values changed a nanosecond fallback")
+    ),
+    fillForward = list(
+      step = fill_step(function(frame) list(kind = "directional", direction = "forward",
+        orderBy = I(list(list(column = column_reference(frame, "stamp"), direction = "asc", nulls = "last"))))),
+      verify = function(output, input) assert_identical(format(output$precise),
+        replace(precise_text, 2L, precise_text[[1L]]), "Fill Missing Values did not carry a nanosecond timestamp forward")
+    ),
+    fillGroupedByTimestamp = list(
+      step = fill_step(function(frame) list(kind = "groupedStatistic", statistic = "median", keys = I(list(column_reference(frame, "slot"))))),
+      verify = function(output, input) assert_identical(output$weight, c(1, 1, 3, 4), "Fill Missing Values did not group by exact timestamps")
+    ),
+    fillInterpolateByTimestamp = list(
+      step = fill_step(function(frame) list(kind = "linearInterpolation", coordinate = column_reference(frame, "stamp"))),
+      verify = function(output, input) assert_identical(output$weight, c(1, 1.5, 3, 4), "Linear interpolation lost nanosecond coordinate spacing")
+    ),
+    groupByTimestamp = list(
+      step = function(frame, id) step_with(id, "groupBy", list(keys = I(list(column_reference(frame, "slot"))),
+        aggregations = I(list(list(column = column_reference(frame, "weight"), operation = "max", alias = "heaviest"))))),
+      verify = function(output, input) {
+        assert_identical(format(output$slot), c("2026-01-01T00:00:00.000000001", "2026-01-02T00:00:00.000000000"), "Group By changed exact timestamp keys")
+        assert_identical(unname(output$heaviest), c(1, 4), "Group By by timestamp returned the wrong aggregate")
+      }
+    ),
+    groupTimestamps = list(
+      step = function(frame, id) step_with(id, "groupBy", list(keys = I(list(column_reference(frame, "group"))),
+        aggregations = I(lapply(c("min", "max", "nUnique"), function(operation) list(
+          column = column_reference(frame, "precise"), operation = operation, alias = paste("precise", operation)))))),
+      verify = function(output, input) {
+        assert_identical(format(output[["precise min"]]), precise_text[c(1L, 3L)], "Group By min changed a nanosecond timestamp")
+        assert_identical(format(output[["precise max"]]), precise_text[c(1L, 4L)], "Group By max changed a nanosecond timestamp")
+        assert_identical(as.double(output[["precise nUnique"]]), c(1, 2), "Group By counted nanosecond timestamps inexactly")
+      }
+    ),
+    pivotLonger = list(
+      step = function(frame, id) step_with(id, "pivotLonger", list(
+        columns = I(list(column_reference(frame, "precise"), column_reference(frame, "backup"))), labelColumn = "which", valueColumn = "when")),
+      verify = function(output, input) assert_identical(format(output$when), c(precise_text, format(input$backup)),
+        "Pivot longer changed stacked nanosecond timestamps")
+    ),
+    pivotWider = list(
+      source = function() precise_source()[c("group", "key", "precise", "slot")],
+      step = function(frame, id) step_with(id, "pivotWider", list(
+        namesFrom = column_reference(frame, "key"), valuesFrom = column_reference(frame, "precise"),
+        outputs = I(lapply(c("u", "v"), wider_output)))),
+      verify = function(output, input) {
+        assert_identical(format(output$slot), c("2026-01-01T00:00:00.000000001", "2026-01-02T00:00:00.000000000"),
+          "Pivot wider changed exact timestamp identifiers")
+        assert_identical(format(output[["at u"]]), precise_text[c(1L, 3L)], "Pivot wider changed nanosecond values")
+        assert_identical(format(output[["at v"]]), precise_text[c(2L, 4L)], "Pivot wider changed nanosecond values")
+      }
+    ),
+    byExample = list(
+      step = function(frame, id) step_with(id, "byExample", list(
+        sourceColumns = I(list(column_reference(frame, "group"), column_reference(frame, "precise"))),
+        newColumn = "copied",
+        examples = I(list(
+          list(inputs = I(list("a", precise_text[[1L]])), output = precise_text[[1L]]),
+          list(inputs = I(list("b", precise_text[[3L]])), output = precise_text[[3L]])
+        ))
+      )),
+      verify = function(output, input) assert_identical(output$copied, input$precise, "By Example changed a copied nanosecond timestamp")
+    )
+  )
+  retained_code <- catalog_generated_code
+  outputs <- list()
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) {
+      name <- names(cases)[[index]]
+      case <- cases[[index]]
+      if (is.null(case$source)) case$source <- precise_source
+      kind <- case$step(case$source(), "probe")$kind
+      output <- tryCatch({
+        run_catalog_case(case, kind, 7100L + index, library)
+        snapshot_from_latest_capture(paste(library, name, "on a precise timestamp"))
+      }, error = function(error) stop(sprintf("the %s precise %s case failed: %s", library, name, conditionMessage(error)), call. = FALSE))
+      if (identical(library, "base")) {
+        outputs[[name]] <- output
+      } else {
+        assert_true(identical(canonical_frame(output), canonical_frame(outputs[[name]])),
+          sprintf("%s %s on a precise timestamp differs from base", library, name))
+      }
+    }
+    for (refusal in list(
+      list(step = step_with("precise-mean", "groupBy", list(keys = I(list(list(id = "r:c:0", name = "group"))),
+        aggregations = I(list(list(column = list(id = "r:c:3", name = "precise"), operation = "mean", alias = "average"))))),
+        message = "R datetime columns do not support the mean aggregation"),
+      list(step = step_with("precise-mean-fill", "fillMissingValues", list(column = list(id = "r:c:3", name = "precise"),
+        replacement = list(kind = "mean"))), message = "The replacement is incompatible with the selected R column")
+    )) {
+      assign("catalog_frame", precise_source(), envir = source_environment)
+      opened <- dispatch("openSession", list(sessionId = session_id(7190L), variableName = "catalog_frame", page = page_window(), library = library))
+      assert_identical(opened$kind, "page", sprintf("%s precise refusal source did not open", library))
+      refused <- dispatch("previewStep", list(sessionId = session_id(7190L), revision = 0L, step = refusal$step, page = page_window()))
+      assert_identical(refused$message, refusal$message, sprintf("%s admitted %s on a precise timestamp", library, refusal$step$id))
+      assert_identical(dispatch("closeSession", list(sessionId = session_id(7190L)))$kind, "closed", "precise refusal did not close")
+      remove("catalog_frame", envir = source_environment)
+    }
+  }
+  catalog_generated_code <<- retained_code
+})
 
 
 local({

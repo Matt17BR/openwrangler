@@ -352,7 +352,9 @@ comparisons through interpreted and compiled programs. Frame, kernel, decoder an
 primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
 kernel mutation checks use fewer, longer levels to exercise the full response byte limit. Their direct categorical-helper
 budget probes supply the base R context; complete generated programs separately prove that the compiler emits that context.
-The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
+Its precise-timestamp cases run Format Datetime, Convert Type, every clock-compatible Fill, Group By, both pivots and
+By Example on a nanosecond column with nulls and one-tick differences in all four libraries, and check the datetime
+aggregate and fill refusals. The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
 and ordered input/output refusals. The existing kernel text owner executes the emitted case kernel on multiple batches and failed
 results, checking exact live agreement, source preservation and no publication on failure.
 Existing frame and row-operation owners check text and factor comparisons under the C locale, including source
