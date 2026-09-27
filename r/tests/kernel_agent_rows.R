@@ -151,15 +151,14 @@ local({
     list(kind = "predicate", operator = "contains", value = "af\u00c9"),
     "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = NULL), c(NA, TRUE, TRUE, TRUE, FALSE))
 })
-conditional_budget <- conditional_roundtrip(c(1, 2), "float", list(kind = "predicate", operator = "gte", value = 1),
+# Generated Conditional Column has no aggregate output cap: long text repeated past the former 64 MiB limit is kept.
+conditional_large <- conditional_roundtrip(c(1, 2), "float", list(kind = "predicate", operator = "gte", value = 1),
   "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL), rep(strrep("x", 8192L), 2L))
 conditional_generated <- new.env(parent = baseenv())
 conditional_generated$frame <- data.frame(key = seq_len(9000L), value = rep(2, 9000L))
-conditional_budget_source <- serialize(conditional_generated$frame, NULL, version = 3L)
-conditional_error <- tryCatch({ eval(parse(text = conditional_budget$code), envir = conditional_generated); NULL }, error = identity)
-stopifnot(inherits(conditional_error, "error"), grepl("operation output budget", conditionMessage(conditional_error), fixed = TRUE))
-stopifnot(!exists("open_wrangler_result", envir = conditional_generated, inherits = FALSE))
-assert_identical(serialize(conditional_generated$frame, NULL, version = 3L), conditional_budget_source, "Generated conditional budget refusal changed source")
+eval(parse(text = conditional_large$code), envir = conditional_generated)
+assert_identical(unique(conditional_generated$open_wrangler_result$result), strrep("x", 8192L),
+  "Generated Conditional Column refused long repeated text")
 
 # Append/capture and emitted metadata are distinct from duplicate-mask arithmetic.
 for (mark_flavor in c("base", "tibble", "data.table")) {
