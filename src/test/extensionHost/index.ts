@@ -618,6 +618,7 @@ export async function run(): Promise<void> {
     "openWrangler.selectStep",
     "openWrangler.undoStep",
     "openWrangler.goToRow",
+    "openWrangler.find",
     "openWrangler.copyCode",
     "openWrangler.exportCode",
     "openWrangler.insertNotebookCode",
@@ -927,6 +928,12 @@ export async function run(): Promise<void> {
         key: "ctrl+g",
         mac: undefined,
         when: "activeCustomEditorId == openWrangler.viewer"
+      },
+      {
+        command: "openWrangler.find",
+        key: "ctrl+f",
+        mac: "cmd+f",
+        when: "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       }
     ]
   );
