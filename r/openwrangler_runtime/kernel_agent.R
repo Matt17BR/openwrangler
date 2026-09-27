@@ -6034,7 +6034,7 @@ openwrangler_r_kernel_agent <- local({
 
   begin_editing <- function(frame_contract, session) {
     if (!is.null(session$original)) return(session)
-    original <- frame_contract$isolate_capture(session$source)
+    original <- frame_contract$isolate_capture(session$source, owned = !is.null(session$fileSource))
     session$original <- original
     session$committed <- original
     session$editing <- TRUE

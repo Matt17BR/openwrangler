@@ -1633,6 +1633,14 @@ openwrangler_r_frame_contract <- local({
     normalized
   }
 
+  # Whole numbers already known to lie in 1..bound are checked by counting, which is far faster than hashing a large
+  # vector. A sparse or huge range falls back to hashing.
+  duplicated_positions <- function(positions, bound) {
+    if (length(positions) < 2L) return(FALSE)
+    if (bound > 4 * length(positions) + 65536 || bound > .Machine$integer.max) return(anyDuplicated(positions) > 0L)
+    max(tabulate(positions, bound)) > 1L
+  }
+
   validate_frame_structure <- function(value) {
     row_names <- tryCatch(.row_names_info(value, type = 0L), error = function(error) error)
     if (inherits(row_names, "error") || (!is.integer(row_names) && !is.character(row_names))) {
@@ -1647,7 +1655,8 @@ openwrangler_r_frame_contract <- local({
       row_count <- abs(as.double(row_names[[2L]]))
     } else {
       row_count <- as.double(length(row_names))
-      if (anyNA(row_names) || anyDuplicated(row_names)) {
+      positional_labels <- is.integer(row_names) && length(row_names) > 0L && !anyNA(row_names) && min(row_names) >= 1L
+      if (anyNA(row_names) || (if (positional_labels) duplicated_positions(row_names, max(row_names)) else anyDuplicated(row_names))) {
         abort("unsupported-frame", "the dataframe has malformed row names")
       }
     }
@@ -1710,6 +1719,16 @@ openwrangler_r_frame_contract <- local({
       )
     }
     copied
+  }
+
+  # Structural operations never write into an existing column, so they may share the immutable vectors of a captured
+  # frame. A data.table changes its own container by reference, and setDT strips element names from the columns it
+  # converts, so those cases keep a private copy.
+  structural_snapshot <- function(value, flavor, library) {
+    named_columns <- identical(library, "data.table") && any(vapply(unclass(value), function(column) {
+      !clock_is_column(column) && !is.null(attr(column, "names", exact = TRUE))
+    }, logical(1L)))
+    if (identical(flavor, "r.data.table") || named_columns) isolated_snapshot(value, flavor) else value
   }
 
   require_r_library <- function(library) {
@@ -1789,7 +1808,13 @@ openwrangler_r_frame_contract <- local({
     } else {
       # [[<-.data.frame removes element names. Work on the owned container so
       # legitimate labels survive without replacing any package-produced data.
-      for (i in base::seq_along(columns)) if (!base::inherits(columns[[i]], "clock_time_point")) base::attr(columns[[i]], "names") <- metadata$element_names[[i]]
+      # Assigning an attribute duplicates a shared vector, so unchanged labels are left alone.
+      for (i in base::seq_along(columns)) {
+        if (!base::inherits(columns[[i]], "clock_time_point") &&
+            !base::identical(base::attr(columns[[i]], "names", exact = TRUE), metadata$element_names[[i]])) {
+          base::attr(columns[[i]], "names") <- metadata$element_names[[i]]
+        }
+      }
       base::attributes(columns) <- base::list(names = metadata$names, class = metadata$class, row.names = metadata$row.names)
     }
     columns
@@ -4075,7 +4100,7 @@ openwrangler_r_frame_contract <- local({
     metrics[[name]] <- metrics[[name]] + as.double(amount)
   }
 
-  inspect_frame <- function(value, conservative_nullable, validate_values, metrics, expected_schema = NULL) {
+  inspect_frame <- function(value, conservative_nullable, validate_values, metrics, expected_schema = NULL, validated_columns = NULL) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
@@ -4114,11 +4139,17 @@ openwrangler_r_frame_contract <- local({
     integer64_bindings <- NULL
     schema <- lapply(seq_len(column_count), function(index) {
       spend_payload_budget(metadata_budget, column_fixed_bytes, sprintf("column %d metadata", index))
+      column <- .subset2(value, index)
+      # Only clock, factor, and nested values are scanned. A column identical to one an isolated capture already
+      # validated would pass the same checks, so unchanged columns are not rescanned by every derived frame.
+      already_validated <- !is.null(validated_columns) && index <= length(validated_columns) &&
+        (clock_is_column(column) || is.factor(column) || is.list(column)) &&
+        identical(column, .subset2(validated_columns, index))
       semantics <- column_semantics(
-        .subset2(value, index),
+        column,
         sprintf("column %d", index),
         metadata_budget,
-        validate_values = validate_values,
+        validate_values = validate_values && !already_validated,
         expected = if (!is.null(expected_schema) && index <= length(expected_schema) && !is.null(.subset2(expected_schema, index)) && nested_kind(.subset2(expected_schema, index)$semantics)) .subset2(expected_schema, index)$semantics else NULL,
         integer64_bindings = integer64_bindings
       )
@@ -4230,7 +4261,7 @@ openwrangler_r_frame_contract <- local({
         length(row_origins) != row_count || anyNA(row_origins) ||
         any(!is.finite(row_origins)) || any(row_origins != floor(row_origins)) ||
         any(row_origins < 1L) || any(row_origins > row_identity_domain) ||
-        anyDuplicated(row_origins)
+        duplicated_positions(row_origins, row_identity_domain)
     ) {
       abort("internal-error", "an R capture has invalid stable row identities")
     }
@@ -4253,6 +4284,19 @@ openwrangler_r_frame_contract <- local({
     capture$rowOriginOffset <- 0
     capture$rowOrigins <- row_origins
     capture$rowIdentityDomain <- row_identity_domain
+    invisible(NULL)
+  }
+
+  # A row-preserving derived frame keeps the source capture's already validated identities.
+  inherit_row_origins <- function(capture, source) {
+    if (identical(source$rowOriginKind, "sequential")) {
+      set_sequential_row_origins(capture, source$descriptor$shape$rows, source$rowIdentityDomain, source$rowOriginOffset)
+      return(invisible(NULL))
+    }
+    capture$rowOriginKind <- "mapped"
+    capture$rowOriginOffset <- 0
+    capture$rowOrigins <- source$rowOrigins
+    capture$rowIdentityDomain <- source$rowIdentityDomain
     invisible(NULL)
   }
 
@@ -4447,12 +4491,24 @@ openwrangler_r_frame_contract <- local({
     }
     assert_frame_attributes(snapshot, flavor)
     metrics <- new_capture_metrics()
+    validated_columns <- if (!is.null(nullability_source) && identical(nullability_source$mode, "isolated")) {
+      validated_frame <- nullability_source$snapshot
+      mapping <- if (is.null(source_positions)) seq_len(storage_length(snapshot)) else source_positions
+      lapply(seq_len(storage_length(snapshot)), function(index) {
+        position <- if (index <= length(mapping)) mapping[[index]] else NA
+        if (is.numeric(position) && length(position) == 1L && !is.na(position) && position >= 1L &&
+            position <= storage_length(validated_frame) && position == floor(position)) {
+          .subset2(validated_frame, position)
+        }
+      })
+    }
     inspected <- inspect_frame(
       snapshot,
       conservative_nullable = !is.null(nullability_source),
       validate_values = TRUE,
       metrics = metrics,
-      expected_schema = expected_schema
+      expected_schema = expected_schema,
+      validated_columns = validated_columns
     )
     row_count <- inspected$descriptor$shape$rows
     if (!is.null(nullability_source) && row_count == 0L) {
@@ -4467,16 +4523,14 @@ openwrangler_r_frame_contract <- local({
     } else {
       nullability_source$rowIdentityDomain
     }
-    row_origins <- if (is.null(nullability_source)) {
+    inherited_row_origins <- !is.null(nullability_source) && is.null(source_row_positions)
+    if (inherited_row_origins && row_count != nullability_source$descriptor$shape$rows) {
+      abort("internal-error", "a derived R frame changed height without a source-row mapping")
+    }
+    row_origins <- if (is.null(nullability_source) || inherited_row_origins) {
       NULL
     } else {
       source_row_count <- nullability_source$descriptor$shape$rows
-      if (is.null(source_row_positions)) {
-        if (row_count != source_row_count) {
-          abort("internal-error", "a derived R frame changed height without a source-row mapping")
-        }
-        source_row_positions <- seq_len(source_row_count)
-      }
       if (
         !is.numeric(source_row_positions) ||
           anyNA(source_row_positions) ||
@@ -4485,7 +4539,7 @@ openwrangler_r_frame_contract <- local({
           length(source_row_positions) != row_count ||
           any(source_row_positions < 1L) ||
           any(source_row_positions > source_row_count) ||
-          anyDuplicated(source_row_positions)
+          duplicated_positions(source_row_positions, source_row_count)
       ) {
         abort("internal-error", "a derived R frame has an invalid source-row mapping")
       }
@@ -5153,7 +5207,9 @@ openwrangler_r_frame_contract <- local({
     capture$snapshot <- snapshot
     capture$sourceReader <- NULL
     capture$descriptor <- inspected$descriptor
-    if (is.null(row_origins)) {
+    if (inherited_row_origins) {
+      inherit_row_origins(capture, nullability_source)
+    } else if (is.null(row_origins)) {
       set_sequential_row_origins(capture, row_count, row_identity_domain)
     } else {
       set_row_origins(capture, row_origins, row_identity_domain, row_count)
@@ -5312,11 +5368,13 @@ openwrangler_r_frame_contract <- local({
     finish_capture(capture)
   }
 
-  isolate_capture <- function(capture) {
+  # A managed file frame is private to its R process, so its first edit may share the loaded vectors.
+  isolate_capture <- function(capture, owned = FALSE) {
     capture_frame(
       read_capture_frame(capture),
       nullability_source = capture,
-      preserve_data_table_element_names = TRUE
+      preserve_data_table_element_names = TRUE,
+      owned = owned
     )
   }
 
@@ -5376,7 +5434,7 @@ openwrangler_r_frame_contract <- local({
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       result <- library_rename(result, position, new_name, library)
     } else if (identical(inspected$flavor, "r.data.table")) {
@@ -5444,7 +5502,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       NULL
     }
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!is.null(source_element_names)) {
       for (source_position in seq_along(source_element_names)) {
         if (!is.null(source_element_names[[source_position]])) {
@@ -9513,12 +9571,12 @@ openwrangler_r_frame_contract <- local({
     }
 
     keep_positions <- without_values(seq_len(column_count), positions)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
-      result <- library_columns(isolated_snapshot(value, inspected$flavor), keep_positions, library)
+      result <- library_columns(result, keep_positions, library)
     } else if (identical(inspected$flavor, "r.data.table")) {
-      result <- isolated_snapshot(value, inspected$flavor)[, keep_positions, with = FALSE]
+      result <- result[, keep_positions, with = FALSE]
     } else {
-      result <- isolated_snapshot(value, inspected$flavor)
       for (position in sort(positions, decreasing = TRUE)) result[[position]] <- NULL
     }
     result
@@ -9558,7 +9616,7 @@ openwrangler_r_frame_contract <- local({
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       result <- library_columns(result, positions, library)
     } else if (identical(inspected$flavor, "r.data.table")) {
@@ -10888,18 +10946,19 @@ openwrangler_r_frame_contract <- local({
         any(row_positions != floor(row_positions)) ||
         any(row_positions < 1L) ||
         any(row_positions > row_count) ||
-        anyDuplicated(row_positions)
+        duplicated_positions(row_positions, row_count)
     ) {
       abort("internal-error", "an R row operation produced invalid source positions")
     }
     row_positions <- as.integer(row_positions)
-    snapshot <- isolated_snapshot(value, inspected$flavor)
+    # Every row selection allocates new column vectors, and library_rows detaches element-named columns before setDT,
+    # so the captured input is read without a private copy.
     result <- if (!identical(library, "base")) {
-      library_rows(snapshot, row_positions, library)
+      library_rows(value, row_positions, library)
     } else if (identical(inspected$flavor, "r.data.table")) {
-      snapshot[row_positions]
+      value[row_positions]
     } else {
-      snapshot[row_positions, , drop = FALSE]
+      value[row_positions, , drop = FALSE]
     }
     list(frame = result, sourcePositions = row_positions)
   }
