@@ -1191,7 +1191,7 @@ for (native_expression in c(
   "toupper(.ow_characters[[1L]])",
   ".ow_text_strip_characters",
   "gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)",
-  ".ow_match <- regexec(.ow_regex_pattern, .ow_utf8, perl = TRUE, useBytes = FALSE)"
+  ".ow_regex_match <- regexpr(.ow_regex_pattern, .ow_regex_utf8, perl = TRUE, useBytes = FALSE)"
 )) {
   if (!grepl(native_expression, split_apply$code, fixed = TRUE)) {
     stop(sprintf("generated R text tools lost native expression: %s", native_expression), call. = FALSE)

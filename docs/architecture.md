@@ -532,8 +532,8 @@ column without changing source columns or rows. Matching, nonmatching and missin
 of the declared output type or explicit null. Every result is validated, even when unused or the input is empty.
 For ordinary predicates, native null/NaN inputs use the missing result. Nullary predicates (`isNull`, `isNotNull`,
 `isNaN`, `isNotNaN`) evaluate every row using their existing distinctions; their missing result is unused.
-Text results use the existing 65,536-code-point scalar bound; native R also retains its UTF-8 and aggregate output
-bounds. No result-type inference or implicit coercion changes empty text, whitespace, false or null. Generated code
+Text results use the existing 65,536-code-point scalar bound; native R also requires valid UTF-8 within its
+8,192-byte text limit. No result-type inference or implicit coercion changes empty text, whitespace, false or null. Generated code
 rechecks the actual input type and destination before producing the same declared output type, including empty output.
 Saved Conditional Column steps whose values cannot be represented losslessly by the form remain executable but require
 recreation to edit. The form does not stringify stored operand objects, change their types or remove line breaks from
@@ -1758,7 +1758,10 @@ row-identity and diff checks. Live and generated input/output validation accept 
 
 Standalone captures own an isolated snapshot, using `data.table::copy()` for data tables. Live viewing instead retains
 the verified variable binding, reads its current values, and refuses changed shape, schema, class or row-name mode.
-The first editing draft isolates the original through R serialization or `data.table::copy()`. Committed and draft
+The first editing draft isolates the original with `data.table::copy()` for data tables. Other frames copy each atomic
+column and its attributes directly, without dispatching caller S3 methods; list and other object columns are copied
+through R serialization. An operation result built from that copy or from new vectors is captured without a second
+copy; Custom Code results, captures that restore element names, and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Committed and draft
 results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops inert column-element
 names according to native data-table copy semantics; the explicit retention exceptions are described below.
 
@@ -1993,6 +1996,11 @@ filesystem transition; they do not authenticate which same-user process performe
 
 #### Cleaning and generated code
 
+Native R scalar cleaning outputs have no aggregate byte cap, like R sources. Each text result must still be valid
+UTF-8 within the 8,192-byte text limit, and row, column and nested-value limits still apply. Text transforms, casts,
+Format Datetime, By Example and Custom Code validation handle each distinct value once and map the result back to
+every row; a rejected value is reported at its first row.
+
 Native R pivots preserve retained column IDs and nullability from the confirmed input capture. Their output schema
 must match the host's expected schema before publication; a fresh scan must not narrow retained nullability.
 
@@ -2097,7 +2105,8 @@ add in decimal text before final double conversion. Dense Rank appends integer r
 bound: missing values stay missing, signed zeros tie and infinities remain present. Mark Duplicates appends a nonmissing
 logical flag for every member of a selected-key duplicate group. Both preserve original rows and compatible keys.
 
-Lowercase and Uppercase normalize and convert text in batches of at most 1,024 source rows. They share their
+Lowercase and Uppercase normalize and convert each distinct value once, in batches of at most 1,024 distinct values
+taken in first-row order. They share their
 value kernel with generated code and retain R's locale-sensitive case rules. A batch with invalid or oversized text
 replays in source order so an earlier output refusal still precedes a later input refusal. Generated failures use
 the live error codes and source-row labels. Other text operations retain their own scalar rules.

@@ -170,7 +170,17 @@ openwrangler_r_frame_contract <- local({
     base::complex(real = fields$lower, imaginary = fields$upper)
   }
 
-  clock_display <- function(column) {
+  # Formats each distinct instant once, then maps the text back to every row.
+  clock_distinct <- function(column, evaluate) {
+    identities <- clock_identities(column)
+    first <- base::which(!base::duplicated.default(identities))
+    if (base::length(first) == base::length(identities)) return(evaluate(column))
+    evaluate(vctrs::vec_slice(column, first))[base::match(identities, identities[first])]
+  }
+
+  clock_display <- function(column) clock_distinct(column, clock_full_precision_text)
+
+  clock_full_precision_text <- function(column) {
     text <- base::get("format.clock_time_point", base::asNamespace("clock"), inherits = FALSE)(column)
     if (base::identical(base::attr(column, "clock", exact = TRUE), 0L)) {
       text[!base::is.na(text)] <- base::paste0(text[!base::is.na(text)], "Z")
@@ -198,6 +208,10 @@ openwrangler_r_frame_contract <- local({
   # prints n exact fraction digits where base R would truncate a double.
   clock_format <- function(column, format) {
     clock_require()
+    clock_distinct(column, function(values) clock_format_values(values, format))
+  }
+
+  clock_format_values <- function(column, format) {
     seconds <- clock::time_point_floor(column, "second")
     whole <- base::as.POSIXct(clock::as_sys_time(clock::time_point_cast(seconds, "second")), tz = "UTC")
     digits <- base::switch(base::as.character(base::attr(column, "precision", exact = TRUE)), `8` = 3L, `9` = 6L, `10` = 9L)
@@ -577,6 +591,23 @@ openwrangler_r_frame_contract <- local({
       abort("text-too-large", sprintf("%s exceeds %d UTF-8 bytes", label, maximum_bytes))
     }
     converted
+  }
+
+  # Converts present values as `check(value, index)` would, converting each distinct value once. When a value is
+  # rejected, `check` runs on each distinct value at its first position, so the error names the earliest one.
+  bounded_utf8_column <- function(values, check, maximum_bytes = maximum_text_bytes) {
+    present <- which(!is.na(values))
+    distinct <- unique.default(values[present])
+    converted <- bounded_utf8_values(distinct, maximum_bytes)
+    if (is.null(converted)) {
+      first_positions <- present[match(distinct, values[present])]
+      converted <- vapply(seq_along(distinct), function(index) {
+        check(distinct[[index]], first_positions[[index]])
+      }, character(1L), USE.NAMES = FALSE)
+    }
+    result <- rep.int(NA_character_, length(values))
+    result[present] <- converted[match(values[present], distinct)]
+    result
   }
 
   # NULL when bounded_utf8 would reject any value.
@@ -1607,11 +1638,7 @@ openwrangler_r_frame_contract <- local({
     if (inherits(row_names, "error") || (!is.integer(row_names) && !is.character(row_names))) {
       abort("unsupported-frame", "the dataframe has malformed row names")
     }
-    row_names <- if (is.character(row_names)) {
-      vapply(seq_along(row_names), function(index) .subset2(row_names, index), character(1L), USE.NAMES = FALSE)
-    } else {
-      vapply(seq_along(row_names), function(index) .subset2(row_names, index), integer(1L), USE.NAMES = FALSE)
-    }
+    row_names <- plain_metadata_storage(row_names)
     compact <- is.integer(row_names) && length(row_names) == 2L && is.na(row_names[[1L]])
     if (compact) {
       if (is.na(row_names[[2L]])) {
@@ -1645,6 +1672,29 @@ openwrangler_r_frame_contract <- local({
     invisible(row_count)
   }
 
+  copy_atomic_vector <- function(value) {
+    copied <- c(unclass(value))
+    attributes(copied) <- lapply(attributes(value), copy_attribute_value)
+    copied
+  }
+
+  copy_attribute_value <- function(value) {
+    if (is.atomic(value) && !isS4(value)) copy_atomic_vector(value) else unserialize(serialize(value, NULL, version = 3L))
+  }
+
+  copy_frame_column <- function(column) {
+    if (isS4(column)) return(unserialize(serialize(column, NULL, version = 3L)))
+    if (is.atomic(column)) return(copy_atomic_vector(column))
+    if (clock_is_column(column)) {
+      copied <- lapply(seq_len(length(unclass(column))), function(index) copy_atomic_vector(.subset2(column, index)))
+      attributes(copied) <- lapply(attributes(column), copy_attribute_value)
+      return(copied)
+    }
+    unserialize(serialize(column, NULL, version = 3L))
+  }
+
+  # Copying each atomic column is several times faster than serializing a large frame, which encodes every string.
+  # List columns and other objects keep the serialized copy. Raw row names keep their compact form.
   isolated_snapshot <- function(value, flavor) {
     if (flavor == "r.data.table") {
       if (!requireNamespace("data.table", quietly = TRUE)) {
@@ -1652,7 +1702,14 @@ openwrangler_r_frame_contract <- local({
       }
       return(data.table::copy(value))
     }
-    unserialize(serialize(value, NULL, version = 3L))
+    if (isS4(value) || !identical(typeof(value), "list")) return(unserialize(serialize(value, NULL, version = 3L)))
+    copied <- lapply(seq_len(length(unclass(value))), function(position) copy_frame_column(.subset2(value, position)))
+    for (name in names(attributes(value))) {
+      attr(copied, name) <- copy_attribute_value(
+        if (identical(name, "row.names")) .row_names_info(value, type = 0L) else attr(value, name, exact = TRUE)
+      )
+    }
+    copied
   }
 
   require_r_library <- function(library) {
@@ -4243,7 +4300,8 @@ openwrangler_r_frame_contract <- local({
     cast_positions = NULL,
     cast_dtypes = NULL,
     preserve_data_table_element_names = FALSE,
-    expected_schema = NULL
+    expected_schema = NULL,
+    owned = FALSE
   ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
@@ -4255,6 +4313,9 @@ openwrangler_r_frame_contract <- local({
         is.na(preserve_data_table_element_names)
     ) {
       abort("internal-error", "the data.table element-name preservation flag is invalid")
+    }
+    if (!is.logical(owned) || length(owned) != 1L || is.na(owned)) {
+      abort("internal-error", "the owned-frame flag is invalid")
     }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
     if (
@@ -4361,7 +4422,17 @@ openwrangler_r_frame_contract <- local({
     if (any(vapply(unclass(value), is.list, logical(1L)))) {
       expected_schema <- preflight_nested_source_columns(value, expected_schema)
     }
-    snapshot <- isolated_snapshot(value, flavor)
+    # An owned value is an operation result built from the operation's own copy or new vectors. Captured frames are
+    # never modified in place, so it needs no second copy unless element names are restored below. data.table::copy
+    # also drops column element names, so a data.table that has them keeps the copy.
+    copy_drops_names <- identical(flavor, "r.data.table") && any(vapply(unclass(value), function(column) {
+      !is.null(attr(column, "names", exact = TRUE))
+    }, logical(1L)))
+    snapshot <- if (owned && is.null(source_element_names) && !copy_drops_names) {
+      value
+    } else {
+      isolated_snapshot(value, flavor)
+    }
     if (!is.null(source_element_names)) {
       for (position in seq_along(source_element_names)) {
         if (!is.null(source_element_names[[position]])) {
@@ -5180,7 +5251,8 @@ openwrangler_r_frame_contract <- local({
       nullability_source = source_capture,
       source_positions = result$sourcePositions,
       output_ids = output_ids,
-      categorical_positions = result$categoricalPositions
+      categorical_positions = result$categoricalPositions,
+      owned = TRUE
     )
   }
 
@@ -5410,15 +5482,8 @@ openwrangler_r_frame_contract <- local({
       masks <- profile_missing_masks(column, descriptor$semantics)
       masks$null | masks$nan
     }
-    counts <- c(sum(matched & !missing), sum(!matched & !missing), sum(missing))
-    budget <- new_payload_budget()
-    slot_bytes <- if (identical(result_type, "string")) character_vector_slot_bytes else 4L
-    spend_operation_output_budget(budget, as.double(length(matched)) * slot_bytes, "Conditional Column")
     for (index in seq_along(arms)) {
-      if (identical(result_type, "string") && !is.null(arms[[index]])) {
-        text <- bounded_operation_output(arms[[index]], "Conditional Column")
-        spend_operation_output_budget(budget, as.double(nchar(text, type = "bytes")) * counts[[index]], "Conditional Column")
-      }
+      if (identical(result_type, "string") && !is.null(arms[[index]])) bounded_operation_output(arms[[index]], "Conditional Column")
     }
     missing_scalar <- if (identical(result_type, "string")) NA_character_ else NA
     values <- rep.int(missing_scalar, length(matched))
@@ -5546,13 +5611,7 @@ openwrangler_r_frame_contract <- local({
     clock_result <- identical(result_kind, "clock_datetime")
     if (!is.function(evaluator)) abort("internal-error", "the by-example evaluator must be a function")
 
-    element_bytes <- if (result_kind %in% c("factor", "integer", "logical")) 4 else if (clock_result) 16 else 8
     operation_budget <- new_payload_budget()
-    spend_operation_output_budget(
-      operation_budget,
-      as.double(row_count) * element_bytes,
-      "byExample output column"
-    )
 
     source_element_names <- if (identical(inspected$flavor, "r.data.table")) {
       lapply(seq_len(column_count), function(position) {
@@ -5568,18 +5627,6 @@ openwrangler_r_frame_contract <- local({
           data.table::setattr(.subset2(result, position), "names", source_element_names[[position]])
         }
       }
-    }
-    source_chunk <- function(position, row_positions) {
-      source <- .subset2(result, position)
-      if (clock_is_column(source)) return(vctrs::vec_slice(source, row_positions))
-      source_attributes <- attributes(source)
-      source_names <- source_attributes$names
-      chunk <- .subset(unclass(source), row_positions)
-      if (!is.null(source_attributes)) {
-        source_attributes$names <- if (is.null(source_names)) NULL else .subset(source_names, row_positions)
-        attributes(chunk) <- source_attributes
-      }
-      chunk
     }
     output_matches_kind <- function(output) {
       switch(
@@ -5658,14 +5705,8 @@ openwrangler_r_frame_contract <- local({
     transformed_attributes <- NULL
     transformed_names <- NULL
     output_has_names <- NULL
-    ranges <- if (row_count == 0L) {
-      list(integer())
-    } else {
-      starts <- seq.int(1L, row_count, by = maximum_operation_output_chunk_rows)
-      lapply(starts, function(start) {
-        seq.int(start, min(row_count, start + maximum_operation_output_chunk_rows - 1L))
-      })
-    }
+    # The evaluator chunks and deduplicates rows itself, so the columns are evaluated in one pass.
+    ranges <- list(seq_len(row_count))
     if (clock_result) {
       # Only a column copy yields a clock result, so it is evaluated once on the whole columns.
       clock_output <- tryCatch(
@@ -5679,9 +5720,8 @@ openwrangler_r_frame_contract <- local({
       ranges <- list()
     }
     for (row_positions in ranges) {
-      selected <- lapply(positions, source_chunk, row_positions = row_positions)
       transformed_chunk <- tryCatch(
-        evaluator(selected),
+        evaluator(lapply(positions, function(position) .subset2(result, position))),
         openwrangler_r_frame_error = function(error) stop(error),
         error = function(error) abort("invalid-view-query", "the by-example program could not be evaluated")
       )
@@ -5773,14 +5813,7 @@ openwrangler_r_frame_contract <- local({
       if (is.null(transformed_attributes)) {
         transformed_attributes <- chunk_attributes %||% list()
         output_has_names <- !is.null(chunk_names)
-        if (isTRUE(output_has_names)) {
-          spend_operation_output_budget(
-            operation_budget,
-            as.double(row_count) * character_vector_slot_bytes,
-            "byExample output names"
-          )
-          transformed_names <- rep.int(NA_character_, row_count)
-        }
+        if (isTRUE(output_has_names)) transformed_names <- rep.int(NA_character_, row_count)
       } else if (
         !identical(transformed_attributes, chunk_attributes %||% list()) ||
           !identical(output_has_names, !is.null(chunk_names))
@@ -5791,37 +5824,14 @@ openwrangler_r_frame_contract <- local({
         if (!is.character(chunk_names) || length(chunk_names) != length(row_positions)) {
           abort("invalid-view-query", "the by-example program returned invalid output names")
         }
-        transformed_names[row_positions] <- vapply(seq_along(chunk_names), function(index) {
-          if (is.na(chunk_names[[index]])) return(NA_character_)
-          item <- bounded_utf8(
-            chunk_names[[index]],
-            sprintf("byExample output name row %d", row_positions[[index]]),
-            maximum_text_bytes
-          )
-          spend_operation_output_budget(
-            operation_budget,
-            nchar(item, type = "bytes"),
-            "byExample output names"
-          )
-          item
-        }, character(1L), USE.NAMES = FALSE)
+        transformed_names[row_positions] <- bounded_utf8_column(chunk_names, function(item, index) {
+          bounded_utf8(item, sprintf("byExample output name row %d", row_positions[[index]]), maximum_text_bytes)
+        })
       }
       if (identical(result_kind, "character")) {
-        transformed_chunk <- vapply(seq_along(transformed_chunk), function(index) {
-          item <- transformed_chunk[[index]]
-          if (is.na(item)) return(NA_character_)
-          bounded <- bounded_utf8(
-            item,
-            sprintf("byExample output row %d", row_positions[[index]]),
-            maximum_text_bytes
-          )
-          spend_operation_output_budget(
-            operation_budget,
-            nchar(bounded, type = "bytes"),
-            "byExample text output"
-          )
-          bounded
-        }, character(1L), USE.NAMES = FALSE)
+        transformed_chunk <- bounded_utf8_column(transformed_chunk, function(item, index) {
+          bounded_utf8(item, sprintf("byExample output row %d", row_positions[[index]]), maximum_text_bytes)
+        })
       }
       transformed_storage[row_positions] <- unclass(transformed_chunk)
     }
@@ -6001,11 +6011,9 @@ openwrangler_r_frame_contract <- local({
     }
 
     if (identical(kind, "character")) {
-      storage <- vapply(seq_len(value_count), function(index) {
-        source <- .subset2(column, index)
-        if (is.na(source)) return(NA_character_)
-        bounded_utf8(source, indexed_value_label(label, index, value_count))
-      }, character(1L), USE.NAMES = FALSE)
+      storage <- bounded_utf8_column(plain_atomic_storage(column), function(item, index) {
+        bounded_utf8(item, indexed_value_label(label, index, value_count))
+      })
       missing <- is.na(storage)
       categories <- base::unique.default(.subset(storage, which(!missing)))
       labels <- categories
@@ -6087,11 +6095,9 @@ openwrangler_r_frame_contract <- local({
   categorical_text_storage <- function(column, semantics, label) {
     value_count <- storage_length(column)
     if (identical(semantics$kind, "character")) {
-      return(vapply(seq_len(value_count), function(index) {
-        source <- .subset2(column, index)
-        if (is.na(source)) return(NA_character_)
-        bounded_utf8(source, indexed_value_label(label, index, value_count))
-      }, character(1L), USE.NAMES = FALSE))
+      return(bounded_utf8_column(plain_atomic_storage(column), function(item, index) {
+        bounded_utf8(item, indexed_value_label(label, index, value_count))
+      }))
     }
     if (!identical(semantics$kind, "factor")) {
       abort("invalid-view-query", "multiLabelBinarize requires a character or factor column")
@@ -6308,12 +6314,6 @@ openwrangler_r_frame_contract <- local({
       generated <- generated[generated_order]
       generated_names <- generated_names[generated_order]
     }
-    operation_budget <- new_payload_budget()
-    spend_operation_output_budget(
-      operation_budget,
-      as.double(inspected$descriptor$shape$rows) * length(generated) * 4,
-      "oneHotEncode indicator columns"
-    )
     generated_columns <- lapply(generated, function(item) {
       one_hot_indicator(domains[[item$sourceIndex]], domains[[item$sourceIndex]]$categories[[item$categoryIndex]])
     })
@@ -6361,18 +6361,14 @@ openwrangler_r_frame_contract <- local({
       semantics,
       sprintf("multiLabelBinarize column %d", position)
     )
-    row_count <- length(source_values)
-    operation_budget <- new_payload_budget()
-    spend_operation_output_budget(
-      operation_budget,
-      as.double(row_count) * character_vector_slot_bytes,
-      "multiLabelBinarize row-token index"
-    )
-    tokens_by_row <- vector("list", row_count)
+    # Each distinct value is tokenized once at its first row, which keeps the label order and failing rows.
+    distinct <- distinct_text_rows(source_values)
+    tokens_by_value <- vector("list", length(distinct$first_rows))
     labels <- character()
     retained_count <- inspected$descriptor$shape$columns - if (drop_original) 1L else 0L
     maximum_generated <- maximum_columns - retained_count
-    for (row_index in seq_len(row_count)) {
+    for (value_index in seq_along(distinct$first_rows)) {
+      row_index <- distinct$first_rows[[value_index]]
       source <- source_values[[row_index]]
       if (is.na(source) || identical(source, "")) next
       parts <- base::strsplit(source, delimiter, fixed = TRUE, useBytes = FALSE)[[1L]]
@@ -6385,13 +6381,8 @@ openwrangler_r_frame_contract <- local({
           parts[[part_index]],
           sprintf("multiLabelBinarize row %d token %d", row_index, part_index)
         )
-        spend_operation_output_budget(
-          operation_budget,
-          nchar(parts[[part_index]], type = "bytes") + character_vector_slot_bytes,
-          "multiLabelBinarize tokens"
-        )
       }
-      tokens_by_row[[row_index]] <- parts
+      tokens_by_value[[value_index]] <- parts
       unseen <- parts[is.na(match(parts, labels))]
       if (length(unseen) != 0L) labels <- c(labels, unseen)
       if (length(labels) > maximum_generated) {
@@ -6419,15 +6410,15 @@ openwrangler_r_frame_contract <- local({
       labels <- labels[generated_order]
       generated_names <- generated_names[generated_order]
     }
-    spend_operation_output_budget(
-      operation_budget,
-      as.double(row_count) * length(labels) * 4,
-      "multiLabelBinarize indicator columns"
-    )
-    generated_columns <- lapply(labels, function(label) {
-      as.integer(vapply(tokens_by_row, function(tokens) {
-        length(tokens) != 0L && label %in% tokens
-      }, logical(1L), USE.NAMES = FALSE))
+    token_values <- rep.int(seq_along(tokens_by_value), lengths(tokens_by_value))
+    token_labels <- match(unlist(tokens_by_value, use.names = FALSE), labels)
+    label_counts <- tabulate(token_labels, nbins = length(labels))
+    label_offsets <- cumsum(label_counts) - label_counts
+    values_by_label <- token_values[order(token_labels)]
+    generated_columns <- lapply(seq_along(labels), function(label_index) {
+      indicator <- integer(length(tokens_by_value))
+      indicator[values_by_label[label_offsets[[label_index]] + seq_len(label_counts[[label_index]])]] <- 1L
+      indicator[distinct$keys]
     })
     build_categorical_result(
       value,
@@ -6735,24 +6726,27 @@ openwrangler_r_frame_contract <- local({
       abort("internal-error", "the R case transform is unsupported")
     )
     operation_name <- if (identical(operation, "lowerText")) "Lowercase" else "Uppercase"
-    transformed <- rep(NA_character_, length(values))
+    # Each distinct value is converted once, in first-row order, so failures still name the earliest row.
+    first_rows <- which(!duplicated.default(values))
+    distinct <- values[first_rows]
+    transformed <- rep(NA_character_, length(distinct))
     start <- 1
-    while (start <= length(values)) {
-      count <- min(maximum_operation_output_chunk_rows, length(values) - start + 1L)
+    while (start <= length(distinct)) {
+      count <- min(maximum_operation_output_chunk_rows, length(distinct) - start + 1L)
       selected <- seq.int(start, length.out = count)
-      present <- selected[!is.na(values[selected])]
+      present <- selected[!is.na(distinct[selected])]
       if (length(present) > 0L) {
         converted <- tryCatch({
-          normalized <- profile_text_values(values[present], present, paste0(operation, " value"))
+          normalized <- profile_text_values(distinct[present], first_rows[present], paste0(operation, " value"))
           output <- transform(normalized)
-          if (anyNA(output)) NULL else profile_text_values(output, present)
+          if (anyNA(output)) NULL else profile_text_values(output, first_rows[present])
         }, openwrangler_r_frame_error = function(error) {
           if (error$code %in% c("invalid-text", "text-too-large")) NULL else stop(error)
         })
         if (is.null(converted)) {
           # Replay this batch in row order: an earlier output failure precedes a later input failure.
           converted <- vapply(present, function(index) {
-            text <- bounded_utf8(values[[index]], sprintf("%s value %d", operation, index))
+            text <- bounded_utf8(distinct[[index]], sprintf("%s value %d", operation, first_rows[[index]]))
             bounded_operation_output(transform(text), operation_name)
           }, character(1L), USE.NAMES = FALSE)
         }
@@ -6760,7 +6754,18 @@ openwrangler_r_frame_contract <- local({
       }
       start <- start + count
     }
-    transformed
+    transformed[match(values, distinct)]
+  }
+
+  # Text transforms depend only on the value, so each distinct value is evaluated once, at its first row. Evaluating
+  # in first-row order reports the same failing row as a row-by-row pass.
+  distinct_text_rows <- function(values) {
+    first_rows <- which(!duplicated.default(values))
+    list(first_rows = first_rows, keys = match(values, values[first_rows]))
+  }
+
+  map_distinct_text <- function(distinct, evaluate) {
+    vapply(distinct$first_rows, evaluate, character(1L), USE.NAMES = FALSE)[distinct$keys]
   }
 
   transform_text_column_at <- function(value, position, old_name, new_name, operation, transform, library = "base") {
@@ -6831,7 +6836,7 @@ openwrangler_r_frame_contract <- local({
     transformed <- if (operation %in% c("lowerText", "upperText")) {
       case_text_values(source_values, operation)
     } else {
-      vapply(seq_along(source_values), function(index) {
+      map_distinct_text(distinct_text_rows(source_values), function(index) {
         if (is.na(source_values[[index]])) return(NA_character_)
         source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
         output <- transform(source_value)
@@ -6844,7 +6849,7 @@ openwrangler_r_frame_contract <- local({
           return(NA_character_)
         }
         bounded_operation_output(output, operation_name)
-      }, character(1L), USE.NAMES = FALSE)
+      })
     }
     if (!identical(library, "base")) {
       result <- library_assign(result, if (in_place) position else column_count + 1L, list(transformed),
@@ -6996,14 +7001,15 @@ openwrangler_r_frame_contract <- local({
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
+    distinct <- distinct_text_rows(source_values)
     for (output_index in seq_along(new_names)) {
-      transformed <- vapply(seq_along(source_values), function(row_index) {
+      transformed <- map_distinct_text(distinct, function(row_index) {
         if (is.na(source_values[[row_index]])) return(NA_character_)
         source <- bounded_utf8(source_values[[row_index]], sprintf("Split text value %d", row_index))
         output <- split_text_value(source, delimiter, output_index - 1L)
         if (is.na(output)) return(NA_character_)
         bounded_operation_output(output, "Split text into columns")
-      }, character(1L), USE.NAMES = FALSE)
+      })
       if (!identical(library, "base")) {
         result <- library_assign(result, length(result) + 1L, list(transformed), c(names(result), new_names[[output_index]]), library)
       } else if (identical(inspected$flavor, "r.data.table")) {
@@ -7104,6 +7110,15 @@ openwrangler_r_frame_contract <- local({
       if (identical(inspected$flavor, "r.data.table")) {
         result <- snapshot[row_indices, retained_positions, with = FALSE]
         data.table::setkeyv(result, NULL)
+      } else if (identical(oldClass(snapshot), "data.frame") && !any(vapply(retained_positions, function(position) {
+        !is.null(attr(.subset2(snapshot, position), "dim", exact = TRUE))
+      }, logical(1L)))) {
+        # Subsets each column as `[.data.frame` does, without making the repeated row names unique.
+        result <- snapshot[retained_positions]
+        result_attributes <- attributes(result)
+        result_attributes$row.names <- if (output_rows == 0) integer() else c(NA_integer_, -as.integer(output_rows))
+        result <- lapply(unclass(result), function(column) column[row_indices])
+        attributes(result) <- result_attributes
       } else {
         result <- snapshot[row_indices, retained_positions, drop = FALSE]
       }
@@ -7157,7 +7172,7 @@ openwrangler_r_frame_contract <- local({
       attr(result, "row.names") <- if (output_rows == 0) integer() else c(NA_integer_, -as.integer(output_rows))
     }
 
-    captured <- capture_frame(result, preserve_data_table_element_names = TRUE)
+    captured <- capture_frame(result, preserve_data_table_element_names = TRUE, owned = TRUE)
     output_schema <- plain_metadata_storage(captured$descriptor$schema)
     label_position <- length(output_schema) - 1L
     value_position <- length(output_schema)
@@ -7418,7 +7433,7 @@ openwrangler_r_frame_contract <- local({
       attr(result, "row.names") <- if (group_count == 0L) integer() else c(NA_integer_, -as.integer(group_count))
     }
 
-    captured <- capture_frame(result, preserve_data_table_element_names = TRUE)
+    captured <- capture_frame(result, preserve_data_table_element_names = TRUE, owned = TRUE)
     output_schema <- plain_metadata_storage(captured$descriptor$schema)
     output_positions <- seq.int(length(retained_positions) + 1L, length(retained_positions) + length(output_names))
     if (
@@ -7476,6 +7491,53 @@ openwrangler_r_frame_contract <- local({
     "and 8,192 UTF-8 bytes."
   )
 
+  # regexec(perl = TRUE) reshapes one regexpr(perl = TRUE) call per value, so a single call over the distinct values
+  # gives the same match and group positions. Returns the first invalid row instead when a source value fails the
+  # UTF-8 or portable length checks, and NULL when the regex engine warns.
+  extract_regex_values <- function(values, pattern, group, participation_pattern) {
+    distinct <- unique.default(values)
+    rows <- match(values, distinct)
+    present <- which(!is.na(distinct))
+    text <- distinct[present]
+    encodings <- Encoding(text)
+    utf8 <- rep.int(NA_character_, length(text))
+    latin1 <- encodings == "latin1"
+    other <- !latin1 & encodings != "bytes"
+    utf8[latin1] <- iconv(text[latin1], from = "latin1", to = "UTF-8", sub = NA_character_)
+    utf8[other] <- iconv(text[other], from = "UTF-8", to = "UTF-8", sub = NA_character_)
+    bad <- is.na(utf8)
+    bad[!bad] <- nchar(utf8[!bad], type = "chars") > 8192L | nchar(utf8[!bad], type = "bytes") > 8192L
+    if (any(bad)) {
+      flagged <- logical(length(distinct))
+      flagged[present[bad]] <- TRUE
+      return(list(invalid_row = which(flagged[rows])[[1L]]))
+    }
+    matched <- tryCatch(
+      withCallingHandlers(
+        regexpr(pattern, utf8, perl = TRUE, useBytes = FALSE),
+        warning = function(warning) stop("regex evaluation failed", call. = FALSE)
+      ),
+      error = function(error) NULL
+    )
+    if (is.null(matched)) return(NULL)
+    starts <- cbind(as.integer(matched), attr(matched, "capture.start", exact = TRUE))
+    lengths <- cbind(as.integer(attr(matched, "match.length", exact = TRUE)), attr(matched, "capture.length", exact = TRUE))
+    found <- starts[, 1L] != -1L
+    if (!identical(participation_pattern, pattern) && any(found)) {
+      candidates <- which(found)
+      full <- substring(utf8[candidates], starts[candidates, 1L], starts[candidates, 1L] + lengths[candidates, 1L] - 1L)
+      participation <- regexpr(paste0("^(?:", participation_pattern, ")$"), full, perl = TRUE, useBytes = FALSE)
+      found[candidates[as.integer(participation) == -1L]] <- FALSE
+    }
+    output <- rep.int(NA_character_, length(distinct))
+    selected <- group + 1L
+    if (selected <= ncol(starts)) {
+      chosen <- which(found & starts[, selected] >= 0L)
+      output[present[chosen]] <- substring(utf8[chosen], starts[chosen, selected], starts[chosen, selected] + lengths[chosen, selected] - 1L)
+    }
+    list(values = output[rows])
+  }
+
   extract_regex_group_at <- function(
     value,
     position,
@@ -7532,7 +7594,7 @@ openwrangler_r_frame_contract <- local({
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
-    transformed <- vapply(seq_along(source_values), function(row_index) {
+    extract_row <- function(row_index) {
       source <- source_values[[row_index]]
       if (is.na(source)) return(NA_character_)
       source <- bounded_utf8(
@@ -7570,7 +7632,14 @@ openwrangler_r_frame_contract <- local({
       if (lengths[[selected]] == 0L) return("")
       output <- substr(source, starts[[selected]], starts[[selected]] + lengths[[selected]] - 1L)
       bounded_operation_output(output, "Regex extraction")
-    }, character(1L), USE.NAMES = FALSE)
+    }
+    extracted <- extract_regex_values(source_values, pattern, group, participation_pattern)
+    if (!is.null(extracted$invalid_row)) extract_row(extracted$invalid_row)
+    transformed <- if (is.null(extracted$values)) {
+      vapply(seq_along(source_values), extract_row, character(1L), USE.NAMES = FALSE)
+    } else {
+      extracted$values
+    }
     if (!identical(library, "base")) {
       result <- library_assign(result, length(result) + 1L, list(transformed), c(names(result), new_name), library)
     } else if (identical(inspected$flavor, "r.data.table")) {
@@ -8085,37 +8154,22 @@ openwrangler_r_frame_contract <- local({
       )
     }
 
-    row_count <- inspected$descriptor$shape$rows
-    output_bytes <- as.double(row_count) * character_vector_slot_bytes
-    if (!is.finite(output_bytes) || output_bytes > maximum_operation_output_bytes) {
-      abort(
-        "operation-output-too-large",
-        sprintf(
-          "formatDatetime exceeds the %d-byte aggregate output budget",
-          maximum_operation_output_bytes
-        )
-      )
-    }
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- result[[position]]
-    source_storage <- unclass(source_values)
-    transformed <- rep.int(NA_character_, row_count)
+    check_output <- function(item, index) bounded_operation_output(item, "Format datetime")
+    distinct_keys <- NULL
     start <- 1L
     if (identical(source_column$semantics$kind, "clock_datetime")) {
-      transformed <- clock_format(source_values, format)
-      special <- !is.na(transformed) & grepl("[^ -~]", transformed, perl = TRUE)
-      transformed[special] <- vapply(transformed[special], bounded_operation_output, character(1L), "Format datetime", USE.NAMES = FALSE)
-      if (any(nchar(transformed, type = "bytes") > maximum_text_bytes, na.rm = TRUE)) {
-        abort("operation-output-too-large", sprintf("Format datetime would produce text longer than %d UTF-8 bytes", maximum_text_bytes))
-      }
-      output_bytes <- output_bytes + sum(as.double(nchar(transformed[!is.na(transformed)], type = "bytes")))
-      if (!is.finite(output_bytes) || output_bytes > maximum_operation_output_bytes) {
-        abort("operation-output-too-large", sprintf("formatDatetime exceeds the %d-byte aggregate output budget", maximum_operation_output_bytes))
-      }
-      start <- row_count + 1L
+      transformed <- bounded_utf8_column(clock_format(source_values, format), check_output)
+      format_count <- 0L
+    } else {
+      source_storage <- unique.default(unclass(source_values))
+      distinct_keys <- match(unclass(source_values), source_storage)
+      format_count <- length(source_storage)
+      transformed <- rep.int(NA_character_, format_count)
     }
-    while (start <= row_count) {
-      end <- min(row_count, start + maximum_operation_output_chunk_rows - 1L)
+    while (start <= format_count) {
+      end <- min(format_count, start + maximum_operation_output_chunk_rows - 1L)
       positions <- seq.int(start, end)
       numeric_chunk <- source_storage[positions]
       source_chunk <- if (identical(source_column$semantics$kind, "date")) {
@@ -8179,31 +8233,14 @@ openwrangler_r_frame_contract <- local({
       if (!is.character(transformed_chunk) || length(transformed_chunk) != storage_length(source_chunk)) {
         abort("internal-error", "formatDatetime returned an invalid R text result")
       }
-      transformed_chunk <- vapply(seq_along(transformed_chunk), function(index) {
-        if (is.na(numeric_chunk[[index]])) return(NA_character_)
-        if (is.na(transformed_chunk[[index]])) {
-          abort("invalid-view-query", "formatDatetime returned a missing result for a present datetime")
-        }
-        bounded_operation_output(transformed_chunk[[index]], "Format datetime")
-      }, character(1L), USE.NAMES = FALSE)
-      chunk_text_bytes <- sum(as.double(nchar(
-        transformed_chunk[!is.na(transformed_chunk)],
-        type = "bytes"
-      )))
-      next_output_bytes <- output_bytes + chunk_text_bytes
-      if (!is.finite(next_output_bytes) || next_output_bytes > maximum_operation_output_bytes) {
-        abort(
-          "operation-output-too-large",
-          sprintf(
-            "formatDatetime exceeds the %d-byte aggregate output budget",
-            maximum_operation_output_bytes
-          )
-        )
+      if (any(present & is.na(transformed_chunk))) {
+        abort("invalid-view-query", "formatDatetime returned a missing result for a present datetime")
       }
-      output_bytes <- next_output_bytes
-      transformed[positions] <- transformed_chunk
+      transformed_chunk[!present] <- NA_character_
+      transformed[positions] <- bounded_utf8_column(transformed_chunk, check_output)
       start <- end + 1L
     }
+    if (!is.null(distinct_keys)) transformed <- transformed[distinct_keys]
 
     if (!identical(library, "base")) {
       target <- if (in_place) position else length(result) + 1L
@@ -9139,11 +9176,7 @@ openwrangler_r_frame_contract <- local({
     if (!is.character(values)) {
       abort("internal-error", sprintf("%s did not resolve to text", label))
     }
-    vapply(seq_along(values), function(index) {
-      value <- values[[index]]
-      if (is.na(value)) return(NA_character_)
-      bounded_utf8(value, sprintf("%s value %d", label, index))
-    }, character(1L), USE.NAMES = FALSE)
+    bounded_utf8_column(values, function(item, index) bounded_utf8(item, sprintf("%s value %d", label, index)))
   }
 
   cast_string_values <- function(column, semantics, label) {
@@ -9181,11 +9214,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       abort("internal-error", "castColumn encountered an unknown R source kind")
     }
-    vapply(seq_along(values), function(index) {
-      value <- values[[index]]
-      if (is.na(value)) return(NA_character_)
-      bounded_utf8(value, sprintf("%s result %d", label, index))
-    }, character(1L), USE.NAMES = FALSE)
+    bounded_utf8_column(values, function(item, index) bounded_utf8(item, sprintf("%s result %d", label, index)))
   }
 
   cast_date_text <- function(values) {
@@ -9231,14 +9260,17 @@ openwrangler_r_frame_contract <- local({
     result <- values
     present <- !is.na(result)
     if (!any(present)) return(result)
-    rendered <- pad_iso_years(format(result[present], format = "%Y-%m-%d"))
+    days <- as.double(unclass(result[present]))
+    distinct <- unique.default(days)
+    dates <- structure(distinct, class = "Date")
+    rendered <- pad_iso_years(format(dates, format = "%Y-%m-%d"))
     canonical <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", rendered, perl = TRUE) &
       !startsWith(rendered, "0000-")
     if (any(canonical)) {
       reparsed <- suppressWarnings(as.Date(rendered[canonical], format = "%Y-%m-%d"))
-      canonical[canonical] <- !is.na(reparsed) & reparsed == result[present][canonical]
+      canonical[canonical] <- !is.na(reparsed) & reparsed == dates[canonical]
     }
-    result[which(present)[!canonical]] <- as.Date(NA_character_)
+    result[which(present)[!canonical[match(days, distinct)]]] <- as.Date(NA_character_)
     result
   }
 
@@ -10034,7 +10066,7 @@ openwrangler_r_frame_contract <- local({
       abort("internal-error", "a grouped R frame reused a source identity for an aggregation")
     }
 
-    captured <- capture_frame(value)
+    captured <- capture_frame(value, owned = TRUE)
     if (
       !identical(captured$descriptor$dataframeFlavor, source_capture$descriptor$dataframeFlavor) ||
         captured$descriptor$shape$columns != expected_columns
@@ -10218,17 +10250,26 @@ openwrangler_r_frame_contract <- local({
     }
     element_bytes <- if (identical(kind, "clock_datetime")) 16 else if (kind %in% c("logical", "integer", "factor")) 4 else 8
     if (identical(kind, "clock_datetime")) spend_operation_output_budget(budget, 3 * native_vector_header_bytes + 16, "native timestamp fields")
-    vector_bytes <- as.double(storage_length(column)) * element_bytes
-    if (isTRUE(nested_value)) vector_bytes <- 8 * ceiling(vector_bytes / 8)
-    spend_operation_output_budget(
-      budget,
-      vector_bytes,
-      sprintf("custom-code column %d", position)
-    )
+    # Only nested values count against the budget. Top-level flat columns are validated without a size charge, as
+    # source columns are.
+    if (isTRUE(nested_value)) {
+      spend_operation_output_budget(budget, 8 * ceiling(as.double(storage_length(column)) * element_bytes / 8), sprintf("custom-code column %d", position))
+    }
+    validate_flat_text <- function(values, label, maximum_bytes = maximum_text_bytes) {
+      invisible(bounded_utf8_column(
+        values,
+        function(item, index) bounded_utf8(item, sprintf("%s %d", label, index), maximum_bytes),
+        maximum_bytes
+      ))
+    }
 
     element_names <- attr(column, "names", exact = TRUE)
     if (!is.null(element_names)) {
-      charge_text(element_names, sprintf("custom-code column %d names", position), if (nested_value) maximum_name_bytes else maximum_text_bytes)
+      if (isTRUE(nested_value)) {
+        charge_text(element_names, sprintf("custom-code column %d names", position), maximum_name_bytes)
+      } else {
+        validate_flat_text(element_names, sprintf("custom-code column %d names", position))
+      }
     }
     if (nested_kind(semantics)) {
       representative <- NULL
@@ -10269,11 +10310,11 @@ openwrangler_r_frame_contract <- local({
         }
       }
     } else if (identical(kind, "character")) {
-      charge_text(
-        column,
-        sprintf("custom-code column %d values", position),
-        charge_slots = FALSE
-      )
+      if (isTRUE(nested_value)) {
+        charge_text(column, sprintf("custom-code column %d values", position), charge_slots = FALSE)
+      } else {
+        validate_flat_text(column, sprintf("custom-code column %d values", position))
+      }
     } else if (identical(kind, "factor")) {
       validate_nested_metadata(
         attr(column, "levels", exact = TRUE),
@@ -10376,13 +10417,9 @@ openwrangler_r_frame_contract <- local({
     }
     validate_nested_metadata(frame_row_names, "custom-code canonical row names")
     if (is.character(frame_row_names)) {
-      charge_text(frame_row_names, "custom-code row names", maximum_name_bytes)
-    } else {
-      spend_operation_output_budget(
-        budget,
-        as.double(storage_length(frame_row_names)) * 4,
-        "custom-code row names"
-      )
+      bounded_utf8_column(frame_row_names, function(item, index) {
+        bounded_utf8(item, sprintf("custom-code row names %d", index), maximum_name_bytes)
+      }, maximum_name_bytes)
     }
 
 
@@ -10424,49 +10461,6 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.finite(row_count) || row_count != floor(row_count) || row_count > maximum_rows) {
       abort("unsupported-frame", "the dataframe has malformed row names")
-    }
-    columns <- unclass(frame)
-    column_count <- as.double(length(columns))
-    lower_bound <- metadata_base_bytes + column_count * column_fixed_bytes
-
-    add_vector_slots <- function(value, width = character_vector_slot_bytes) {
-      if (is.null(value)) return(invisible(NULL))
-      lower_bound <<- lower_bound + as.double(storage_length(value)) * width
-      if (!is.null(attributes(value))) lower_bound <<- lower_bound + character_vector_slot_bytes + 4
-      if (!is.finite(lower_bound) || lower_bound > maximum_operation_output_bytes) {
-        abort(
-          "operation-output-too-large",
-          sprintf(
-            "Custom Code exceeds the %d-byte R operation output budget before value inspection",
-            maximum_operation_output_bytes
-          )
-        )
-      }
-      invisible(NULL)
-    }
-
-    add_vector_slots(attr(frame, "names", exact = TRUE))
-    add_vector_slots(attr(frame, "class", exact = TRUE))
-    add_vector_slots(row_names, if (is.character(row_names)) character_vector_slot_bytes else 4)
-    add_vector_slots(attr(frame, "sorted", exact = TRUE))
-    for (position in seq_along(columns)) {
-      column <- .subset2(columns, position)
-      element_bytes <- if (typeof(column) %in% c("logical", "integer")) 4 else 8
-      lower_bound <- lower_bound + row_count * element_bytes
-      add_vector_slots(attr(column, "names", exact = TRUE))
-      add_vector_slots(attr(column, "class", exact = TRUE))
-      add_vector_slots(attr(column, "levels", exact = TRUE))
-      add_vector_slots(attr(column, "tzone", exact = TRUE))
-      add_vector_slots(attr(column, "units", exact = TRUE))
-      if (!is.finite(lower_bound) || lower_bound > maximum_operation_output_bytes) {
-        abort(
-          "operation-output-too-large",
-          sprintf(
-            "Custom Code exceeds the %d-byte R operation output budget before value inspection",
-            maximum_operation_output_bytes
-          )
-        )
-      }
     }
     validate_frame_structure(frame)
     invisible(NULL)
@@ -10796,7 +10790,7 @@ openwrangler_r_frame_contract <- local({
         semantics = .subset2(source_semantics$fields, match(fields[[index]], field_names))$semantics)
     }
     # Expected prototypes keep all-NULL retained siblings typed after expansion.
-    captured <- capture_frame(value, expected_schema = expected, preserve_data_table_element_names = TRUE)
+    captured <- capture_frame(value, expected_schema = expected, preserve_data_table_element_names = TRUE, owned = TRUE)
     descriptor <- captured$descriptor
     schema <- plain_metadata_storage(descriptor$schema)
     for (index in seq_along(schema)) {
@@ -10924,13 +10918,32 @@ openwrangler_r_frame_contract <- local({
       value <- base::structure(columns, names = base::names(value),
         row.names = base::.row_names_info(value, 0L), class = "data.frame")
     }
-    if (base::identical(keep, "first")) {
-      base::duplicated(value)
-    } else if (base::identical(keep, "last")) {
-      base::duplicated(value, fromLast = TRUE)
-    } else {
-      base::duplicated(value) | base::duplicated(value, fromLast = TRUE)
+    mask <- function(compared, duplicated) {
+      if (base::identical(keep, "first")) {
+        duplicated(compared)
+      } else if (base::identical(keep, "last")) {
+        duplicated(compared, fromLast = TRUE)
+      } else {
+        duplicated(compared) | duplicated(compared, fromLast = TRUE)
+      }
     }
+    if (base::inherits(value, "data.table") || base::length(value) == 0L) return(mask(value, base::duplicated))
+    # duplicated.data.frame compares each row as a list, which is slow on millions of rows. Exact per-column
+    # keys give the same equality; combined keys past 2^53 would lose precision, so those frames keep that method.
+    keys <- NULL
+    for (position in base::seq_along(value)) {
+      storage <- base::unclass(base::.subset2(value, position))
+      base::attributes(storage) <- NULL
+      column_keys <- base::match(storage, base::unique.default(storage))
+      if (!base::is.null(keys)) {
+        width <- base::as.double(base::max(column_keys, 0L))
+        if (base::as.double(base::max(keys, 0L)) * width > 2^53) return(mask(value, base::duplicated))
+        combined <- (keys - 1) * width + column_keys
+        column_keys <- base::match(combined, base::unique.default(combined))
+      }
+      keys <- column_keys
+    }
+    mask(keys, base::duplicated.default)
   }
 
   mark_duplicate_rows_at <- function(value, positions, expected_names, new_name, library = "base") {
@@ -12321,8 +12334,12 @@ openwrangler_r_frame_contract <- local({
       clock_require = clock_require,
       clock_validate = clock_validate,
       clock_ticks = clock_ticks,
+      clock_identities = clock_identities,
+      clock_distinct = clock_distinct,
       clock_display = clock_display,
+      clock_full_precision_text = clock_full_precision_text,
       clock_format = clock_format,
+      clock_format_values = clock_format_values,
       clock_parse = clock_parse,
       clock_parse_value = clock_parse_value,
       clock_offsets = clock_offsets,
@@ -12343,6 +12360,9 @@ openwrangler_r_frame_contract <- local({
     ),
     nested_operation_helpers = list(
       isolated_snapshot = isolated_snapshot,
+      copy_atomic_vector = copy_atomic_vector,
+      copy_attribute_value = copy_attribute_value,
+      copy_frame_column = copy_frame_column,
       nested_scalar_vector = nested_scalar_vector,
       charge_repeated_native_column = charge_repeated_native_column,
       charge_flat_nested_output = charge_flat_nested_output,
@@ -12357,6 +12377,8 @@ openwrangler_r_frame_contract <- local({
       `assert_attributes` = `assert_attributes`,
       `bounded_text_array` = `bounded_text_array`,
       `bounded_utf8` = `bounded_utf8`,
+      `bounded_utf8_column` = `bounded_utf8_column`,
+      `bounded_utf8_values` = `bounded_utf8_values`,
       `character_vector_slot_bytes` = `character_vector_slot_bytes`,
       `charge_native_column` = `charge_native_column`,
       `charge_native_text` = `charge_native_text`,

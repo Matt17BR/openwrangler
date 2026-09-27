@@ -1453,23 +1453,6 @@ rm("multi_label_frame", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(dispatch("undoStep", list(sessionId = multi_label_session_id, revision = 2L, page = page_window()))$action, "undo", "the applied R multi-label step did not undo")
 assert_identical(dispatch("closeSession", list(sessionId = multi_label_session_id))$kind, "closed", "the R multi-label session did not close")
 
-categorical_indicator_code_position <- regexpr(
-  ".ow_generated[[.ow_generated_index]]$values <- as.integer(vapply",
-  multi_label_apply$code,
-  fixed = TRUE
-)[[1L]]
-categorical_budget_code_position <- regexpr(
-  ".ow_total_output_bytes > .ow_maximum_output_bytes",
-  multi_label_apply$code,
-  fixed = TRUE
-)[[1L]]
-assert_identical(
-  categorical_budget_code_position > 0L &&
-    categorical_indicator_code_position > categorical_budget_code_position,
-  TRUE,
-  "generated R categorical code did not guard output budgets before indicator construction"
-)
-
 categorical_oversized_text <- paste0(rep.int("a|", 4097L), collapse = "")
 categorical_oversized_text_frame <- data.frame(
   tags = factor(categorical_oversized_text),
@@ -1513,7 +1496,6 @@ categorical_helper_oversized_error <- tryCatch(
       512L,
       8192L,
       16 * 1024 * 1024,
-      64 * 1024 * 1024,
       8L,
       1024L,
       512L,
@@ -1554,7 +1536,6 @@ categorical_metadata_error <- tryCatch(
       512L,
       8192L,
       16 * 1024 * 1024,
-      64 * 1024 * 1024,
       8L,
       1024L,
       512L,
@@ -1595,7 +1576,6 @@ categorical_identity_error <- tryCatch(
       512L,
       8192L,
       16 * 1024 * 1024,
-      64 * 1024 * 1024,
       8L,
       1024L,
       512L,
@@ -1628,7 +1608,6 @@ categorical_metadata_drop_generated <- categorical_generated_helper(
   512L,
   8192L,
   16 * 1024 * 1024,
-  64 * 1024 * 1024,
   8L,
   1024L,
   512L,
@@ -1684,7 +1663,6 @@ categorical_semantic_metadata_retain_error <- tryCatch(
       1024L,
       8192L,
       3600L,
-      64 * 1024 * 1024,
       8L,
       1024L,
       512L,
@@ -1722,7 +1700,6 @@ categorical_semantic_metadata_drop <- categorical_generated_helper(
   1024L,
   8192L,
   3600L,
-  64 * 1024 * 1024,
   8L,
   1024L,
   512L,
@@ -2140,7 +2117,6 @@ categorical_dynamic_bundle_first <- categorical_generated_helper(
   512L,
   8192L,
   16 * 1024 * 1024,
-  64 * 1024 * 1024,
   8L,
   1024L,
   512L,
@@ -2159,7 +2135,6 @@ categorical_dynamic_bundle_second <- categorical_generated_helper(
   512L,
   8192L,
   16 * 1024 * 1024,
-  64 * 1024 * 1024,
   8L,
   1024L,
   512L,
@@ -2370,16 +2345,10 @@ assert_identical(
   "the derived-lineage categorical session did not close"
 )
 
-categorical_budget_tokens <- sprintf(
-  "token-%03d-%s",
-  seq_len(100L),
-  strrep("x", 55L)
-)
+# Generated multi-label code has no aggregate output cap: 100 long tokens repeated past the former 64 MiB limit.
+categorical_budget_tokens <- sprintf("token-%03d-%s", seq_len(100L), strrep("x", 55L))
 categorical_budget_cell <- paste(categorical_budget_tokens, collapse = "|")
-categorical_budget_per_row <- 8 +
-  sum(nchar(categorical_budget_tokens, type = "bytes") + 8) +
-  length(categorical_budget_tokens) * 4
-categorical_budget_rows <- floor((64 * 1024 * 1024) / categorical_budget_per_row)
+categorical_budget_rows <- 90000L
 categorical_budget_frame <- data.frame(
   tags = factor(rep.int(categorical_budget_cell, categorical_budget_rows), levels = categorical_budget_cell),
   value = seq_len(categorical_budget_rows),
@@ -2391,28 +2360,15 @@ eval(parse(text = multi_label_apply$code), envir = categorical_budget_environmen
 categorical_budget_generated <- get("open_wrangler_result", envir = categorical_budget_environment, inherits = FALSE)
 assert_identical(
   dim(categorical_budget_generated),
-  c(as.integer(categorical_budget_rows), 102L),
-  "generated R multi-label code rejected the exact in-budget token boundary"
-)
-rm("open_wrangler_result", envir = categorical_budget_environment)
-categorical_budget_oversize <- categorical_budget_frame[
-  rep(seq_len(categorical_budget_rows), length.out = categorical_budget_rows + 1L),
-  ,
-  drop = FALSE
-]
-assign("multi_label_frame", categorical_budget_oversize, envir = categorical_budget_environment)
-categorical_budget_error <- tryCatch(
-  {
-    eval(parse(text = multi_label_apply$code), envir = categorical_budget_environment)
-    NULL
-  },
-  error = identity
+  c(categorical_budget_rows, 102L),
+  "generated R multi-label code refused a large token output"
 )
 assert_identical(
-  inherits(categorical_budget_error, "error") && grepl("output is too large", conditionMessage(categorical_budget_error), fixed = TRUE),
-  TRUE,
-  "generated R multi-label code ignored the combined token/indicator budget"
+  unique(categorical_budget_generated[[3L]]),
+  1L,
+  "generated R multi-label code lost a repeated token"
 )
+rm("open_wrangler_result", envir = categorical_budget_environment)
 
 categorical_many_tokens <- vapply(0:2048, function(offset) intToUtf8(256L + offset), character(1L))
 categorical_high_cardinality_frame <- data.frame(
@@ -4724,10 +4680,11 @@ directional_typed_values <- list(
   empty = double(),
   all_missing = c(NA_real_, NaN, NA_real_)
 )
+# Version 2 writes compact ALTREP sequences as ordinary vectors, which is how a copied live snapshot stores them.
 directional_frame_bytes <- function(value) {
   result <- unserialize(serialize(value, NULL, version = 3L))
   if (inherits(result, "data.table")) attr(result, ".internal.selfref") <- NULL
-  serialize(result, NULL, version = 3L)
+  serialize(result, NULL, version = 2L)
 }
 directional_source_environment <- new.env(parent = baseenv())
 directional_agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, directional_source_environment)
@@ -8781,19 +8738,13 @@ assert_identical(
 invisible(dispatch("closeSession", list(sessionId = datetime_replay_session_id)))
 rm("datetime_replay_frame", envir = source_environment)
 
-datetime_output_budget <- 64L * 1024L * 1024L
-datetime_output_slot_bytes <- 8L
+# Format Datetime has no aggregate output cap. The run is past the former 64 MiB limit.
 datetime_output_format <- paste(rep("%Y%m%d", 127L), collapse = "")
 datetime_output_text_bytes <- nchar(
   format(as.Date("2026-01-01"), format = datetime_output_format),
   type = "bytes"
 )
-datetime_output_boundary_rows <- 65536L
-assert_identical(
-  datetime_output_boundary_rows * (datetime_output_slot_bytes + datetime_output_text_bytes),
-  datetime_output_budget,
-  "the kernel Format Datetime aggregate-output boundary fixture changed"
-)
+datetime_output_boundary_rows <- 65537L
 source_environment$datetime_output_budget_frame <- data.frame(
   day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows),
   check.names = FALSE
@@ -8811,7 +8762,7 @@ datetime_output_budget_open <- dispatch(
     page = page_window(row_limit = 1L)
   )
 )
-assert_identical(datetime_output_budget_open$kind, "page", "the exact datetime output-budget session did not open")
+assert_identical(datetime_output_budget_open$kind, "page", "the large datetime output session did not open")
 datetime_output_budget_preview <- dispatch(
   "previewStep",
   list(
@@ -8830,12 +8781,12 @@ datetime_output_budget_preview <- dispatch(
 assert_identical(
   datetime_output_budget_preview$kind,
   "stepPreview",
-  "live R Format Datetime rejected the exact 64 MiB aggregate-output boundary"
+  "live R Format Datetime rejected a large repeated output"
 )
 assert_identical(
   nchar(text_page_values(datetime_output_budget_preview, "formatted")[[1L]], type = "bytes"),
   datetime_output_text_bytes,
-  "live R Format Datetime truncated output at the aggregate boundary"
+  "live R Format Datetime truncated a large repeated output"
 )
 datetime_output_budget_apply <- dispatch(
   "applyDraft",
@@ -8845,7 +8796,7 @@ datetime_output_budget_apply <- dispatch(
     page = page_window(row_limit = 1L)
   )
 )
-assert_identical(datetime_output_budget_apply$action, "apply", "the exact datetime output-budget draft did not apply")
+assert_identical(datetime_output_budget_apply$action, "apply", "the large datetime output draft did not apply")
 assert_identical(
   grepl(".ow_datetime_chunk_source", datetime_output_budget_apply$code, fixed = TRUE),
   TRUE,
@@ -8861,104 +8812,26 @@ datetime_output_budget_generated <- get("open_wrangler_result", envir = .GlobalE
 assert_identical(
   length(datetime_output_budget_generated$formatted),
   datetime_output_boundary_rows,
-  "generated R Format Datetime rejected the exact aggregate-output boundary"
+  "generated R Format Datetime rejected a large repeated output"
 )
 assert_identical(
   nchar(datetime_output_budget_generated$formatted[[datetime_output_boundary_rows]], type = "bytes"),
   datetime_output_text_bytes,
-  "generated R Format Datetime truncated output at the aggregate boundary"
+  "generated R Format Datetime truncated a large repeated output"
 )
 assert_identical(
   serialize(get("datetime_output_budget_frame", envir = .GlobalEnv), NULL, version = 3L),
   datetime_output_budget_before,
-  "generated aggregate-boundary formatting mutated its source"
+  "generated large formatting mutated its source"
 )
 assert_identical(
   serialize(source_environment$datetime_output_budget_frame, NULL, version = 3L),
   datetime_output_budget_before,
-  "live aggregate-boundary formatting mutated its source"
+  "live large formatting mutated its source"
 )
 rm("open_wrangler_result", envir = .GlobalEnv)
 invisible(dispatch("closeSession", list(sessionId = datetime_output_budget_session_id)))
 
-source_environment$datetime_output_oversize_frame <- data.frame(
-  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows + 1L),
-  check.names = FALSE
-)
-datetime_output_oversize_before <- serialize(
-  source_environment$datetime_output_oversize_frame,
-  NULL,
-  version = 3L
-)
-datetime_output_oversize_open <- dispatch(
-  "openSession",
-  list(
-    sessionId = datetime_output_oversize_session_id,
-    variableName = "datetime_output_oversize_frame",
-    page = page_window(row_limit = 1L)
-  )
-)
-assert_identical(datetime_output_oversize_open$kind, "page", "the oversized datetime output session did not open")
-datetime_output_oversize_preview <- dispatch(
-  "previewStep",
-  list(
-    sessionId = datetime_output_oversize_session_id,
-    revision = 0L,
-    step = datetime_format_step(
-      "datetime-output-oversize",
-      1L,
-      "day",
-      datetime_output_format,
-      "formatted"
-    ),
-    page = page_window(row_limit = 1L)
-  )
-)
-assert_identical(datetime_output_oversize_preview$kind, "error", "live R Format Datetime exceeded 64 MiB")
-assert_identical(datetime_output_oversize_preview$code, "invalid_request", "the aggregate-output diagnostic changed")
-assert_identical(
-  grepl("67108864-byte aggregate output budget", datetime_output_oversize_preview$message, fixed = TRUE),
-  TRUE,
-  "the live aggregate-output diagnostic lost its exact budget"
-)
-assert_identical(
-  serialize(source_environment$datetime_output_oversize_frame, NULL, version = 3L),
-  datetime_output_oversize_before,
-  "rejected live aggregate-output formatting mutated its source"
-)
-invisible(dispatch("closeSession", list(sessionId = datetime_output_oversize_session_id)))
-
-assign(
-  "datetime_output_budget_frame",
-  source_environment$datetime_output_oversize_frame,
-  envir = .GlobalEnv
-)
-datetime_output_generated_oversize_error <- tryCatch(
-  {
-    eval(parse(text = datetime_output_budget_apply$code), envir = .GlobalEnv)
-    NULL
-  },
-  error = identity
-)
-assert_identical(
-  inherits(datetime_output_generated_oversize_error, "error"),
-  TRUE,
-  "generated R Format Datetime exceeded its 64 MiB aggregate-output budget"
-)
-assert_identical(
-  grepl(
-    "67108864-byte aggregate output budget",
-    conditionMessage(datetime_output_generated_oversize_error),
-    fixed = TRUE
-  ),
-  TRUE,
-  "the generated aggregate-output diagnostic lost its exact budget"
-)
-assert_identical(
-  serialize(get("datetime_output_budget_frame", envir = .GlobalEnv), NULL, version = 3L),
-  datetime_output_oversize_before,
-  "rejected generated aggregate-output formatting mutated its source"
-)
 rm("datetime_output_budget_frame", envir = .GlobalEnv)
 
 source_environment$datetime_table <- data.table::data.table(
@@ -12361,8 +12234,8 @@ slot_preflight_error <- tryCatch(
   error = function(error) error
 )
 by_example_assert(
-  inherits(slot_preflight_error, "error") && grepl("aggregate output budget", conditionMessage(slot_preflight_error), fixed = TRUE),
-  "standalone by-example evaluation reached its invalid AST before fixed-slot preflight"
+  inherits(slot_preflight_error, "error") && grepl("bound column index is invalid", conditionMessage(slot_preflight_error), fixed = TRUE),
+  "standalone by-example evaluation accepted an invalid column index on a large input"
 )
 oversized_case_program <- list(
   kind = "case",
@@ -13278,10 +13151,10 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
   )
   source_before_bytes <- serialize(source_environment$by_example_s3, NULL, version = 3L)
   source_before <- unserialize(source_before_bytes)
-  integer64_input_name_chunks <- list()
-  integer64_output_name_chunks <- list()
+  integer64_input_names <- list()
+  integer64_output_names <- list()
   instrumented_contract <- openwrangler_r_frame_contract
-  real_chunked_by_example <- instrumented_contract$by_example_column_at
+  real_by_example <- instrumented_contract$by_example_column_at
   instrumented_contract$by_example_column_at <- function(
     value,
     positions,
@@ -13291,7 +13164,7 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
     evaluator,
     library = "base"
   ) {
-    real_chunked_by_example(
+    real_by_example(
       value,
       positions,
       expected_names,
@@ -13300,9 +13173,9 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
       function(columns) {
         output <- evaluator(columns)
         if (identical(new_name, "wide plus two")) {
-          integer64_input_name_chunks[[length(integer64_input_name_chunks) + 1L]] <<-
+          integer64_input_names[[length(integer64_input_names) + 1L]] <<-
             attr(base::.subset2(columns, 1L), "names", exact = TRUE)
-          integer64_output_name_chunks[length(integer64_output_name_chunks) + 1L] <<-
+          integer64_output_names[length(integer64_output_names) + 1L] <<-
             list(attr(output, "names", exact = TRUE))
         }
         output
@@ -13547,27 +13420,18 @@ by_example_s3_isolation_child <- function(frame_contract_path, kernel_exports_pa
     direct_revision <- applied$revision
   }
   assert_child(!is.null(applied), "the chunked by-example plan did not apply")
-  expected_name_chunks <- list(
-    base::.subset(element_names, seq.int(1L, 1024L)),
-    base::.subset(element_names, seq.int(1025L, 2048L)),
-    base::.subset(element_names, seq.int(2049L, row_count))
-  )
   assert_child(
-    length(integer64_input_name_chunks) >= 3L && length(integer64_input_name_chunks) %% 3L == 0L,
-    "live chunked integer64 arithmetic did not evaluate complete source windows"
+    length(integer64_input_names) >= 1L && length(integer64_output_names) == length(integer64_input_names),
+    "live integer64 arithmetic did not capture every output-name decision"
   )
   assert_same(
-    tail(integer64_input_name_chunks, 3L),
-    expected_name_chunks,
-    "live chunked integer64 arithmetic lost source names"
+    integer64_input_names[[length(integer64_input_names)]],
+    element_names,
+    "live integer64 arithmetic lost source names"
   )
   assert_child(
-    length(integer64_output_name_chunks) == length(integer64_input_name_chunks),
-    "live chunked integer64 arithmetic did not capture every output-name decision"
-  )
-  assert_child(
-    all(vapply(tail(integer64_output_name_chunks, 3L), is.null, logical(1L), USE.NAMES = FALSE)),
-    "live chunked integer64 arithmetic unexpectedly retained input names"
+    is.null(integer64_output_names[[length(integer64_output_names)]]),
+    "live integer64 arithmetic unexpectedly retained input names"
   )
   assert_child(
     !grepl("by_example_shortest_double_components|jsonlite::fromJSON", applied$code, perl = TRUE),

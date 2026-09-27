@@ -1562,76 +1562,32 @@ assert_error(
   "reserved-column-name"
 )
 
-custom_boundary_rows <- 11116L
-custom_boundary_text <- paste(rep.int("x", 6029L), collapse = "")
-custom_boundary_bytes <-
-  1024 + 512 +
-  (8 + nchar("aa", type = "bytes")) +
-  (8 + nchar("data.frame", type = "bytes")) +
-  8 +
-  as.double(custom_boundary_rows) * (8 + nchar(custom_boundary_text, type = "bytes"))
-assert_identical(
-  custom_boundary_bytes,
-  64 * 1024^2,
-  "the Custom Code operation-budget boundary fixture is not exactly 64 MiB"
-)
-custom_boundary_output <- data.frame(
-  aa = rep.int(custom_boundary_text, custom_boundary_rows),
-  check.names = FALSE
-)
-custom_boundary_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
-  custom_boundary_output,
+# Flat Custom Code output has no aggregate size cap, like a source frame, but every string is still validated.
+large_custom_rows <- 8388609L
+large_custom_output <- data.frame(value = rep.int(0, large_custom_rows), label = rep.int(strrep("x", 6029L), large_custom_rows))
+large_custom_capture <- openwrangler_r_frame_contract$capture_custom_code_result(
+  large_custom_output,
   custom_validation_source,
-  "exact-operation-budget"
+  "large-flat-output"
 )
-assert_identical(
-  custom_boundary_capture$descriptor$shape$rows,
-  custom_boundary_rows,
-  "Custom Code rejected an output at the exact 64 MiB operation budget"
-)
-names(custom_boundary_output) <- "aaa"
+assert_identical(large_custom_capture$descriptor$shape$rows, large_custom_rows, "Custom Code refused a large flat output")
+large_custom_output$label[[large_custom_rows]] <- rawToChar(as.raw(0xff))
 assert_error(
-  openwrangler_r_frame_contract$capture_custom_code_result(
-    custom_boundary_output,
-    custom_validation_source,
-    "over-operation-budget"
-  ),
-  "operation-output-too-large"
+  openwrangler_r_frame_contract$capture_custom_code_result(large_custom_output, custom_validation_source, "invalid-text"),
+  sprintf("custom-code column 2 values %d is not valid UTF-8", large_custom_rows)
 )
-rm(custom_boundary_capture, custom_boundary_output, custom_boundary_text)
-
-oversized_custom_output <- data.frame(value = rep.int(0, 8388608L))
-custom_snapshot_calls <- 0L
-trace(
-  "serialize",
-  tracer = quote(custom_snapshot_calls <<- custom_snapshot_calls + 1L),
-  where = baseenv(),
-  print = FALSE
-)
-oversized_custom_error <- tryCatch(
-  {
-    openwrangler_r_frame_contract$capture_custom_code_result(
-      oversized_custom_output,
-      custom_validation_source,
-      "oversized-storage"
-    )
-    NULL
-  },
-  error = identity
-)
-untrace("serialize", where = baseenv())
-assert_true(inherits(oversized_custom_error, "openwrangler_r_frame_error"), "oversized Custom Code output was accepted")
+rm(large_custom_capture, large_custom_output)
+custom_row_name_limit <- data.frame(value = 1:2, row.names = c("a", strrep("n", 1024L)))
 assert_identical(
-  oversized_custom_error$code,
-  "operation-output-too-large",
-  "oversized Custom Code output used the wrong diagnostic"
+  openwrangler_r_frame_contract$capture_custom_code_result(custom_row_name_limit, custom_validation_source, "row-name-limit")$descriptor$shape$rows,
+  2L,
+  "Custom Code refused a row name at the byte limit"
 )
-assert_identical(
-  custom_snapshot_calls,
-  0L,
-  "oversized Custom Code output was snapshotted before its fixed-slot preflight"
+row.names(custom_row_name_limit) <- c("a", strrep("n", 1025L))
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(custom_row_name_limit, custom_validation_source, "long-row-name"),
+  "custom-code row names 2 exceeds 1024 UTF-8 bytes"
 )
-rm(oversized_custom_output)
 invisible(gc())
 
 named_row_labels <- c("row-a", "row-b", "row-c")
@@ -1888,9 +1844,10 @@ assert_error(openwrangler_r_frame_contract$conditional_column(empty_conditional,
   "label", "boolean", list(trueValue = TRUE, falseValue = FALSE, missingValue = "unused")), "Boolean arms")
 assert_error(openwrangler_r_frame_contract$conditional_column(empty_conditional, nullary_condition,
   "label", "string", list(trueValue = "", falseValue = NULL, missingValue = strrep("é", 4097L))), "text-too-large")
-budget_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = rep(2, 9000L)))
-assert_error(openwrangler_r_frame_contract$conditional_column(budget_capture, conditional_condition,
-  "label", "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL)), "operation-output-too-large")
+large_conditional <- openwrangler_r_frame_contract$capture_frame(data.frame(value = rep(2, 9000L)))
+large_conditional <- openwrangler_r_frame_contract$conditional_column(large_conditional, conditional_condition,
+  "label", "string", list(trueValue = strrep("x", 8192L), falseValue = "", missingValue = NULL))
+assert_identical(unique(large_conditional$frame$label), strrep("x", 8192L), "Conditional Column refused long repeated text")
 assert_identical(serialize(conditional_source, NULL, version = 3L), conditional_before, "Conditional append mutated source")
 
 # Mark Duplicates owns a present logical capture, not a cloned key type.
@@ -2528,32 +2485,23 @@ by_example_chunk_source <- data.frame(
   check.names = FALSE
 )
 by_example_chunk_source_before <- serialize(by_example_chunk_source, NULL, version = 3L)
-by_example_chunk_calls <- integer()
 by_example_chunk_result <- openwrangler_r_frame_contract$by_example_column_at(
   by_example_chunk_source,
   c(1L, 2L),
   c("label", "value"),
   "chunk result",
   "character",
-  function(columns) {
-    by_example_chunk_calls <<- c(by_example_chunk_calls, length(columns[[1L]]))
-    paste0(columns[[1L]], ":", columns[[2L]])
-  }
+  function(columns) paste0(columns[[1L]], ":", columns[[2L]])
 )
 assert_identical(
-  by_example_chunk_calls,
-  c(1024L, 1024L, 3L),
-  "byExample did not evaluate output in bounded row chunks"
-)
-assert_identical(
-  by_example_chunk_result$`chunk result`[[by_example_chunk_rows]],
-  sprintf("row-%04d:%d", by_example_chunk_rows, by_example_chunk_rows),
-  "byExample changed the final bounded output chunk"
+  by_example_chunk_result$`chunk result`,
+  sprintf("row-%04d:%d", seq_len(by_example_chunk_rows), seq_len(by_example_chunk_rows)),
+  "byExample changed its output rows"
 )
 assert_identical(
   serialize(by_example_chunk_source, NULL, version = 3L),
   by_example_chunk_source_before,
-  "chunked byExample evaluation mutated its source"
+  "byExample evaluation mutated its source"
 )
 
 for (named_table_case in list(
@@ -2589,33 +2537,23 @@ for (named_table_case in list(
   )
 }
 
-by_example_preflight_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L + 1L
-by_example_preflight_source <- structure(
-  list(value = seq_len(by_example_preflight_rows)),
+# By Example has no aggregate output cap: a column past the former 64 MiB limit is evaluated in full.
+by_example_large_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L + 1L
+by_example_large_source <- structure(
+  list(value = seq_len(by_example_large_rows)),
   class = "data.frame",
-  row.names = .set_row_names(by_example_preflight_rows)
+  row.names = .set_row_names(by_example_large_rows)
 )
-by_example_preflight_called <- FALSE
-assert_error(
-  openwrangler_r_frame_contract$by_example_column_at(
-    by_example_preflight_source,
-    1L,
-    "value",
-    "too large",
-    "character",
-    function(columns) {
-      by_example_preflight_called <<- TRUE
-      as.character(columns[[1L]])
-    }
-  ),
-  "operation output budget"
+by_example_large_result <- openwrangler_r_frame_contract$by_example_column_at(
+  by_example_large_source,
+  1L,
+  "value",
+  "large",
+  "character",
+  function(columns) rep.int("x", length(columns[[1L]]))
 )
-assert_identical(
-  by_example_preflight_called,
-  FALSE,
-  "byExample evaluated a program before rejecting its fixed output-slot budget"
-)
-rm(by_example_preflight_source)
+assert_identical(unique(by_example_large_result$large), "x", "byExample refused a large text output")
+rm(by_example_large_source, by_example_large_result)
 
 assert_error(
   openwrangler_r_frame_contract$by_example_column_at(
@@ -2747,56 +2685,41 @@ assert_identical(
   "malformed temporal byExample attributes mutated their source"
 )
 
-by_example_attribute_budget_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L
-by_example_attribute_budget_source <- structure(
-  list(value = seq_len(by_example_attribute_budget_rows)),
+by_example_attribute_rows <- openwrangler_r_frame_contract$limits$operationOutputBytes %/% 8L
+by_example_attribute_source <- structure(
+  list(value = seq_len(by_example_attribute_rows)),
   class = "data.frame",
-  row.names = .set_row_names(by_example_attribute_budget_rows)
+  row.names = .set_row_names(by_example_attribute_rows)
 )
 for (attribute_case in list(
   list(
-    label = "datetime timezone",
     kind = "datetime",
-    evaluator = function(columns) structure(
-      as.double(columns[[1L]]),
-      class = c("POSIXct", "POSIXt"),
-      tzone = "UTC"
-    )
+    attribute = "tzone",
+    expected = "UTC",
+    evaluator = function(columns) structure(as.double(columns[[1L]]), class = c("POSIXct", "POSIXt"), tzone = "UTC")
   ),
   list(
-    label = "difftime units",
     kind = "difftime",
+    attribute = "units",
+    expected = "hours",
     evaluator = function(columns) structure(as.double(columns[[1L]]), class = "difftime", units = "hours")
   )
 )) {
-  attribute_evaluations <- 0L
-  evaluator <- attribute_case$evaluator
-  assert_error(
-    openwrangler_r_frame_contract$by_example_column_at(
-      by_example_attribute_budget_source,
-      1L,
-      "value",
-      paste0(attribute_case$label, " overflow"),
-      attribute_case$kind,
-      function(columns) {
-        attribute_evaluations <<- attribute_evaluations + 1L
-        evaluator(columns)
-      }
-    ),
-    "operation output budget"
+  attribute_result <- openwrangler_r_frame_contract$by_example_column_at(
+    by_example_attribute_source,
+    1L,
+    "value",
+    "temporal",
+    attribute_case$kind,
+    attribute_case$evaluator
   )
   assert_identical(
-    attribute_evaluations,
-    1L,
-    sprintf("byExample did not reject %s at the first bounded chunk", attribute_case$label)
+    attr(attribute_result$temporal, attribute_case$attribute, exact = TRUE),
+    attribute_case$expected,
+    sprintf("byExample refused or changed a large %s output", attribute_case$kind)
   )
 }
-assert_identical(
-  by_example_attribute_budget_source$value[[1L]],
-  1L,
-  "temporal attribute budget rejection mutated its source"
-)
-rm(by_example_attribute_budget_source)
+rm(by_example_attribute_source, attribute_result)
 assert_error(
   openwrangler_r_frame_contract$by_example_column_at(
     by_example_source,
@@ -4771,56 +4694,23 @@ assert_datetime_format_isolated_from_global_methods <- function() {
 }
 assert_datetime_format_isolated_from_global_methods()
 
-datetime_output_budget <- 64L * 1024L * 1024L
-datetime_output_slot_bytes <- 8L
+# Format Datetime has no aggregate output cap; each value keeps the 8 KiB text limit.
 datetime_output_format <- paste(rep("%Y%m%d", 127L), collapse = "")
-datetime_output_text_bytes <- nchar(
-  format(as.Date("2026-01-01"), format = datetime_output_format),
-  type = "bytes"
-)
-datetime_output_boundary_rows <- 65536L
-assert_identical(
-  datetime_output_boundary_rows * (datetime_output_slot_bytes + datetime_output_text_bytes),
-  datetime_output_budget,
-  "the exact Format Datetime aggregate-output boundary fixture changed"
-)
-datetime_output_boundary_source <- data.frame(
-  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows),
-  check.names = FALSE
-)
-datetime_output_boundary_result <- openwrangler_r_frame_contract$format_datetime_column_at(
-  datetime_output_boundary_source,
+datetime_output_rows <- 65537L
+datetime_output_source <- data.frame(day = rep(as.Date("2026-01-01"), datetime_output_rows), check.names = FALSE)
+datetime_output_result <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_output_source,
   1L,
   "day",
   datetime_output_format,
   "formatted"
 )
 assert_identical(
-  length(datetime_output_boundary_result$formatted),
-  datetime_output_boundary_rows,
-  "formatDatetime rejected the exact 64 MiB aggregate-output boundary"
+  unique(datetime_output_result$formatted),
+  format(as.Date("2026-01-01"), format = datetime_output_format),
+  "formatDatetime refused or changed a large repeated output"
 )
-assert_identical(
-  nchar(datetime_output_boundary_result$formatted[[datetime_output_boundary_rows]], type = "bytes"),
-  datetime_output_text_bytes,
-  "formatDatetime truncated an output at the aggregate boundary"
-)
-rm(datetime_output_boundary_result, datetime_output_boundary_source)
-datetime_output_oversize_source <- data.frame(
-  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows + 1L),
-  check.names = FALSE
-)
-assert_error(
-  openwrangler_r_frame_contract$format_datetime_column_at(
-    datetime_output_oversize_source,
-    1L,
-    "day",
-    datetime_output_format,
-    "formatted"
-  ),
-  "operation-output-too-large"
-)
-rm(datetime_output_oversize_source)
+rm(datetime_output_result, datetime_output_source)
 
 datetime_flavors <- list(
   data.frame(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b")),
@@ -10551,15 +10441,14 @@ large_category_source <- data.frame(
     levels = large_categories
   )
 )
-assert_error(
-  openwrangler_r_frame_contract$one_hot_encode_columns_at(
-    large_category_source,
-    1L,
-    "group",
-    drop_original = TRUE
-  ),
-  "operation output budget"
+large_category_result <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  large_category_source,
+  1L,
+  "group",
+  drop_original = TRUE
 )
+assert_identical(length(large_category_result$value), large_category_count, "One-hot refused a large indicator output")
+rm(large_category_result)
 
 forged_table <- data.table::data.table(group = c("a", "b"), keep = 1:2)
 forged_capture <- openwrangler_r_frame_contract$capture_frame(forged_table)

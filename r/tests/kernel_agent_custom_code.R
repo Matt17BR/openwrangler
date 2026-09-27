@@ -794,170 +794,47 @@ custom_zero_discard <- custom_dispatch(
 )
 assert_identical(custom_zero_discard$action, "discard", "zero-row Custom Code draft did not discard")
 
-custom_boundary_rows <- 10070L
-custom_boundary_text_bytes <- 6640L
-custom_boundary_stamp <- clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond")
-custom_boundary_classes <- class(custom_boundary_stamp)
-custom_boundary_bytes <-
-  1024 + 2 * 512 +
-  (2 * 8 + nchar("aaat", type = "bytes")) +
-  (8 + nchar("data.frame", type = "bytes")) +
-  8 +
-  length(custom_boundary_classes) * 8 + sum(nchar(custom_boundary_classes, type = "bytes")) +
-  3 * 48 + 16 + 2 * 8 + nchar("lowerupper", type = "bytes") +
-  as.double(custom_boundary_rows) * (8 + custom_boundary_text_bytes + 16) + 2
-assert_identical(
-  custom_boundary_bytes,
-  64 * 1024^2,
-  "the kernel Custom Code boundary fixture is not exactly 64 MiB"
-)
-custom_boundary_code <- paste(
-  ".ow_boundary_text <- base::paste(base::rep.int(\"x\", 6640L), collapse = \"\")",
-  'result <- base::data.frame(aa = base::rep.int(.ow_boundary_text, 10070L), at = base::rep(clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond"), 10070L), check.names = FALSE)',
-  'result$aa[[10070L]] <- base::paste0(result$aa[[10070L]], "xx")',
-  "if (base::exists(\"custom_boundary_plus_one\", inherits = TRUE)) base::names(result)[[1L]] <- \"aaa\"",
+# Flat Custom Code output has no aggregate size cap, live or generated. The run is past the former 64 MiB limit.
+custom_large_rows <- 10071L
+custom_large_stamp <- clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond")
+custom_large_code <- paste(
+  ".ow_large_text <- base::paste(base::rep.int(\"x\", 6640L), collapse = \"\")",
+  'result <- base::data.frame(aa = base::rep.int(.ow_large_text, 10071L), at = base::rep(clock::naive_time_parse("2026-01-01T00:00:00.000000001", precision = "nanosecond"), 10071L), check.names = FALSE)',
+  'result$aa[[10071L]] <- base::paste0(result$aa[[10071L]], "xx")',
   sep = "\n"
 )
-custom_boundary_preview <- custom_preview(
+custom_large_preview <- custom_preview(
   custom_session_id,
   custom_zero_discard$revision,
-  "exact-operation-boundary",
-  custom_boundary_code,
+  "large-output",
+  custom_large_code,
   page = page_window(row_limit = 1L, column_offset = 1L, column_limit = 1L)
 )
-assert_identical(
-  custom_boundary_preview$kind,
-  "stepPreview",
-  "live Custom Code rejected an output at the exact 64 MiB operation budget"
-)
-assert_identical(
-  custom_boundary_preview$page$page$totalRows,
-  custom_boundary_rows,
-  "the exact-budget live Custom Code output changed height"
-)
-assert_identical(custom_boundary_preview$page$page$rows[[1L]]$values[[1L]]$raw,
-  format(clock::as_duration(custom_boundary_stamp)), "exact-budget live output changed its clock ticks")
-custom_boundary_generated_pass <- new.env(parent = baseenv())
-custom_boundary_generated_pass$orders <- custom_environment$orders
-eval(parse(text = custom_boundary_preview$code), envir = custom_boundary_generated_pass)
-assert_identical(
-  nrow(custom_boundary_generated_pass$open_wrangler_result),
-  custom_boundary_rows,
-  "generated Custom Code rejected an output at the exact 64 MiB operation budget"
-)
-assert_identical(
-  names(custom_boundary_generated_pass$open_wrangler_result),
-  c("aa", "at"),
-  "generated exact-budget Custom Code changed its output schema"
-)
-assert_identical(custom_boundary_generated_pass$open_wrangler_result$at[c(1L, custom_boundary_rows)],
-  rep(custom_boundary_stamp, 2L), "generated exact-budget output changed its clock endpoint ticks")
-assert_identical(custom_boundary_generated_pass$orders, custom_environment$orders,
-  "generated exact-budget output changed its source")
-custom_boundary_generated_fail <- new.env(parent = baseenv())
-custom_boundary_generated_fail$orders <- custom_environment$orders
-custom_boundary_generated_fail$custom_boundary_plus_one <- TRUE
-custom_boundary_generated_fail$open_wrangler_result <- "sentinel"
-custom_boundary_generated_error <- tryCatch(
-  {
-    eval(parse(text = custom_boundary_preview$code), envir = custom_boundary_generated_fail)
-    NULL
-  },
-  error = identity
-)
-custom_assert_true(
-  inherits(custom_boundary_generated_error, "error") &&
-    grepl("operation output budget", conditionMessage(custom_boundary_generated_error), fixed = TRUE),
-  "generated Custom Code accepted an output one byte over 64 MiB"
-)
-assert_identical(
-  custom_boundary_generated_fail$open_wrangler_result,
-  "sentinel",
-  "generated over-budget Custom Code replaced the prior publication"
-)
-assert_identical(custom_boundary_generated_fail$orders, custom_environment$orders,
-  "generated over-budget output changed its source")
-custom_boundary_discard <- custom_dispatch(
+assert_identical(custom_large_preview$kind, "stepPreview", "live Custom Code rejected a large flat output")
+assert_identical(custom_large_preview$page$page$totalRows, custom_large_rows, "large live Custom Code output changed height")
+assert_identical(custom_large_preview$page$page$rows[[1L]]$values[[1L]]$raw,
+  format(clock::as_duration(custom_large_stamp)), "large live Custom Code output changed its clock ticks")
+custom_large_generated <- new.env(parent = baseenv())
+custom_large_generated$orders <- custom_environment$orders
+eval(parse(text = custom_large_preview$code), envir = custom_large_generated)
+assert_identical(nrow(custom_large_generated$open_wrangler_result), custom_large_rows,
+  "generated Custom Code rejected a large flat output")
+assert_identical(names(custom_large_generated$open_wrangler_result), c("aa", "at"),
+  "generated large Custom Code changed its output schema")
+assert_identical(custom_large_generated$open_wrangler_result$at[c(1L, custom_large_rows)],
+  rep(custom_large_stamp, 2L), "generated large Custom Code output changed its clock endpoint ticks")
+assert_identical(custom_large_generated$orders, custom_environment$orders,
+  "generated large Custom Code output changed its source")
+rm(custom_large_generated)
+custom_large_discard <- custom_dispatch(
   "discardDraft",
   list(
     sessionId = custom_session_id,
-    revision = custom_boundary_preview$revision,
+    revision = custom_large_preview$revision,
     page = page_window(row_limit = 1L, column_limit = 1L)
   )
 )
-custom_environment$custom_boundary_plus_one <- TRUE
-custom_boundary_live_error <- custom_preview(
-  custom_session_id,
-  custom_boundary_discard$revision,
-  "over-operation-boundary",
-  custom_boundary_code,
-  page = page_window(row_limit = 1L, column_limit = 1L)
-)
-assert_custom_recoverable_error(custom_boundary_live_error, "Custom Code output one byte over 64 MiB")
-custom_assert_true(grepl("operation output budget", custom_boundary_live_error$message, fixed = TRUE),
-  "live over-budget output failed for an unrelated reason")
-rm("custom_boundary_plus_one", envir = custom_environment)
-rm(custom_boundary_generated_pass, custom_boundary_generated_fail)
-
-generated_oversize_code <- paste(
-  "result <- if (base::exists(\"make_oversize\", inherits = TRUE)) {",
-  "  base::data.frame(value = base::rep.int(0, 8388608L))",
-  "} else df",
-  sep = "\n"
-)
-generated_oversize_preview <- custom_preview(
-  custom_session_id,
-  custom_boundary_discard$revision,
-  "generated-oversize",
-  generated_oversize_code
-)
-assert_identical(
-  generated_oversize_preview$kind,
-  "stepPreview",
-  "the generated-output budget fixture did not preview live"
-)
-generated_oversize_environment <- new.env(parent = baseenv())
-generated_oversize_environment$orders <- custom_environment$orders
-generated_oversize_environment$make_oversize <- TRUE
-generated_serialize_calls <- 0L
-trace(
-  "serialize",
-  tracer = quote(generated_serialize_calls <<- generated_serialize_calls + 1L),
-  where = baseenv(),
-  print = FALSE
-)
-generated_oversize_error <- tryCatch(
-  {
-    eval(parse(text = generated_oversize_preview$code), envir = generated_oversize_environment)
-    NULL
-  },
-  error = identity
-)
-untrace("serialize", where = baseenv())
-custom_assert_true(inherits(generated_oversize_error, "error"), "generated Custom Code accepted an oversized output")
-assert_identical(
-  generated_serialize_calls,
-  2L,
-  "generated Custom Code snapshotted an oversized output before rejecting it"
-)
-custom_assert_true(
-  !exists("open_wrangler_result", envir = generated_oversize_environment, inherits = FALSE),
-  "generated oversized Custom Code published a partial result"
-)
-assert_identical(
-  serialize(generated_oversize_environment$orders, NULL, version = 3L),
-  custom_orders_before,
-  "generated oversized Custom Code mutated its source"
-)
-generated_oversize_discard <- custom_dispatch(
-  "discardDraft",
-  list(
-    sessionId = custom_session_id,
-    revision = generated_oversize_preview$revision,
-    page = page_window()
-  )
-)
-assert_identical(generated_oversize_discard$action, "discard", "the generated-output budget draft did not discard")
+assert_identical(custom_large_discard$action, "discard", "the large Custom Code draft did not discard")
 assert_identical(
   serialize(custom_environment$orders, NULL, version = 3L),
   custom_orders_before,
