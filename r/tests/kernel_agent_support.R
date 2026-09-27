@@ -155,9 +155,9 @@ instrumented_frame_contract$capture_pivot_wider_at <- function(...) {
   latest_full_capture <<- captured
   captured
 }
-instrumented_frame_contract$isolate_capture <- function(capture) {
+instrumented_frame_contract$isolate_capture <- function(capture, ...) {
   isolated_capture_count <<- isolated_capture_count + 1L
-  real_isolate_capture(capture)
+  real_isolate_capture(capture, ...)
 }
 instrumented_frame_contract$materialize_view_page <- function(capture, ...) {
   schema_names <- vapply(capture$descriptor$schema, `[[`, character(1L), "name", USE.NAMES = FALSE)

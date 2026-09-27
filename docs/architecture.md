@@ -1782,12 +1782,19 @@ row-identity and diff checks. Live and generated input/output validation accept 
 
 Standalone captures own an isolated snapshot, using `data.table::copy()` for data tables. Live viewing instead retains
 the verified variable binding, reads its current values, and refuses changed shape, schema, class or row-name mode.
-The first editing draft isolates the original with `data.table::copy()` for data tables. Other frames copy each atomic
-column and its attributes directly, without dispatching caller S3 methods; list and other object columns are copied
-through R serialization. An operation result built from that copy or from new vectors is captured without a second
-copy; Custom Code results, captures that restore element names, and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Committed and draft
-results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops inert column-element
-names according to native data-table copy semantics; the explicit retention exceptions are described below.
+The first editing draft of a notebook variable isolates the original with `data.table::copy()` for data tables. Other
+frames copy each atomic column and its attributes directly, without dispatching caller S3 methods; list and other object
+columns are copied through R serialization. A managed file frame exists only inside Open Wrangler's R process, so its
+first draft shares the loaded vectors. Captured frames are never modified in place. An operation result built from
+captured or new vectors is captured without a second copy; Custom Code results, captures that restore element names,
+and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Rename, Clone,
+Drop, Select and row selections share their input's column vectors. A data.table input, or a
+`data.table` library run over columns with element names, still copies first because data.table changes its container
+and strips element names by reference. A derived capture skips rescanning clock, factor and nested columns identical to
+its already validated source column, and a row-preserving result inherits the source's validated row identities.
+Committed and draft results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops
+inert column-element names according to native data-table copy semantics; the explicit retention exceptions are
+described below.
 
 Ordinary list and `AsIs` list columns admit one flat prototype. A List contains atomic vectors of one native type
 and exact metadata across rows: logical, integer, double, character, factor, Date, POSIXct, difftime or integer64.

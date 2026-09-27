@@ -1813,6 +1813,24 @@ assert_error(
 
 }))
 run_frame_contract_case("column-operations", local({
+# Structural operations share the input's column vectors, so no library may change them through the result.
+local({
+  plain <- data.frame(id = 1:3, label = c("a", "b", NA), stringsAsFactors = FALSE)
+  named <- data.frame(id = 1:3, label = c("a", "b", NA), stringsAsFactors = FALSE)
+  data.table::setattr(.subset2(named, 2L), "names", c("first", "second", "third"))
+  for (source in list(plain, named, tibble::as_tibble(plain))) {
+    before <- serialize(source, NULL, version = 3L)
+    for (library in c("base", "dplyr", "data.table", "collapse")) {
+      openwrangler_r_frame_contract$rename_column_at(source, 2L, "label", "text", library)
+      openwrangler_r_frame_contract$clone_column_at(source, 2L, "label", "copy", library)
+      openwrangler_r_frame_contract$drop_columns_at(source, 1L, "id", library)
+      openwrangler_r_frame_contract$select_columns_at(source, c(2L, 1L), c("label", "id"), library)
+      assert_identical(serialize(source, NULL, version = 3L), before,
+        sprintf("%s structural operations changed a shared input column", library))
+    }
+  }
+})
+
 # Conditional output metadata is declared independently of the predicate column.
 conditional_source <- data.frame(value = c(1, 2, NA_real_, NaN), row.names = letters[1:4])
 conditional_before <- serialize(conditional_source, NULL, version = 3L)
