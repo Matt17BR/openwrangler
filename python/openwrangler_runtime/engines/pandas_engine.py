@@ -1601,7 +1601,7 @@ class PandasEngine(DataFrameEngine):
         return facts
 
     def _carry_object_column_facts(self, source: Any, target: Any) -> None:
-        """Give ``target`` the known facts of ``source``, whose values it holds in another order."""
+        """Give ``target`` the known facts of ``source``, whose values it holds, possibly reordered or repeated."""
         owner, key = _pandas_object_values_key(source)
         cached = vars(self).get("_object_facts", {}).get(key)
         if cached is not None and cached[0]() is owner:
@@ -2478,6 +2478,11 @@ class PandasEngine(DataFrameEngine):
             result.columns = pd.Index(
                 [*(df.columns[position] for position in unselected), *outputs], dtype="object", tupleize_cols=False
             )
+            # Each kept object column repeats its values, so it keeps their type and whether any is missing.
+            source_dtypes, result_dtypes = df.dtypes, result.dtypes
+            for index, position in enumerate(unselected):
+                if source_dtypes.iloc[position] == result_dtypes.iloc[index] == np.dtype(object):
+                    self._carry_object_column_facts(df.iloc[:, position], result.iloc[:, index])
             return result
         if kind == "pivotWider":
             names_position = self._bound_frame_position(df, params["namesFrom"], kind)
@@ -2507,9 +2512,15 @@ class PandasEngine(DataFrameEngine):
             ]
             outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
             try:
-                return _pandas_lookup_columns(df, lookup, keys, outputs, _pandas_semantic_type)
+                result = _pandas_lookup_columns(df, lookup, keys, outputs, _pandas_semantic_type)
             except ValueError as error:
                 raise EngineError(str(error)) from error
+            # The lookup keeps every row in order, so each existing object column holds the same values.
+            source_dtypes, result_dtypes = df.dtypes, result.dtypes
+            for position in range(df.shape[1]):
+                if source_dtypes.iloc[position] == result_dtypes.iloc[position] == np.dtype(object):
+                    self._carry_object_column_facts(df.iloc[:, position], result.iloc[:, position])
+            return result
         if kind == "replaceMatches":
             for reference in params["columns"]:
                 position = self._bound_frame_position(df, reference, kind)
@@ -6637,17 +6648,19 @@ def _pandas_concat_columns(objects: Any) -> Any:
     frame, *added = objects
     if (
         not isinstance(frame, pd.DataFrame)
-        or not frame.flags.allows_duplicate_labels
-        or not all(isinstance(part, pd.Series) and part.index.equals(frame.index) for part in added)
+        or not all(isinstance(part, pd.Series | pd.DataFrame) and part.index.equals(frame.index) for part in added)
+        or not all(part.flags.allows_duplicate_labels for part in objects if isinstance(part, pd.DataFrame))
     ):
         return pd.concat(objects, axis=1, copy=False)
     # Without it, concat consolidates its result and so copies every column sharing a dtype with an added one.
-    # Inserting leaves the existing columns alone, and concatenating the empty parts labels the columns and keeps
-    # attrs as concat does.
-    empty = pd.concat([part.iloc[:0] for part in objects], axis=1)
+    # Inserting leaves the existing columns alone, and concatenating the first row of each part labels the columns and
+    # keeps attrs as concat does. Concat ignores parts without rows or columns, so zero-row parts could drop one.
+    empty = pd.concat([part.iloc[:1] for part in objects], axis=1)
     result = frame.copy(deep=False)
     for part in added:
-        result.insert(result.shape[1], part.name, part, allow_duplicates=True)
+        columns = [part.iloc[:, index] for index in range(part.shape[1])] if isinstance(part, pd.DataFrame) else [part]
+        for column in columns:
+            result.insert(result.shape[1], column.name, column, allow_duplicates=True)
     result.columns = empty.columns
     result.attrs = empty.attrs
     return result

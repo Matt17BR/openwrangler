@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pandas as pd
 import polars as pl
 import pytest
 
 from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
 from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.engines import pandas_engine as pandas_engine_module
 from openwrangler_runtime.engines.base import DataFrameEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
@@ -138,6 +140,33 @@ PEOPLE = pa.table(
         "score": pa.array([1.5, None, 3.25, 9.0]),
     }
 )
+
+
+def test_pandas_lookup_keeps_object_column_facts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "text": pd.Series(["b", None, "a"], dtype=object),
+            "mixed": pd.Series([2, "x", 1.5], dtype=object),
+        }
+    )
+    schema = engine.schema(frame)
+    step = lookup_step(engine, frame, write_lookup(tmp_path, "parquet", PEOPLE), [("id", "id")], [("label", "label")])
+    scanned: list[str] = []
+    native = pandas_engine_module._pandas_has_missing
+
+    def counted(series: Any) -> bool:
+        scanned.append(str(series.name))
+        return native(series)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_has_missing", counted)
+    result = engine.apply_transform(frame, step)
+
+    looked_up = engine.schema(result)
+    assert scanned == ["id", "label"]
+    assert looked_up[:3] == schema
+    assert looked_up == PandasEngine().schema(result)
 
 
 @pytest.mark.parametrize("file_format", ["csv", "tsv", "parquet", "jsonl"])
