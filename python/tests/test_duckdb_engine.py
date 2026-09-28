@@ -5587,6 +5587,42 @@ def test_duckdb_row_id_pivot_longer_numbers_rows_that_match_generated_code(prefi
         engine.close()
 
 
+def test_duckdb_step_counts_and_checks_skip_the_final_sort(monkeypatch: pytest.MonkeyPatch) -> None:
+    row, group, value = (
+        bound_ref(f"c:source:{position}", name, position) for position, name in [(0, "row"), (2, "group"), (3, "value")]
+    )
+    operations = [
+        bound_step("sortRows", rules=[{"column": row, "direction": "desc", "nulls": "last"}]),
+        bound_step("pivotLonger", columns=[group, row], labelColumn="measure", valueColumn="reading"),
+        bound_step("denseRank", column=value, direction="asc", newColumn="ranked"),
+    ]
+    native = duckdb_runtime._execute_scalar
+    queries: list[str] = []
+
+    def record(connection: Any, source_sql: str, query: str) -> Any:
+        queries.append(duckdb_runtime._compose_sql(source_sql, query))
+        return native(connection, source_sql, query)
+
+    engine = DuckDBEngine()
+    try:
+        source = engine.ensure_row_ids(window_relation(), "source")
+        monkeypatch.setattr(duckdb_runtime, "_execute_scalar", record)
+        for operation in operations:
+            result = engine.ensure_row_ids(engine.apply_transform(source, operation), "result")
+            assert "ORDER BY" in result.sql
+            queries.clear()
+            shape = engine.shape(result)
+            engine.validate_transformation_result(result, operation_kind=operation["kind"])
+            assert len(queries) == 2
+            assert not any("ORDER BY" in query for query in queries)
+            ordered = rows(result)
+            assert shape["rows"] == len(ordered) == (16 if operation["kind"] == "pivotLonger" else 8)
+            if operation["kind"] == "sortRows":
+                assert [item[0] for item in ordered] == [8, 7, 6, 5, 4, 3, 2, 1]
+    finally:
+        engine.close()
+
+
 def test_duckdb_grouping_treats_nan_as_missing_for_keys_and_aggregates() -> None:
     engine = DuckDBEngine()
     frame = duckdb.sql(
