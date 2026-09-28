@@ -11,8 +11,8 @@ import pytest
 from polars.testing import assert_frame_equal as assert_polars_frame_equal
 
 from openwrangler_runtime._column_binding import ColumnBindingError, bind_step
-from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
-from openwrangler_runtime.engines.base import typed_selection_value
+from openwrangler_runtime.engines import DuckDBEngine, EngineError, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.base import MAX_ENCODED_RESULT_COLUMNS, typed_selection_value
 from openwrangler_runtime.lineage import derive_lineage, source_lineage
 from openwrangler_runtime.operations import OperationError, validate_step
 
@@ -1129,6 +1129,35 @@ def test_dynamic_categorical_outputs_cannot_enter_the_private_row_identity_names
         engine.apply_transform(frame, operation)
     with pytest.raises(ValueError, match="reserved private row-identity column"):
         execute_generated(engine, frame, operation)
+
+
+@pytest.mark.parametrize("backend", [PandasEngine, PolarsEngine, DuckDBEngine])
+@pytest.mark.parametrize(("kind", "outputs"), [("oneHotEncode", 2), ("multiLabelBinarize", 3)])
+def test_categorical_encodings_refuse_results_wider_than_every_engine_supports(
+    tmp_path, backend, kind, outputs
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    engine = backend()
+    try:
+        for extra in (0, 1):
+            path = tmp_path / f"wide-{extra}.parquet"
+            kept = MAX_ENCODED_RESULT_COLUMNS - 1 - outputs + extra
+            pq.write_table(pa.table({"tags": ["a|b", "c"], **{f"keep_{index}": [1, 2] for index in range(kept)}}), path)
+            frame = engine.ensure_row_ids(engine.read_file(str(path)), "wide")
+            schema = engine.schema(frame)
+            lineage = source_lineage(schema)
+            params = {"columns": [lineage[0]]} if kind == "oneHotEncode" else {"column": lineage[0], "delimiter": "|"}
+            operation = bind_step(step(kind, **params, dropOriginal=False), schema, lineage)
+            if extra:
+                with pytest.raises(EngineError, match="more than 2,048 columns, the most every engine supports"):
+                    engine.apply_transform(frame, operation)
+            else:
+                result = engine.apply_transform(frame, operation)
+                assert engine.shape(result)["columns"] == MAX_ENCODED_RESULT_COLUMNS
+    finally:
+        engine.close()
 
 
 def test_pandas_multi_label_categorical_null_does_not_require_a_blank_category() -> None:

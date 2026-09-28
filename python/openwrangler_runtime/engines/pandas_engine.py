@@ -101,6 +101,7 @@ from .base import (
     decode_fill_replacement,
     duration_display,
     duration_seconds_raw,
+    ensure_encoded_result_fits,
     ensure_output_columns_available,
     exact_decimal_median,
     exact_integer_median,
@@ -2310,6 +2311,7 @@ class PandasEngine(DataFrameEngine):
                 for position, name in enumerate(df.columns)
                 if not params.get("dropOriginal", True) or position not in positions
             }
+            result_columns = len(visible_positions) - (len(set(positions)) if params.get("dropOriginal", True) else 0)
             encoded_parts = []
             for position, name in zip(positions, names, strict=True):
                 series = _pandas_scalar_values(df.iloc[:, position])
@@ -2324,6 +2326,8 @@ class PandasEngine(DataFrameEngine):
                 else:
                     values = sorted(pd.unique(series[series.notna()]), key=str)
                     outputs = [(value, f"{name}{separator}{value}") for value in values if str(value)]
+                result_columns += len(outputs)
+                ensure_encoded_result_fits(result_columns, "One-hot encoding")
                 # Only overlapping existing names can collide; avoid rescanning prior outputs.
                 ensure_output_columns_available(
                     existing_names.intersection(name for _, name in outputs),
@@ -2356,10 +2360,16 @@ class PandasEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
-            encoded = _pandas_each_distinct(
-                _pandas_scalar_values(df.iloc[:, position]),
-                lambda values: _pandas_string_values(values).fillna("").str.get_dummies(sep=params["delimiter"]),
-            )
+            retained = len(self._visible_positions(df)) - (1 if params.get("dropOriginal", False) else 0)
+
+            def binarize(values: Any) -> Any:
+                text = _pandas_string_values(values).fillna("")
+                labels = text.str.split(params["delimiter"], regex=False).explode()
+                # get_dummies compares every label with every value, so count its labels first.
+                ensure_encoded_result_fits(retained + labels[labels != ""].nunique(), "Multi-label binarization")
+                return text.str.get_dummies(sep=params["delimiter"])
+
+            encoded = _pandas_each_distinct(_pandas_scalar_values(df.iloc[:, position]), binarize)
             encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
             encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")

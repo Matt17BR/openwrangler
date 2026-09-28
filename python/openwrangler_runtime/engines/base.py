@@ -1582,6 +1582,22 @@ def ensure_output_columns_available(existing: Iterable[Any], generated: Iterable
         )
 
 
+MAX_ENCODED_RESULT_COLUMNS = 2_048
+_ENCODED_RESULT_ADVICE = {
+    "One-hot encoding": "Choose columns with fewer distinct values.",
+    "Multi-label binarization": "Choose a column or delimiter with fewer distinct labels.",
+}
+
+
+def ensure_encoded_result_fits(columns: int, operation: str) -> None:
+    """Refuse an encoding wider than R holds before building its indicators, so every engine accepts it alike."""
+    if columns > MAX_ENCODED_RESULT_COLUMNS:
+        raise EngineError(
+            f"{operation} would give the result more than {MAX_ENCODED_RESULT_COLUMNS:,} columns, the most every "
+            f"engine supports. {_ENCODED_RESULT_ADVICE[operation]}"
+        )
+
+
 def bound_column_name(value: Any, operation: str) -> str:
     """Return the engine label from a session-bound column reference."""
     _validate_bound_column_reference(value, operation)

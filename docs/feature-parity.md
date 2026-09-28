@@ -518,6 +518,8 @@ inputs. Pandas and Polars generated categorical code rejects results with no vis
 empty-row inputs remain valid when a visible column is retained.
 Generated Pandas One-hot names preserve native floating-point labels, keeping later column bindings and collision
 checks aligned with live results.
+One-hot and Multi-label refuse a result with more than 2,048 columns in every engine before building any indicator.
+Generated R code checks the same limit; generated Python code does not yet.
 
 ## Viewing and editing controls
 
