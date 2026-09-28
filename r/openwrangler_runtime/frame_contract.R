@@ -324,7 +324,19 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort("runtime-error", "bit64 has invalid integer64 Formula native registration metadata")
     }
-    all_native_binding_names <- names(routine_map)
+    native_addresses <- list()
+    for (native_binding_name in names(routine_map)) {
+      if (
+        !exists(native_binding_name, envir = namespace, inherits = FALSE) ||
+          bindingIsActive(native_binding_name, namespace)
+      ) {
+        next
+      }
+      native_registration <- get(native_binding_name, envir = namespace, inherits = FALSE)
+      if (is.list(native_registration) && !is.null(.subset2(unclass(native_registration), "address"))) {
+        native_addresses[[native_binding_name]] <- .subset2(unclass(native_registration), "address")
+      }
+    }
     registrations <- lapply(names(binding_names), function(key) {
       binding_name <- binding_names[[key]]
       native_name <- sub("^C_", "", binding_name)
@@ -357,22 +369,9 @@ openwrangler_r_frame_contract <- local({
       ) {
         abort("runtime-error", "bit64 has invalid integer64 Formula primitives")
       }
-      for (other_binding_name in all_native_binding_names) {
-        if (
-          identical(other_binding_name, binding_name) ||
-            !exists(other_binding_name, envir = namespace, inherits = FALSE) ||
-            bindingIsActive(other_binding_name, namespace)
-        ) {
-          next
-        }
-        other_registration <- get(other_binding_name, envir = namespace, inherits = FALSE)
-        if (
-          is.list(other_registration) &&
-            !is.null(.subset2(unclass(other_registration), "address")) &&
-            identical(.subset2(unclass(registration), "address"), .subset2(unclass(other_registration), "address"))
-        ) {
-          abort("runtime-error", "bit64 has replaced integer64 Formula primitive addresses")
-        }
+      other_addresses <- native_addresses[names(native_addresses) != binding_name]
+      if (any(vapply(other_addresses, identical, logical(1L), .subset2(unclass(registration), "address")))) {
+        abort("runtime-error", "bit64 has replaced integer64 Formula primitive addresses")
       }
       canonical_address
     })
@@ -4145,6 +4144,9 @@ openwrangler_r_frame_contract <- local({
       already_validated <- !is.null(validated_columns) && index <= length(validated_columns) &&
         (clock_is_column(column) || is.factor(column) || is.list(column)) &&
         identical(column, .subset2(validated_columns, index))
+      if (is.null(integer64_bindings) && inherits(column, "integer64")) {
+        integer64_bindings <<- ensure_integer64_bindings()
+      }
       semantics <- column_semantics(
         column,
         sprintf("column %d", index),
@@ -4153,9 +4155,6 @@ openwrangler_r_frame_contract <- local({
         expected = if (!is.null(expected_schema) && index <= length(expected_schema) && !is.null(.subset2(expected_schema, index)) && nested_kind(.subset2(expected_schema, index)$semantics)) .subset2(expected_schema, index)$semantics else NULL,
         integer64_bindings = integer64_bindings
       )
-      if (identical(semantics$kind, "integer64") && is.null(integer64_bindings)) {
-        integer64_bindings <<- ensure_integer64_bindings()
-      }
       nullable <- if (isTRUE(conservative_nullable)) {
         TRUE
       } else {

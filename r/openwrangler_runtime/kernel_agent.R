@@ -11041,6 +11041,10 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  # The backslash must be escaped first, before the other escapes add backslashes.
+  ascii_json_short_sources <- c("\\", "\"", "\b", "\t", "\n", "\f", "\r")
+  ascii_json_short_escapes <- c("\\\\", "\\\"", "\\b", "\\t", "\\n", "\\f", "\\r")
+
   ascii_json_scalar <- function(value, spend) {
     if (is.na(value)) {
       spend(4L)
@@ -11054,13 +11058,17 @@ openwrangler_r_kernel_agent <- local({
     if (length(converted) != 1L || is.na(converted)) {
       abort("runtime_error", "The R kernel response contains invalid text")
     }
-    bytes <- as.integer(charToRaw(converted))
-    if (
-      length(bytes) == 0L ||
-        all(bytes >= 32L & bytes <= 126L & bytes != 34L & bytes != 92L)
-    ) {
-      spend(length(bytes) + 2L)
+    if (grepl("^[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]*\\z", converted, perl = TRUE, useBytes = TRUE)) {
+      spend(nchar(converted, type = "bytes") + 2L)
       return(paste0("\"", converted, "\""))
+    }
+    if (grepl("^[\\x08\\x09\\x0A\\x0C\\x0D\\x20-\\x7E]*\\z", converted, perl = TRUE, useBytes = TRUE)) {
+      escaped <- converted
+      for (index in seq_along(ascii_json_short_sources)) {
+        escaped <- gsub(ascii_json_short_sources[[index]], ascii_json_short_escapes[[index]], escaped, fixed = TRUE)
+      }
+      spend(nchar(escaped, type = "bytes") + 2L)
+      return(paste0("\"", escaped, "\""))
     }
     codepoints <- utf8ToInt(converted)
     if (anyNA(codepoints) || any(codepoints < 0L) || any(codepoints > 1114111L)) {
