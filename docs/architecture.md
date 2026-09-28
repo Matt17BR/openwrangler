@@ -982,6 +982,14 @@ Named Arrow timezones use standard-library ZoneInfo; fixed offsets use Pandas' e
 Unrepresentable typed values refuse the transformation. Text inputs retain the existing coercion of invalid dates
 to missing. Live execution and standalone generated code share this preparation and preserve source values.
 
+Live Find and Replace, Split Text, Split Text into Columns, Extract Regex Group, Capitalize, Lowercase, Uppercase,
+Multi-label Binarize, Format Datetime and Convert Type to date or datetime transform each distinct value once when
+at most half of a text, integer or timestamp column's values are distinct, including object columns that hold only
+text. Every row then takes its own value's result, and each kind of missing value keeps its own. Factorizing floats
+merges `-0.0` with `0.0` and factorizing other objects merges `1` with `True`, so those columns, mostly distinct
+columns and generated code transform every row. Strip Text keeps
+Arrow's vectorized strip. Object date inference checks the distinct values of an inferred date column.
+
 Directional Fill shares its complete-run, donor and assignment algorithm between live execution and standalone
 generated code. It finds every donor with running maxima or minima over the ordered missing-value mask and takes
 donors from the column's own storage, which keeps its dtype and exact values. Linear Fill likewise shares its ordered-gap and coordinate-weight arithmetic. Target, coordinate
