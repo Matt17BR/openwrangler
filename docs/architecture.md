@@ -1411,6 +1411,12 @@ The extra code point or byte keeps oversized values invalid for the existing liv
 no shortened cell is published. Source values, filters, sorts, profiles and exports remain unchanged. This does not
 bound native query memory, aggregate page allocation or nested values.
 
+A sorted view pages its first 10,000 rows with DuckDB's native top-N sort. The first page past them writes the view's
+private row IDs, numbered in sort order with the view's own tie-break, to a private temporary DuckDB file. Later pages
+read their rows from the unsorted view by those IDs and fail if the count differs from the expected page. The engine
+keeps one such order: a new sorted view replaces it and closing the engine deletes it. Database-table viewers keep the
+direct sorted query.
+
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
 expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original
 timestamps. Choice search uses the same display text and accepts either `T` or a space between the date and time.

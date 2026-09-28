@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Engines are named the same way everywhere: **Python · Pandas**, **Python · Polars**, **Python · DuckDB**, **R · base**, **R · dplyr**, **R · data.table** and **R · collapse**, in the engine picker, engine badge, panel title and Data Sources view.
 - DuckDB exports now require fsspec 2026.9.0 in the selected Python environment.
 - Local R files reuse unchanged filtered sort order across grid pages.
+- Scrolling deep into a sorted DuckDB file view no longer sorts the whole view again for every page. On an 11.7-million-row file, 20 pages around row 5 million took 17 seconds and now take about 3.
 - R text filters and value search reuse case conversion for repeated values within bounded batches.
 - R comparison filters and Conditional Column compare integer and Date values without formatting each source row as text.
 - R compound filters combine row masks incrementally instead of retaining every condition's mask.
