@@ -1680,6 +1680,16 @@ openwrangler_r_frame_contract <- local({
     max(tabulate(positions, bound)) > 1L
   }
 
+  # TRUE unless positions are distinct whole numbers from 1 to bound. Mapped captures check their row identities on
+  # every page, so integer positions are checked without full-length temporaries.
+  invalid_row_positions <- function(positions, bound) {
+    if (!is.numeric(positions) || anyNA(positions)) return(TRUE)
+    if (is.double(positions) && (any(!is.finite(positions)) || any(positions != floor(positions)))) return(TRUE)
+    if (length(positions) == 0L) return(FALSE)
+    limits <- range(positions)
+    limits[[1L]] < 1 || limits[[2L]] > bound || duplicated_positions(positions, bound)
+  }
+
   validate_frame_structure <- function(value) {
     row_names <- tryCatch(.row_names_info(value, type = 0L), error = function(error) error)
     if (inherits(row_names, "error") || (!is.integer(row_names) && !is.character(row_names))) {
@@ -4303,10 +4313,8 @@ openwrangler_r_frame_contract <- local({
         !is.null(attributes(row_identity_domain)) ||
         is.na(row_identity_domain) || !is.finite(row_identity_domain) ||
         row_identity_domain < row_count || row_identity_domain != floor(row_identity_domain) ||
-        length(row_origins) != row_count || anyNA(row_origins) ||
-        any(!is.finite(row_origins)) || any(row_origins != floor(row_origins)) ||
-        any(row_origins < 1L) || any(row_origins > row_identity_domain) ||
-        duplicated_positions(row_origins, row_identity_domain)
+        length(row_origins) != row_count ||
+        invalid_row_positions(row_origins, row_identity_domain)
     ) {
       abort("internal-error", "an R capture has invalid stable row identities")
     }
@@ -4586,14 +4594,8 @@ openwrangler_r_frame_contract <- local({
     } else {
       source_row_count <- nullability_source$descriptor$shape$rows
       if (
-        !is.numeric(source_row_positions) ||
-          anyNA(source_row_positions) ||
-          any(!is.finite(source_row_positions)) ||
-          any(source_row_positions != floor(source_row_positions)) ||
-          length(source_row_positions) != row_count ||
-          any(source_row_positions < 1L) ||
-          any(source_row_positions > source_row_count) ||
-          duplicated_positions(source_row_positions, source_row_count)
+        length(source_row_positions) != row_count ||
+          invalid_row_positions(source_row_positions, source_row_count)
       ) {
         abort("internal-error", "a derived R frame has an invalid source-row mapping")
       }
@@ -11000,15 +11002,7 @@ openwrangler_r_frame_contract <- local({
 
   subset_rows_at <- function(value, inspected, row_positions, library = "base") {
     row_count <- inspected$descriptor$shape$rows
-    if (
-      !is.numeric(row_positions) ||
-        anyNA(row_positions) ||
-        any(!is.finite(row_positions)) ||
-        any(row_positions != floor(row_positions)) ||
-        any(row_positions < 1L) ||
-        any(row_positions > row_count) ||
-        duplicated_positions(row_positions, row_count)
-    ) {
+    if (invalid_row_positions(row_positions, row_count)) {
       abort("internal-error", "an R row operation produced invalid source positions")
     }
     row_positions <- as.integer(row_positions)
@@ -11211,12 +11205,7 @@ openwrangler_r_frame_contract <- local({
     } else if (
       capture$rowOriginOffset != 0 ||
         length(capture$rowOrigins) != row_count ||
-        anyNA(capture$rowOrigins) ||
-        any(!is.finite(capture$rowOrigins)) ||
-        any(capture$rowOrigins != floor(capture$rowOrigins)) ||
-        any(capture$rowOrigins < 1L) ||
-        any(capture$rowOrigins > capture$rowIdentityDomain) ||
-        anyDuplicated(capture$rowOrigins) ||
+        invalid_row_positions(capture$rowOrigins, capture$rowIdentityDomain) ||
         identical(mode, "live")
     ) {
       abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
