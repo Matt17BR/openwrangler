@@ -1,34 +1,21 @@
-def _open_wrangler_fill_directional_gaps(ordered, ordered_missing, ordered_temporal, direction, max_gap, error_type):
-    """Fill complete ordered runs; None preserves the original target storage."""
+def _open_wrangler_fill_directional_gaps(ordered_missing, direction, max_gap):
+    """Map each ordered row to the row whose value it keeps; None when no complete run is filled."""
 
-    import pandas as pd
+    import numpy as np
 
-    result = ordered.copy()
-    filled = False
-    cursor = 0
-    while cursor < len(result):
-        if not ordered_missing[cursor]:
-            cursor += 1
-            continue
-        start = cursor
-        while cursor < len(result) and ordered_missing[cursor]:
-            cursor += 1
-        end = cursor
-        gap_size = end - start
-        anchor = start - 1 if direction == "forward" else end
-        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
-            try:
-                result.iloc[start:end] = (
-                    ordered.array[anchor : anchor + 1].repeat(gap_size)
-                    if isinstance(ordered.dtype, pd.CategoricalDtype)
-                    else ordered_temporal[anchor]
-                    if ordered_temporal is not None
-                    else ordered.iloc[anchor]
-                )
-                filled = True
-            except (TypeError, ValueError, OverflowError) as error:
-                raise error_type(
-                    f"Directional fill is incompatible with the selected Pandas column: {error}"
-                ) from error
-
-    return result if filled else None
+    size = len(ordered_missing)
+    positions = np.arange(size, dtype=np.int64)
+    if direction == "forward":
+        anchors = np.maximum.accumulate(np.where(ordered_missing, -1, positions))
+    else:
+        anchors = np.minimum.accumulate(np.where(ordered_missing, size, positions)[::-1])[::-1]
+    filled = ordered_missing & (anchors >= 0) & (anchors < size)
+    if max_gap is not None and filled.any():
+        starts = ordered_missing.copy()
+        starts[1:] &= ~ordered_missing[:-1]
+        runs = np.cumsum(starts) - 1
+        lengths = np.bincount(runs[ordered_missing])
+        filled &= lengths[np.maximum(runs, 0)] <= max_gap
+    if not filled.any():
+        return None
+    return np.where(filled, anchors, positions)

@@ -983,7 +983,8 @@ Unrepresentable typed values refuse the transformation. Text inputs retain the e
 to missing. Live execution and standalone generated code share this preparation and preserve source values.
 
 Directional Fill shares its complete-run, donor and assignment algorithm between live execution and standalone
-generated code. Linear Fill likewise shares its ordered-gap and coordinate-weight arithmetic. Target, coordinate
+generated code. It finds every donor with running maxima or minima over the ordered missing-value mask and takes
+donors from the column's own storage, which keeps its dtype and exact values. Linear Fill likewise shares its ordered-gap and coordinate-weight arithmetic. Target, coordinate
 and missing-value preparation remain with the engine, along with dtype and original row-order restoration.
 
 Mixed object columns compare native NumPy numeric scalars through exact temporary keys. Counts, sorting,
@@ -1413,6 +1414,14 @@ private row IDs, numbered in sort order with the view's own tie-break, to a priv
 read their rows from the unsorted view by those IDs and fail if the count differs from the expected page. The engine
 keeps one such order: a new sorted view replaces it and closing the engine deletes it. Database-table viewers keep the
 direct sorted query.
+
+Directional Fill and Linear Interpolation sort every row, and DuckDB writes window output on one thread. In file
+sessions they run their windows over only the private row ID, the target and the order or coordinate columns, then
+join the filled column back to every row by ID into a private checkpoint that is owned and released like a Custom
+Code result. Later pages, profiles and steps read those stored rows in the input order, and the result keeps the
+input's row-ID order. Database tables, notebook relations and plans without row IDs, including generated code, keep
+one sorted query. The next present row for a gap limit is a descending running minimum, because DuckDB evaluates a
+frame that reaches the end of a large window far more slowly.
 
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
 expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original
