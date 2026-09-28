@@ -1901,6 +1901,89 @@ def test_pandas_standard_object_schema_types_do_not_use_the_python_materializati
     assert [column["type"] for column in PandasEngine().schema(frame)] == ["string", "integer"]
 
 
+def test_pandas_object_date_inference_checks_each_distinct_value_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    native = pandas_engine_module._pandas_is_missing_scalar
+    checked: list[Any] = []
+
+    def counting(value: Any) -> bool:
+        checked.append(value)
+        return native(value)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_is_missing_scalar", counting)
+    cases = [
+        ([date(2026, 7, 16), None, date(2026, 7, 17)], "date"),
+        ([date(2026, 7, 16), pd.Timestamp("2026-07-16 05:00").to_pydatetime(), pd.NaT], "date"),
+        ([pd.Timestamp("2026-07-16 05:00").to_pydatetime(), pd.NA, pd.Timestamp("2026-07-16 05:00")], "datetime"),
+    ]
+    for values, expected in cases:
+        checked.clear()
+        frame = pd.Series(values * 1_000, dtype=object).to_frame(name="value")
+        assert PandasEngine().schema(frame)[0]["type"] == expected
+        assert len(checked) <= len(values)
+
+
+@pytest.mark.parametrize("text_dtype", ["str", "string", "arrow"])
+def test_pandas_repeated_values_transform_once_with_every_row_results(
+    monkeypatch: pytest.MonkeyPatch, text_dtype: str
+) -> None:
+    import pyarrow as pa
+
+    dtype: Any = pd.ArrowDtype(pa.string()) if text_dtype == "arrow" else text_dtype
+    stamps = pd.to_datetime(
+        ["2020-01-01 05:06:07", None, "1969-12-31 23:59:59.5", "2020-01-01 05:06:07"] * 5, format="ISO8601"
+    )
+    frame = pd.DataFrame(
+        {
+            "text": pd.Series(
+                ["a-1 x", None, "B-2", "a-1 x", "Ä-ß", None, "B-2", "a-1 x", "", "a-1 x"] * 2, dtype=dtype
+            ),
+            "stamp": stamps,
+            "zoned": stamps.tz_localize("Europe/Rome"),
+            "dates": pd.Series(["2020-01-02", None, "not a date", "2020-01-02", "2020-02-30"] * 4, dtype=dtype),
+        }
+    )
+    engine = PandasEngine()
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    text, stamp, zoned, dates = lineage
+    steps = [
+        ("extractRegexGroup", {"column": text, "pattern": "([a-z]+)-([0-9])", "group": 1, "newColumn": "digit"}),
+        ("findReplace", {"column": text, "find": "[0-9]", "replacement": "#", "regex": True, "newColumn": "out"}),
+        ("findReplace", {"column": text, "find": "-", "replacement": "+", "regex": False}),
+        ("splitText", {"column": text, "delimiter": "-", "index": 1, "newColumn": "part"}),
+        ("splitTextColumns", {"column": text, "delimiter": "-", "newColumns": ["left", "right"]}),
+        ("capitalizeText", {"column": text}),
+        ("lowerText", {"column": text, "newColumn": "lower"}),
+        ("upperText", {"column": text}),
+        ("multiLabelBinarize", {"column": text, "delimiter": "-", "prefix": "part_", "dropOriginal": False}),
+        ("formatDatetime", {"column": stamp, "format": "%Y-%m-%d %H:%M:%S.%f", "newColumn": "formatted"}),
+        ("formatDatetime", {"column": zoned, "format": "%d/%m %H:%M %Z"}),
+        ("castColumn", {"column": stamp, "dtype": "date"}),
+        ("castColumn", {"column": dates, "dtype": "datetime"}),
+        ("castColumn", {"column": dates, "dtype": "datetime", "inputFormat": "YYYY-MM-DD"}),
+    ]
+    native = pandas_engine_module._pandas_each_distinct
+    sizes: list[int] = []
+
+    def recording(values: Any, transform: Any) -> Any:
+        def recorded(chunk: Any) -> Any:
+            sizes.append(len(chunk))
+            return transform(chunk)
+
+        return native(values, recorded)
+
+    for index, (kind, params) in enumerate(steps):
+        operation = bind_step(validate_step({"id": f"step-{index}", "kind": kind, "params": params}), schema, lineage)
+        sizes.clear()
+        monkeypatch.setattr(pandas_engine_module, "_pandas_each_distinct", recording)
+        distinct = engine.apply_transform(frame, operation)
+        assert sizes and max(sizes) < len(frame), kind
+        monkeypatch.setattr(pandas_engine_module, "_pandas_each_distinct", lambda values, transform: transform(values))
+        pd.testing.assert_frame_equal(distinct, engine.apply_transform(frame, operation))
+        if params.get("dtype") == "date":
+            assert engine.schema(distinct)[1]["type"] == "date"
+
+
 @pytest.mark.parametrize(
     "missing,scalar_kind",
     [

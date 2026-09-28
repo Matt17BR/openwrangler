@@ -2136,7 +2136,12 @@ class PandasEngine(DataFrameEngine):
             if "inputFormat" in params:
                 df.isetitem(
                     position,
-                    _open_wrangler_datetime_result(df.iloc[:, position], target, input_format=params["inputFormat"]),
+                    _pandas_each_distinct(
+                        df.iloc[:, position],
+                        lambda values: _open_wrangler_datetime_result(
+                            values, target, input_format=params["inputFormat"]
+                        ),
+                    ),
                 )
                 return df
             if target == "string":
@@ -2144,7 +2149,7 @@ class PandasEngine(DataFrameEngine):
                 return df
             series = _pandas_scalar_values(df.iloc[:, position])
             if conversion == "to_datetime":
-                result = _open_wrangler_datetime_result(series, target)
+                result = _pandas_each_distinct(series, lambda values: _open_wrangler_datetime_result(values, target))
             else:
                 try:
                     result = _pandas_cast_values(series, params["dtype"])
@@ -2210,7 +2215,10 @@ class PandasEngine(DataFrameEngine):
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
-            encoded = _pandas_string_values(df.iloc[:, position]).fillna("").str.get_dummies(sep=params["delimiter"])
+            encoded = _pandas_each_distinct(
+                _pandas_scalar_values(df.iloc[:, position]),
+                lambda values: _pandas_string_values(values).fillna("").str.get_dummies(sep=params["delimiter"]),
+            )
             encoded = encoded.loc[:, [str(name) != "" for name in encoded.columns]]
             encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
@@ -2225,13 +2233,12 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             output_names = list(params["newColumns"])
             ensure_output_columns_available(df.columns, output_names, "Splitting text into columns")
-            parts = _pandas_string_values(df.iloc[:, position]).str.split(
-                params["delimiter"], n=len(output_names), regex=False
-            )
-            generated = pd.concat(
-                [parts.str.get(index).rename(name) for index, name in enumerate(output_names)],
-                axis=1,
-            )
+
+            def split_columns(values: Any) -> Any:
+                parts = _pandas_string_values(values).str.split(params["delimiter"], n=len(output_names), regex=False)
+                return pd.concat([parts.str.get(index).rename(name) for index, name in enumerate(output_names)], axis=1)
+
+            generated = _pandas_each_distinct(_pandas_scalar_values(df.iloc[:, position]), split_columns)
             return pd.concat([df, generated], axis=1)
         if kind == "pivotLonger":
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
@@ -2273,15 +2280,19 @@ class PandasEngine(DataFrameEngine):
             portable_regex_contract(params["pattern"], params["group"])
             position = self._bound_frame_position(df, params["column"], kind)
             ensure_output_columns_available(df.columns, [params["newColumn"]], "Regex extraction")
-            source = _pandas_string_values(df.iloc[:, position])
-            oversized = (
-                source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
-                | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
-            ).fillna(False)
-            if bool(oversized.any()):
-                raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
-            extracted = source.str.extract(f"({params['pattern']})", expand=True)
-            return pd.concat([df, extracted.iloc[:, params["group"]].rename(params["newColumn"])], axis=1)
+
+            def extract(values: Any) -> Any:
+                source = _pandas_string_values(values)
+                oversized = (
+                    source.str.len().gt(MAX_PORTABLE_REGEX_TEXT_CODE_POINTS)
+                    | source.str.encode("utf-8").str.len().gt(MAX_PORTABLE_REGEX_TEXT_UTF8_BYTES)
+                ).fillna(False)
+                if bool(oversized.any()):
+                    raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
+                return source.str.extract(f"({params['pattern']})", expand=True).iloc[:, params["group"]]
+
+            extracted = _pandas_each_distinct(_pandas_scalar_values(df.iloc[:, position]), extract)
+            return pd.concat([df, extracted.rename(params["newColumn"])], axis=1)
         if kind == "lookupColumns":
             lookup = self._lookup_frame(params["file"]["path"], params["file"]["format"])
             keys = [
@@ -2313,21 +2324,26 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            series = _pandas_string_values(df.iloc[:, position])
-            if kind == "findReplace":
-                result = series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
-            elif kind == "stripText":
-                result = series.str.strip(params.get("characters") or DEFAULT_STRIP_CHARACTERS)
-            elif kind == "splitText":
-                result = series.str.split(
-                    params["delimiter"], n=min(params["index"] + 1, np.iinfo(np.intp).max), regex=False
-                ).str.get(params["index"])
-            elif kind == "capitalizeText":
-                result = series.map(str.capitalize, na_action="ignore")
-            elif kind == "lowerText":
-                result = series.map(str.lower, na_action="ignore")
-            else:
-                result = series.map(str.upper, na_action="ignore")
+
+            def edit_text(values: Any) -> Any:
+                series = _pandas_string_values(values)
+                if kind == "findReplace":
+                    return series.str.replace(params["find"], params["replacement"], regex=params.get("regex", False))
+                if kind == "stripText":
+                    return series.str.strip(params.get("characters") or DEFAULT_STRIP_CHARACTERS)
+                if kind == "splitText":
+                    return series.str.split(
+                        params["delimiter"], n=min(params["index"] + 1, np.iinfo(np.intp).max), regex=False
+                    ).str.get(params["index"])
+                if kind == "capitalizeText":
+                    return series.map(str.capitalize, na_action="ignore")
+                if kind == "lowerText":
+                    return series.map(str.lower, na_action="ignore")
+                return series.map(str.upper, na_action="ignore")
+
+            values = _pandas_scalar_values(df.iloc[:, position])
+            # Native strip is already vectorized, so a distinct pass would only add work.
+            result = edit_text(values) if kind == "stripText" else _pandas_each_distinct(values, edit_text)
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
@@ -2358,8 +2374,9 @@ class PandasEngine(DataFrameEngine):
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
             target = params.get("newColumn")
-            result = _open_wrangler_datetime_result(
-                _pandas_dictionary_values(df.iloc[:, position]), "format", params["format"]
+            result = _pandas_each_distinct(
+                _pandas_dictionary_values(df.iloc[:, position]),
+                lambda values: _open_wrangler_datetime_result(values, "format", params["format"]),
             )
             if target is None or target == column:
                 df.isetitem(position, result)
@@ -5041,6 +5058,39 @@ def _pandas_string_values(series: Any) -> Any:
     values = _pandas_scalar_values(series)
     _pandas_require_nested_timestamp_boxing(values)
     return values.astype("string")
+
+
+def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
+    """Apply an elementwise ``transform`` once per distinct text, integer or timestamp value.
+
+    These dtypes factorize exactly, keeping each missing value, so every row takes its own value's result. Other
+    dtypes, such as floats where ``-0.0`` equals ``0.0``, and mostly distinct columns transform every row.
+    """
+    import numpy as np
+    import pandas as pd
+
+    dtype = values.dtype
+    if isinstance(dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        arrow_type = dtype.pyarrow_dtype
+        exact = any(
+            check(arrow_type)
+            for check in (pa.types.is_string, pa.types.is_large_string, pa.types.is_integer, pa.types.is_timestamp)
+        )
+    else:
+        exact = (
+            isinstance(dtype, pd.StringDtype | pd.DatetimeTZDtype)
+            or pd.api.types.is_integer_dtype(dtype)
+            or (isinstance(dtype, np.dtype) and dtype.kind == "M")
+        )
+    if exact:
+        codes, uniques = values.array.factorize(use_na_sentinel=False)
+        if 2 * len(uniques) <= len(values):
+            result = transform(pd.Series(uniques, name=values.name)).take(codes)
+            result.index = values.index
+            return result
+    return transform(values)
 
 
 def _pandas_scalar_values(series: Any) -> Any:
