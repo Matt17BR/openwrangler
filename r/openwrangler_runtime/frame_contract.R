@@ -1760,9 +1760,9 @@ openwrangler_r_frame_contract <- local({
     copied
   }
 
-  # Structural operations never write into an existing column, so they may share the immutable vectors of a captured
-  # frame. A data.table changes its own container by reference, and setDT strips element names from the columns it
-  # converts, so those cases keep a private copy.
+  # Structural operations, and operations that replace or add whole columns, never write into an existing column, so
+  # they may share the immutable vectors of a captured frame. A data.table changes its own container by reference, and
+  # setDT strips element names from the columns it converts, so those cases keep a private copy.
   structural_snapshot <- function(value, flavor, library) {
     named_columns <- identical(library, "data.table") && any(vapply(unclass(value), function(column) {
       !clock_is_column(column) && !is.null(attr(column, "names", exact = TRUE))
@@ -6323,7 +6323,7 @@ openwrangler_r_frame_contract <- local({
       generated_names
     )
     if (!identical(library, "base")) {
-      result <- isolated_snapshot(value, inspected$flavor)
+      result <- structural_snapshot(value, inspected$flavor, library)
       source_count <- storage_length(result)
       generated_positions <- source_count + seq_along(generated_columns)
       result <- library_assign(result, generated_positions, generated_columns, c(names(result), generated_names), library)
@@ -6366,7 +6366,7 @@ openwrangler_r_frame_contract <- local({
       return(result)
     }
 
-    snapshot <- isolated_snapshot(value, inspected$flavor)
+    snapshot <- structural_snapshot(value, inspected$flavor, library)
     retained_columns <- lapply(retained_positions, function(position) .subset2(snapshot, position))
     result <- c(retained_columns, generated_columns)
     attr(result, "names") <- result_names
@@ -6690,7 +6690,7 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "formula numeric value must be one finite scalar")
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     left_values <- result[[left_position]]
     right_values <- if (has_right_column) result[[right_position]] else right_value
     left_length <- storage_length(left_values)
@@ -6867,7 +6867,7 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "textLength exceeds the supported R column limit")
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     lengths <- nchar(
       as.character(result[[position]]),
       type = "chars",
@@ -6988,7 +6988,7 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     source_values <- as.character(result[[position]])
     transformed <- if (operation %in% c("lowerText", "upperText")) {
       case_text_values(source_values, operation)
@@ -7156,7 +7156,7 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-view-query", "splitTextColumns exceeds the supported R column limit")
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     source_values <- as.character(result[[position]])
     distinct <- distinct_text_rows(source_values)
     for (output_index in seq_along(new_names)) {
@@ -7749,7 +7749,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (column_count + 1L > maximum_columns) abort("invalid-view-query", "Regex extraction exceeds the R column limit")
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     source_values <- as.character(result[[position]])
     extract_row <- function(row_index) {
       source <- source_values[[row_index]]
@@ -8191,7 +8191,7 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     source_values <- result[[position]]
     transformed <- if (identical(operation, "minMaxScale")) {
       min_max_scale_values(source_values)
@@ -8288,7 +8288,7 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", "formatDatetime exceeds the supported R column limit")
     }
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     source_values <- result[[position]]
     check_output <- function(item, index) bounded_operation_output(item, "Format datetime")
     distinct_keys <- NULL
@@ -8632,7 +8632,7 @@ openwrangler_r_frame_contract <- local({
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
     filled <- fill_missing_value(value[[position]], descriptor, replacement)
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       if (!identical(inspected$flavor, "r.tibble")) filled$column <- unname(filled$column)
       result <- library_assign(result, position, list(filled$column), names(result), library)
@@ -8771,7 +8771,7 @@ openwrangler_r_frame_contract <- local({
       }
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
       result <- library_assign(result, position, list(result_values), names(result), library)
@@ -8923,7 +8923,7 @@ openwrangler_r_frame_contract <- local({
 
     result_values <- fill_directional_values(value[[position]], row_positions, direction, max_gap)
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
       result <- library_assign(result, position, list(result_values), names(result), library)
@@ -9109,7 +9109,7 @@ openwrangler_r_frame_contract <- local({
       }
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
       result <- library_assign(result, position, list(result_values), names(result), library)
@@ -9263,7 +9263,7 @@ openwrangler_r_frame_contract <- local({
       for (fill in fills) if (!is.null(fill)) result_values[fill$rows] <- fill$value
     }
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     if (!identical(library, "base")) {
       if (!identical(inspected$flavor, "r.tibble")) result_values <- unname(result_values)
       result <- library_assign(result, position, list(result_values), names(result), library)
@@ -9551,7 +9551,7 @@ openwrangler_r_frame_contract <- local({
     }
     retained_key <- source_key[seq_len(match(old_name, source_key, nomatch = length(source_key) + 1L) - 1L)]
 
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     converted <- cast_column_values(
       result[[position]],
       source_column$semantics,
@@ -12906,7 +12906,7 @@ openwrangler_r_frame_contract <- local({
         abort("stale-column", "the Replace column no longer matches the R dataframe")
       }
     }
-    result <- isolated_snapshot(value, inspected$flavor)
+    result <- structural_snapshot(value, inspected$flavor, library)
     columns <- lapply(seq_along(positions), function(index) {
       replace_matches_values(result[[positions[[index]]]], old_names[[index]], find, match_case, replacement, whole_cell, row)
     })
