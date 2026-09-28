@@ -500,6 +500,8 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
         if isinstance(dtype, pd.SparseDtype) and (pd.api.types.is_integer_dtype(dtype) or dtype.subtype.kind == "m")
     }
     if not sparse:
+        if _pandas_parallel_take(frame, positions):
+            return _pandas_take_columns_in_parallel(frame, positions)
         return frame.iloc[positions]
     remaining = [position for position in range(frame.shape[1]) if position not in sparse]
     result = frame.iloc[:, remaining].iloc[positions].copy(deep=False)
@@ -507,6 +509,50 @@ def _pandas_take_rows(frame: Any, positions: Any) -> Any:
         result.insert(position, frame.columns[position], array.take(positions, allow_fill=False), allow_duplicates=True)
     result.columns = frame.columns
     return result
+
+
+def _pandas_parallel_take(frame: Any, positions: Any) -> bool:
+    import numpy as np
+    import pandas as pd
+
+    if (
+        type(frame) is not pd.DataFrame
+        or frame.shape[1] < 2
+        or len(positions) * frame.shape[1] < _PANDAS_PARALLEL_TAKE_CELLS
+    ):
+        return False
+    positions = np.asarray(positions)
+    # Rows taken in their existing order read memory in sequence, and one block copy is faster than a thread per column.
+    return not bool((positions[1:] >= positions[:-1]).all())
+
+
+def _pandas_take_columns_in_parallel(frame: Any, positions: Any) -> Any:
+    """Take rows in another order one column per thread, matching ``frame.iloc[positions]``.
+
+    Such a gather waits on memory rather than computation, and NumPy, Pandas and Arrow take without holding the GIL
+    except for object columns.
+    """
+    import numpy as np
+    import pandas as pd
+
+    arrays = []
+    for position in range(frame.shape[1]):
+        series = frame.iloc[:, position]
+        # Pandas 2 scans an object column for missing values when a Series wraps its NumPy array wrapper.
+        arrays.append(series.to_numpy() if isinstance(series.dtype, np.dtype) else series.array)
+    with ThreadPoolExecutor(min(len(arrays), os.cpu_count() or 1)) as pool:
+        taken = list(pool.map(lambda array: array.take(positions), arrays))
+    index = frame.index.take(positions)
+    # Each column keeps its dtype explicitly, because the constructor would infer text from object arrays.
+    result = pd.DataFrame(
+        {
+            position: pd.Series(values, index=index, dtype=dtype, copy=False)
+            for position, (values, dtype) in enumerate(zip(taken, frame.dtypes, strict=True))
+        },
+        copy=False,
+    )
+    result.columns = frame.columns
+    return result.__finalize__(frame)
 
 
 def _pandas_copy_on_write() -> bool:
@@ -547,6 +593,7 @@ def _pandas_contiguous_text(frame: Any) -> Any:
 
 
 _PANDAS_LEADING_ROW_LIMIT = 16_384
+_PANDAS_PARALLEL_TAKE_CELLS = 4 * 1_024 * 1_024
 
 
 class _PandasNumericOrder:
@@ -604,6 +651,25 @@ class _PandasNumericOrder:
             leading = present[leading]
         tail = missing[: count - len(head) - wanted] if self.nulls == "last" else missing[:0]
         return np.concatenate((head, leading, tail))
+
+
+def _pandas_key_order(
+    frame: Any, position: int, ascending: bool, nulls: Literal["first", "last"], rows: Any, *, lazy: bool = False
+) -> Any:
+    """The stable order of ``rows``, or of every row when it is None, by one column.
+
+    With ``lazy``, a native numeric key returns its unfinished order, so a view can find leading rows without sorting.
+    """
+    import numpy as np
+
+    ranks = _pandas_text_sort_ranks(frame.iloc[:, position], ascending, nulls)
+    if ranks is not None:
+        return np.argsort(ranks if rows is None else ranks[rows], kind="stable")
+    series = frame.iloc[:, position] if rows is None else _pandas_take_rows(frame.iloc[:, [position]], rows).iloc[:, 0]
+    numeric = _pandas_numeric_order(series, ascending, nulls)
+    if numeric is None:
+        return _pandas_sort_order(series, ascending, nulls)
+    return numeric if lazy else numeric.complete()
 
 
 def _pandas_numeric_order(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> _PandasNumericOrder | None:
@@ -1073,7 +1139,7 @@ def _pandas_sort_order(series: Any, ascending: bool, nulls: Literal["first", "la
 
 
 def _pandas_text_sort_ranks(series: Any, ascending: bool, nulls: Literal["first", "last"]) -> Any | None:
-    """Rank Arrow text rows so a stable integer argsort matches the Arrow string sort."""
+    """Rank text rows so a stable integer argsort matches the Pandas or Arrow string sort."""
     import numpy as np
     import pandas as pd
     import pyarrow as pa
@@ -1081,6 +1147,21 @@ def _pandas_text_sort_ranks(series: Any, ascending: bool, nulls: Literal["first"
 
     key = _pandas_row_key(series)
     dtype = key.dtype
+    if isinstance(dtype, np.dtype) and dtype.kind == "O":
+        # Strings compare equal exactly when they share a code, so other objects keep the general sort.
+        if pd.api.types.infer_dtype(key, skipna=True) != "string":
+            return None
+        codes, uniques = pd.factorize(key.to_numpy(), use_na_sentinel=True)
+        count = len(uniques)
+        order = np.argsort(uniques, kind="stable")
+        if not ascending:
+            order = order[::-1]
+        rank_type = np.min_scalar_type(count)
+        ranks = np.empty(count + 1, dtype=rank_type)
+        shift = 1 if nulls == "first" else 0
+        ranks[order] = np.arange(shift, count + shift, dtype=rank_type)
+        ranks[count] = 0 if nulls == "first" else count
+        return ranks[np.where(codes < 0, count, codes)]
     if isinstance(dtype, pd.StringDtype):
         if dtype.storage not in {"pyarrow", "pyarrow_numpy"}:
             return None
@@ -1486,24 +1567,16 @@ class PandasEngine(DataFrameEngine):
                     column_type = _pandas_semantic_type(df.iloc[:, position])
                     if column_type not in VIEW_COMPARABLE_TYPES:
                         raise EngineError(f"Pandas view sorting is unavailable for {column_type} columns.")
-                    ascending = rule.get("direction", "asc") == "asc"
-                    nulls = rule.get("nulls", "last")
-                    ranks = _pandas_text_sort_ranks(df.iloc[:, position], ascending, nulls)
-                    if ranks is not None:
-                        order = np.argsort(ranks if positions is None else ranks[positions], kind="stable")
-                    else:
-                        series = (
-                            df.iloc[:, position]
-                            if positions is None
-                            else _pandas_take_rows(df.iloc[:, [position]], positions).iloc[:, 0]
-                        )
-                        numeric = _pandas_numeric_order(series, ascending, nulls)
-                        if numeric is None:
-                            order = _pandas_sort_order(series, ascending, nulls)
-                        elif len(resolved_rules) == 1:
-                            return _PandasRowView(df, None, positional_row_axis, selected=positions, order=numeric)
-                        else:
-                            order = numeric.complete()
+                    order = _pandas_key_order(
+                        df,
+                        position,
+                        rule.get("direction", "asc") == "asc",
+                        rule.get("nulls", "last"),
+                        positions,
+                        lazy=len(resolved_rules) == 1,
+                    )
+                    if isinstance(order, _PandasNumericOrder):
+                        return _PandasRowView(df, None, positional_row_axis, selected=positions, order=order)
                     positions = order if positions is None else positions[order]
         return df if positions is None else _PandasRowView(df, positions, positional_row_axis)
 
@@ -2528,16 +2601,17 @@ class PandasEngine(DataFrameEngine):
     def _apply_bound_sort_rules(self, frame: Any, rules: Any, operation: str) -> Any:
         if not isinstance(rules, list) or not rules:
             raise EngineError(f"{operation} requires bound sort rules.")
-        result = frame
+        order = None
         for rule in reversed(rules):
             if not isinstance(rule, Mapping):
                 raise EngineError(f"{operation} requires bound sort rules.")
-            position = self._bound_frame_position(result, rule.get("column"), operation)
-            order = _pandas_sort_order(
-                result.iloc[:, position], rule.get("direction", "asc") == "asc", rule.get("nulls", "last")
+            position = self._bound_frame_position(frame, rule.get("column"), operation)
+            # Each stable sort reorders the rows the later rules already ordered, so only the keys move until the end.
+            step = _pandas_key_order(
+                frame, position, rule.get("direction", "asc") == "asc", rule.get("nulls", "last"), order
             )
-            result = _pandas_take_rows(result, order)
-        return result
+            order = step if order is None else order[step]
+        return _pandas_take_rows(frame, order)
 
     def _apply_bound_filter_model(self, frame: Any, model: Any) -> Any:
         import numpy as np
