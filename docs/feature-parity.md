@@ -404,10 +404,10 @@ representation limits.
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
 microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
 
-NumPy-backed Pandas duration columns and categories search the labels shown in value choices, including whole days
-and large durations. Direct and dictionary-encoded Arrow duration columns and Arrow-backed duration categories also
-accept their displayed labels while retaining native raw-text searches. Unused duration categories are not listed.
-Supported Sparse choices search displayed labels, including whole days, and retain raw clock matches.
+Pandas, Polars and DuckDB show durations as Python's `timedelta` does, such as `1 day, 2:03:04.500000`, with nine
+fraction digits when nanoseconds remain. Grid cells, profiles, value choices, value search and Find use this one text
+in every Python engine, including whole days, large durations and Arrow, dictionary, categorical and Sparse storage.
+Other native spellings are not searchable. Unused duration categories are not listed.
 
 Pandas temporal categories preserve exact displayed values, missing counts and directional Fill anchors. Supported
 duration choices select the exact stored rows, including positive NumPy unit multipliers and Arrow extrema, in live
@@ -425,7 +425,7 @@ CSV export refuses nonempty multiplied Sparse duration data or preserved indexes
 empty exports and omitted indexes remain available.
 
 Polars Datetime and Duration columns retain nanoseconds in grid cells, value choices and profile labels, and datetime
-offsets retain seconds. Duration choices now work and use native signed-unit labels, such as `1m 40s 1µs`.
+offsets retain seconds. Duration choices now work and use the shared duration labels, such as `0:01:40.000001`.
 Datetime cells and labels match Pandas and DuckDB: whole seconds omit the fraction, and other values show six
 digits, or nine when nanoseconds remain. Search accepts the displayed labels and either a `T` or space datetime separator.
 Values beyond the existing filter precision remain visible but cannot be selected. Datetime and Duration values

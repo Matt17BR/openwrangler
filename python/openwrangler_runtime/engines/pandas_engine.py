@@ -94,6 +94,7 @@ from .base import (
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
+    duration_display,
     duration_seconds_raw,
     ensure_output_columns_available,
     exact_decimal_median,
@@ -1868,8 +1869,13 @@ class PandasEngine(DataFrameEngine):
             native_datetime = isinstance(spelled, pd.DatetimeTZDtype) or (
                 isinstance(spelled, np.dtype) and spelled.kind == "M"
             )
-            labels = _pandas_datetime_labels(labelled) if native_datetime else labelled.astype(str)
-            if not native_datetime and (
+            if native_datetime:
+                labels = _pandas_datetime_labels(labelled)
+            elif duration:
+                labels = pd.Series(_pandas_cell_displays(labelled), index=labelled.index, dtype=object)
+            else:
+                labels = labelled.astype(str)
+            if not (native_datetime or duration) and (
                 temporal_values is not None
                 or pd.api.types.is_object_dtype(labelled.dtype)
                 or isinstance(labelled.dtype, pd.CategoricalDtype)
@@ -1939,7 +1945,7 @@ class PandasEngine(DataFrameEngine):
             (
                 index,
                 count,
-                _pandas_temporal_text(
+                _pandas_choice_label(
                     counted_value(index), temporal_counts[position] if temporal_counts is not None else None
                 ),
                 position,
@@ -1952,29 +1958,7 @@ class PandasEngine(DataFrameEngine):
         )
         if search and search_counted_labels:
             needle = str(search).translate(_ASCII_TO_LOWER)
-            arrow_raw_labels = value_counts.index.astype(str) if arrow_duration_values else None
-            raw_labels = None
-            if arrow_duration_categories:
-                observed = np.flatnonzero(value_counts.to_numpy() > 0)
-                native = value_counts.index.categories.take(value_counts.index.codes[observed])
-                raw_labels = {
-                    int(position): raw
-                    for position, raw in zip(observed, native.astype(str), strict=True)
-                    if isinstance(raw, str)
-                }
-            elif sparse_duration and np.datetime_data(cast(pd.SparseDtype, series.dtype).subtype)[1] != 1:
-                raw_labels = dict(enumerate(value_counts.index.astype(str)))
-            counts = (
-                (value, count, label, position)
-                for value, count, label, position in counts
-                if needle in label.translate(_ASCII_TO_LOWER)
-                or (raw_labels is not None and needle in raw_labels.get(position, "").translate(_ASCII_TO_LOWER))
-                or (
-                    arrow_raw_labels is not None
-                    and type(value).__name__ != "NaTType"
-                    and needle in arrow_raw_labels[position].translate(_ASCII_TO_LOWER)
-                )
-            )
+            counts = (item for item in counts if needle in item[2].translate(_ASCII_TO_LOWER))
         counts = nsmallest(limit + 1, counts, key=lambda item: (-int(item[1]), item[2]))
         values = []
         for index, count, _, position in counts[:limit]:
@@ -8939,7 +8923,7 @@ def _pandas_temporal_cell(value: Any, scalar: Any) -> dict[str, Any]:
         return {
             "kind": "duration",
             "raw": duration_seconds_raw(scalar.value, scale),
-            "display": f"{scalar.value} {scalar.type.unit}",
+            "display": duration_display(scalar.value, scale),
             "isNull": False,
             "isNaN": False,
         }
@@ -9025,8 +9009,24 @@ def _pandas_cell_displays(values: Any) -> list[str | None]:
     return displays
 
 
+def _pandas_choice_label(value: Any, scalar: Any) -> str:
+    """The text that ranks and searches a value choice: a duration's grid text, which every engine spells alike."""
+    import numpy as np
+
+    if isinstance(value, (timedelta, np.timedelta64)) or (
+        scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType"
+    ):
+        return str(_pandas_temporal_cell(value, scalar)["display"])
+    return _pandas_temporal_text(value, scalar)
+
+
 def _pandas_temporal_text(value: Any, scalar: Any) -> str:
     if scalar is not None and scalar.is_valid and type(value).__name__ == "NaTType":
+        import pyarrow as pa
+
+        if pa.types.is_duration(scalar.type):
+            # Pandas can't box the minimum tick, so its native text names the ticks and the unit.
+            return f"{scalar.value} {scalar.type.unit}"
         return str(_pandas_temporal_cell(value, scalar)["display"])
     import numpy as np
     import pandas as pd

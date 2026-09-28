@@ -1344,14 +1344,14 @@ def normalize_cell(value: Any) -> dict[str, Any]:
         kind = "date"
         display = value.isoformat()
         raw = display
-    elif isinstance(value, timedelta):
+    elif isinstance(value, timedelta) or is_numpy_duration:
         kind = "duration"
-        display = str(value)
-        raw = _timedelta_raw(value)
-    elif is_numpy_duration:
-        kind = "duration"
-        display = str(value)
-        raw = _numpy_timedelta_raw(value)
+        ticks = _duration_ticks(value)
+        if ticks is None:
+            display = raw = str(value)
+        else:
+            display = duration_display(*ticks)
+            raw = duration_seconds_raw(*ticks)
     elif isinstance(value, bytes):
         kind = "binary"
         display = b64encode(value).decode("ascii")
@@ -1640,7 +1640,8 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, timedelta):
-        return _timedelta_raw(value)
+        ticks = _duration_ticks(value)
+        return str(value) if ticks is None else duration_seconds_raw(*ticks)
     if isinstance(value, bytes):
         return b64encode(value).decode("ascii")
     if isinstance(value, Mapping):
@@ -1675,11 +1676,21 @@ def duration_seconds_raw(ticks: int, scale: int) -> float | str:
     return ("-" if ticks < 0 else "") + text
 
 
-def _timedelta_raw(value: timedelta) -> float | str:
-    if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
-        return _numpy_timedelta_raw(cast(Any, value).asm8)
-    ticks = (value.days * 86400 + value.seconds) * 1_000_000 + value.microseconds
-    return duration_seconds_raw(ticks, 1_000_000)
+def duration_display(ticks: int, scale: int) -> str:
+    """Spell a duration as Python's timedelta does; a fraction finer than microseconds grows three digits at a time."""
+    days, remainder = divmod(ticks, 86_400 * scale)
+    seconds, fraction = divmod(remainder, scale)
+    minutes, second = divmod(seconds, 60)
+    hour, minute = divmod(minutes, 60)
+    text = f"{hour}:{minute:02d}:{second:02d}"
+    if fraction:
+        digits = 6
+        while fraction * 10**digits % scale:
+            digits += 3
+        text += "." + str(fraction * 10**digits // scale).rjust(digits, "0")
+    if days:
+        text = f"{days} day{'' if abs(days) == 1 else 's'}, {text}"
+    return text
 
 
 _NUMPY_DURATION_SECONDS = {
@@ -1697,11 +1708,16 @@ _NUMPY_DURATION_SECONDS = {
 }
 
 
-def _numpy_timedelta_raw(value: Any) -> float | str:
+def _duration_ticks(value: Any) -> tuple[int, int] | None:
+    """Exact ticks and ticks per second of a duration, or None for calendar and generic NumPy units."""
+    if isinstance(value, getattr(sys.modules.get("pandas"), "Timedelta", ())):
+        value = cast(Any, value).asm8
+    if isinstance(value, timedelta):
+        return (value.days * 86400 + value.seconds) * 1_000_000 + value.microseconds, 1_000_000
     numpy = sys.modules["numpy"]
     unit, multiplier = numpy.datetime_data(value.dtype)
     factor_scale = _NUMPY_DURATION_SECONDS.get(unit)
     if factor_scale is None:
-        return str(value)
+        return None
     factor, scale = factor_scale
-    return duration_seconds_raw(int(value.view(numpy.int64)) * multiplier * factor, scale)
+    return int(value.view(numpy.int64)) * multiplier * factor, scale

@@ -17,6 +17,7 @@ from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import EngineError, PandasEngine
 from openwrangler_runtime.engines.base import (
     coerce_typed_view_value,
+    duration_display,
     infer_semantic_type,
     is_null_scalar,
     normalize_cell,
@@ -190,7 +191,7 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
     peak_labels = 0
     evaluated_labels = 0
     selection_decodes = 0
-    original_format = pandas_engine._pandas_temporal_text
+    original_format = pandas_engine._pandas_choice_label
     original_selection = pandas_engine.typed_cell_selection_value
 
     def observe_selection(cell: Any, column_type: str) -> Any:
@@ -206,7 +207,7 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
         evaluated_labels += 1
         return label
 
-    monkeypatch.setattr(pandas_engine, "_pandas_temporal_text", observe_label)
+    monkeypatch.setattr(pandas_engine, "_pandas_choice_label", observe_label)
     monkeypatch.setattr(pandas_engine, "typed_cell_selection_value", observe_selection)
     if duration:
         import pyarrow as pa
@@ -216,10 +217,11 @@ def test_pandas_picker_retains_only_bounded_temporary_labels(
         source = pd.DataFrame({"value": range(511, -1, -1)})
     before = source.copy(deep=True)
     choices, more = PandasEngine().column_values(source, "value", limit=limit)
-    expected = sorted((pd.Timedelta(value, "us") if duration else value for value in range(512)), key=str)[:limit]
+    label = (lambda value: normalize_cell(value)["display"]) if duration else str
+    expected = sorted((pd.Timedelta(value, "us") if duration else value for value in range(512)), key=label)[:limit]
     assert choices == [
         {
-            "value": str(value),
+            "value": label(value),
             "count": 1,
             "selectionValue": typed_selection_value(value, "duration" if duration else "integer"),
         }
@@ -474,7 +476,9 @@ def test_temporal_choice_identity_or_refusal_preserves_public_session(monkeypatc
             assert summary["topValues"][0] == choice
             assert summary["nullCount"] == 1
         # Search and viewing filters narrow the source before native counting.
-        narrowed = manager.get_column_values(session_id, revision, "value", query, search=str(values[3]))
+        narrowed = manager.get_column_values(
+            session_id, revision, "value", query, search=normalize_cell(values[3])["display"]
+        )
         assert [choice["count"] for choice in narrowed["values"]] == [1]
         safe_view = {
             "filters": [
@@ -843,39 +847,59 @@ def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
 
 
 @pytest.mark.parametrize(
-    "value,raw,portable",
+    "value,raw,display,portable",
     [
-        (timedelta(seconds=2), 2.0, True),
-        (timedelta(seconds=2, microseconds=123456), 2.123456, True),
-        (timedelta(microseconds=1), "0.000001", True),
-        (timedelta(microseconds=-1), "-0.000001", True),
-        (timedelta(days=100000, microseconds=1), "8640000000.000001", True),
-        (timedelta(days=999999999, microseconds=1), "86399999913600.000001", True),
-        (pd.Timedelta(9 * 10**18 + 1000, "ns"), "9000000000.000001", True),
-        (pd.Timedelta(10**17 + 1, "ns"), "100000000.000000001", False),
-        (pd.Timedelta(np.timedelta64(10**12, "s")), 1000000000000.0, True),
-        (pd.Timedelta(np.timedelta64(10**15 + 1, "ms")), 1000000000000.001, True),
-        (pd.Timedelta(np.timedelta64(10**18 + 1, "us")), "1000000000000.000001", True),
-        (pd.Timedelta(np.timedelta64(-(10**18 + 1), "us")), "-1000000000000.000001", True),
-        (pd.Timedelta(np.timedelta64(2**63 - 1, "us")), "9223372036854.775807", True),
-        (pd.Timedelta(np.timedelta64(-(2**63 - 1), "us")), "-9223372036854.775807", True),
-        (pd.Timedelta(np.timedelta64(2**63 - 1, "ms")), "9223372036854775.807", False),
-        (np.timedelta64(500000000, "D"), 43200000000000.0, True),
-        (np.array(2**62, dtype="timedelta64[2us]")[()], "9223372036854.775808", True),
-        (np.array(2**62, dtype="timedelta64[1000us]")[()], "4611686018427387.904", False),
-        (np.array(1000, dtype="timedelta64[2ns]")[()], "0.000002", True),
-        (np.array(1, dtype="timedelta64[2ns]")[()], "0.000000002", False),
-        (np.timedelta64(1, "ps"), "0.000000000001", False),
-        (np.timedelta64(-1, "fs"), "-0.000000000000001", False),
-        (np.timedelta64(1, "as"), "0.000000000000000001", False),
+        (timedelta(seconds=2), 2.0, "0:00:02", True),
+        (timedelta(seconds=2, microseconds=123456), 2.123456, "0:00:02.123456", True),
+        (timedelta(microseconds=1), "0.000001", "0:00:00.000001", True),
+        (timedelta(microseconds=-1), "-0.000001", "-1 day, 23:59:59.999999", True),
+        (timedelta(days=100000, microseconds=1), "8640000000.000001", "100000 days, 0:00:00.000001", True),
+        (timedelta(days=999999999, microseconds=1), "86399999913600.000001", "999999999 days, 0:00:00.000001", True),
+        (pd.Timedelta(9 * 10**18 + 1000, "ns"), "9000000000.000001", "104166 days, 16:00:00.000001", True),
+        (pd.Timedelta(10**17 + 1, "ns"), "100000000.000000001", "1157 days, 9:46:40.000000001", False),
+        (pd.Timedelta(np.timedelta64(10**12, "s")), 1000000000000.0, "11574074 days, 1:46:40", True),
+        (pd.Timedelta(np.timedelta64(10**15 + 1, "ms")), 1000000000000.001, "11574074 days, 1:46:40.001000", True),
+        (pd.Timedelta(np.timedelta64(10**18 + 1, "us")), "1000000000000.000001", "11574074 days, 1:46:40.000001", True),
+        (
+            pd.Timedelta(np.timedelta64(-(10**18 + 1), "us")),
+            "-1000000000000.000001",
+            "-11574075 days, 22:13:19.999999",
+            True,
+        ),
+        (pd.Timedelta(np.timedelta64(2**63 - 1, "us")), "9223372036854.775807", "106751991 days, 4:00:54.775807", True),
+        (
+            pd.Timedelta(np.timedelta64(-(2**63 - 1), "us")),
+            "-9223372036854.775807",
+            "-106751992 days, 19:59:05.224193",
+            True,
+        ),
+        (
+            pd.Timedelta(np.timedelta64(2**63 - 1, "ms")),
+            "9223372036854775.807",
+            "106751991167 days, 7:12:55.807000",
+            False,
+        ),
+        (np.timedelta64(500000000, "D"), 43200000000000.0, "500000000 days, 0:00:00", True),
+        (np.array(2**62, dtype="timedelta64[2us]")[()], "9223372036854.775808", "106751991 days, 4:00:54.775808", True),
+        (
+            np.array(2**62, dtype="timedelta64[1000us]")[()],
+            "4611686018427387.904",
+            "53375995583 days, 15:36:27.904000",
+            False,
+        ),
+        (np.array(1000, dtype="timedelta64[2ns]")[()], "0.000002", "0:00:00.000002", True),
+        (np.array(1, dtype="timedelta64[2ns]")[()], "0.000000002", "0:00:00.000000002", False),
+        (np.timedelta64(1, "ps"), "0.000000000001", "0:00:00.000000000001", False),
+        (np.timedelta64(-1, "fs"), "-0.000000000000001", "-1 day, 23:59:59.999999999999999", False),
+        (np.timedelta64(1, "as"), "0.000000000000000001", "0:00:00.000000000000000001", False),
     ],
 )
-def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, portable) -> None:
+def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, display, portable) -> None:
     with localcontext() as context:
         context.prec = 3
         context.clear_flags()
         cell = normalize_cell(value)
-        assert cell == {"kind": "duration", "raw": raw, "display": str(value), "isNull": False, "isNaN": False}
+        assert cell == {"kind": "duration", "raw": raw, "display": display, "isNull": False, "isNaN": False}
         assert normalize_cell({"value": [value]})["raw"] == {"value": [raw]}
         assert json.loads(json.dumps(cell, allow_nan=False)) == cell
         token = typed_selection_value(value, "duration")
@@ -890,6 +914,25 @@ def test_duration_cells_keep_exact_seconds_and_portable_selection(value, raw, po
             with pytest.raises(EngineError):
                 coerce_typed_view_value(grid_token, "duration")
         assert context.prec == 3 and not any(context.flags.values())
+
+
+def test_duration_display_spells_python_timedelta_text() -> None:
+    import random
+
+    generator = random.Random(1698)
+    extremes = [timedelta.max // timedelta(microseconds=1), timedelta.min // timedelta(microseconds=1)]
+    for microseconds in [0, 1, -1, 86_400_000_000, -86_400_000_000, *extremes]:
+        assert duration_display(microseconds, 1_000_000) == str(timedelta(microseconds=microseconds))
+    for _ in range(2_000):
+        microseconds = generator.randint(-(10**17), 10**17)
+        assert duration_display(microseconds, 1_000_000) == str(timedelta(microseconds=microseconds))
+    # Finer ticks add three fraction digits at a time until the fraction is exact.
+    assert duration_display(1_000, 10**9) == "0:00:00.000001"
+    assert duration_display(1_500, 10**9) == "0:00:00.000001500"
+    assert duration_display(-1, 10**9) == "-1 day, 23:59:59.999999999"
+    assert duration_display(1, 10**12) == "0:00:00.000000000001"
+    assert duration_display(3, 1) == "0:00:03"
+    assert duration_display(2 * 86_400_000, 1_000) == "2 days, 0:00:00"
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -941,7 +984,7 @@ def test_pandas_object_duration_choices_select_their_exact_counted_rows(values, 
     counts = Counter(exact)
     labels = {}
     for value, key in zip(original, exact, strict=True):
-        labels.setdefault(key, str(value))
+        labels.setdefault(key, normalize_cell(value)["display"])
     engine = PandasEngine()
     try:
         choices, has_more = engine.column_values(source, "value")
@@ -1067,7 +1110,7 @@ def test_mixed_object_duration_refusal_preserves_source_and_null_filters(family)
         assert len(page["rows"]) == 3
         rule["predicates"] = [{"kind": "predicate", "operator": "isNull"}]
         pd.testing.assert_frame_equal(engine.apply_filter_model(source, model), source.iloc[[2]])
-        assert engine.column_values(source, "value", search="1 seconds")[0][0]["count"] == 1
+        assert engine.column_values(source, "value", search="0:00:01")[0][0]["count"] == 1
         pd.testing.assert_frame_equal(source, before, check_exact=True)
     finally:
         engine.close()
@@ -1147,18 +1190,11 @@ def test_duration_session_choices_and_grid_tokens_keep_source_rows(
             sid, revision = metadata["sessionId"], metadata["revision"]
             unfiltered = {"filters": [], "sort": []}
             choice = manager.get_column_values(sid, revision, "value", unfiltered)["values"][0]
-            expected_label = (
-                str(native[0])
-                if storage == "sparse"
-                else str(source.iloc[0, 0])
-                if storage == "numpy"
-                else "0 days 00:00:00.000001"
-                if ticks == 1
-                else "-9223372036854775808 us"
-            )
-            assert choice["count"] == 2 and choice["value"] == expected_label
             cell = opened["page"]["rows"][0]["values"][0]
+            assert choice["count"] == 2 and choice["value"] == cell["display"]
             if storage in {"arrow", "dictionary"}:
+                # Pandas boxes the minimum tick as NaT, but its cell still shows the duration.
+                assert cell["display"] == ("0:00:00.000001" if ticks == 1 else "-106751992 days, 19:59:05.224192")
                 assert cell["raw"] == ("0.000001" if ticks == 1 else "-9223372036854.775808") and not cell["isNull"]
             if storage in {"arrow", "dictionary", "sparse"}:
                 searched = manager.get_column_values(sid, revision, "value", unfiltered, search=choice["value"])
@@ -1276,7 +1312,7 @@ def test_typed_cells_normalize_numpy_and_pandas_scalars() -> None:
     assert normalize_cell(np.timedelta64(1, "ns")) == {
         "kind": "duration",
         "raw": "0.000000001",
-        "display": "1 nanoseconds",
+        "display": "0:00:00.000000001",
         "isNull": False,
         "isNaN": False,
     }
@@ -1439,7 +1475,7 @@ def test_timestamp_parquet_session_preserves_exact_page_text(tmp_path: Path, zon
 
 @pytest.mark.parametrize("dictionary", [False, True])
 @pytest.mark.parametrize("unit,fraction", [("ns", "000000001"), ("us", "000001")])
-def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit: str, fraction: str) -> None:
+def test_pandas_arrow_duration_search_matches_only_grid_text(dictionary: bool, unit: str, fraction: str) -> None:
     pa = pytest.importorskip("pyarrow")
     value_type = pa.duration(unit)
     array = (
@@ -1460,7 +1496,7 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     source.index = pd.Index(["same"] * len(source), name="source row")
     before = source.copy(deep=True)
     engine = PandasEngine()
-    first: dict[str, Any] = {"value": f"0 days 00:00:00.{fraction}", "count": 2, "selectionValue": None}
+    first: dict[str, Any] = {"value": f"0:00:00.{fraction}", "count": 2, "selectionValue": None}
     if unit == "us":
         first["selectionValue"] = {
             "kind": "typedSelection",
@@ -1477,14 +1513,12 @@ def test_pandas_duration_search_preserves_native_row_text(dictionary: bool, unit
     choices, more = engine.column_values(source, "value", limit=1)
     assert choices == [first] and more
     assert engine.column_values(source, "value", search="1") == ([first], False)
-    # Pandas 2 and 3 have different native vector text for Arrow durations.
-    # Decoded duration columns also match their displayed clocks.
-    native_text = pd.Series(pa.array([1], type=value_type), dtype=pd.ArrowDtype(value_type)).astype(str).iloc[0]
-    assert native_text in {"1 nanoseconds" if unit == "ns" else "1 microseconds", first["value"]}
-    for search in ("0", "days", "00:00"):
+    for search in ("0", "0:00:00.", "00:00"):
         assert engine.column_values(source, "value", search=search, limit=1) == ([first], True)
-    assert engine.column_values(source, "value", search=native_text) == ([first], False)
     assert engine.column_values(source, "value", search=first["value"]) == ([first], False)
+    # Pandas' own spellings of these values are not what the grid shows.
+    for search in ("days", "1 nanoseconds" if unit == "ns" else "1 microseconds"):
+        assert engine.column_values(source, "value", search=search) == ([], False)
     if dictionary:
         pd.testing.assert_index_equal(source.index, before.index, exact=True)
         pd.testing.assert_index_equal(source.columns, before.columns, exact=True)
@@ -1539,19 +1573,19 @@ def test_pandas_value_search_filters_original_representations_before_counting(
 @pytest.mark.parametrize(
     "unit,ticks,label",
     [
-        ("s", 86400, "1 days 00:00:00"),
-        ("s", -86400, "-1 days +00:00:00"),
-        ("ms", 86400000, "1 days 00:00:00"),
-        ("ms", -86400000, "-1 days +00:00:00"),
-        ("us", 86400000000, "1 days 00:00:00"),
-        ("us", -86400000000, "-1 days +00:00:00"),
-        ("ns", 86400000000000, "1 days 00:00:00"),
-        ("ns", -86400000000000, "-1 days +00:00:00"),
-        ("ms", 123, "0 days 00:00:00.123000"),
-        ("us", 123000, "0 days 00:00:00.123000"),
-        ("ns", 123000001, "0 days 00:00:00.123000001"),
-        ("s", 2**63 - 1, "106751991167300 days 15:30:07"),
-        ("s", -(2**63 - 1), "-106751991167301 days +08:29:53"),
+        ("s", 86400, "1 day, 0:00:00"),
+        ("s", -86400, "-1 day, 0:00:00"),
+        ("ms", 86400000, "1 day, 0:00:00"),
+        ("ms", -86400000, "-1 day, 0:00:00"),
+        ("us", 86400000000, "1 day, 0:00:00"),
+        ("us", -86400000000, "-1 day, 0:00:00"),
+        ("ns", 86400000000000, "1 day, 0:00:00"),
+        ("ns", -86400000000000, "-1 day, 0:00:00"),
+        ("ms", 123, "0:00:00.123000"),
+        ("us", 123000, "0:00:00.123000"),
+        ("ns", 123000001, "0:00:00.123000001"),
+        ("s", 2**63 - 1, "106751991167300 days, 15:30:07"),
+        ("s", -(2**63 - 1), "-106751991167301 days, 8:29:53"),
     ],
 )
 def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, ticks: int, label: str) -> None:
@@ -1564,17 +1598,14 @@ def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, t
         choices, more = engine.column_values(source, "value")
         assert not more and len(choices) == 2
         assert choices[0]["value"] == label and choices[0]["count"] == 2
-        assert choices[1]["value"] == "0 days 00:00:00" and choices[1]["count"] == 1
+        assert choices[1]["value"] == "0:00:00" and choices[1]["count"] == 1
         assert engine.column_values(source, "value", search=label) == ([choices[0]], False)
-        assert engine.column_values(source, "value", search="days", limit=1) == (choices[:1], True)
+        assert engine.column_values(source, "value", search=":", limit=1) == (choices[:1], True)
         assert engine.column_values(source, "value", search="not-a-match") == ([], False)
         if unit == "s" and abs(ticks) == 2**63 - 1:
-            wrong_label = "106751 days 23:47:16.854775807" if ticks > 0 else "-106752 days +00:12:43.145224193"
+            # Counting must not narrow these seconds to nanoseconds, which would wrap them.
+            wrong_label = "106751 days, 23:47:16.854775807" if ticks > 0 else "-106752 days, 0:12:43.145224193"
             assert engine.column_values(source, "value", search=wrong_label) == ([], False)
-        else:
-            for old_label in source["value"].dropna().astype(str):
-                expected = [choice for choice in choices if old_label in choice["value"]]
-                assert engine.column_values(source, "value", search=old_label) == (expected, False)
         for empty in [source.iloc[:0], source.iloc[[3]]]:
             assert engine.column_values(empty, "value", search="00:00:00") == ([], False)
         pd.testing.assert_frame_equal(source, before, check_exact=True)
@@ -1594,6 +1625,8 @@ def test_pandas_native_duration_search_matches_exact_counted_labels(unit: str, t
 def test_pandas_native_duration_categories_search_counts_and_skip_unused_labels(
     unit: str, category_ticks: list[int]
 ) -> None:
+    from collections import Counter
+
     categories = pd.Index(np.array(category_ticks, dtype=np.int64).view(f"timedelta64[{unit}]"))
     source = pd.DataFrame(
         {"value": pd.Categorical.from_codes([0, 1, 0, 1, -1], categories=categories, ordered=True), "row": range(5)}
@@ -1602,14 +1635,18 @@ def test_pandas_native_duration_categories_search_counts_and_skip_unused_labels(
     source.attrs = {"origin": "retained"}
     before = source.copy(deep=True)
     engine = PandasEngine()
+
+    def display(value: Any) -> str:
+        return normalize_cell(value)["display"]
+
     try:
         choices, more = engine.column_values(source, "value")
-        expected = sorted(zip(map(str, categories[:2]), [2, 2], strict=True), key=lambda item: (-item[1], item[0]))
+        expected = sorted(zip(map(display, categories[:2]), [2, 2], strict=True), key=lambda item: (-item[1], item[0]))
         assert [(choice["value"], choice["count"]) for choice in choices] == expected and not more
-        assert engine.column_values(source, "value", search="days", limit=1) == (choices[:1], True)
+        assert engine.column_values(source, "value", search=":", limit=1) == (choices[:1], True)
         for choice in choices:
             category_position = next(
-                position for position, value in enumerate(categories) if str(value) == choice["value"]
+                position for position, value in enumerate(categories) if display(value) == choice["value"]
             )
             assert (choice["selectionValue"] is not None) == (
                 unit != "ns" or category_ticks[category_position] % 1000 == 0
@@ -1638,21 +1675,21 @@ def test_pandas_native_duration_categories_search_counts_and_skip_unused_labels(
                     },
                 )
                 positions = [
-                    position for position, value in enumerate(source["value"]) if str(value) == choice["value"]
+                    position
+                    for position, value in enumerate(source["value"])
+                    if not pd.isna(value) and display(value) == choice["value"]
                 ]
                 pd.testing.assert_frame_equal(selected, source.iloc[positions], check_exact=True)
                 assert len(selected) == choice["count"]
         assert engine.column_values(source, "value", search="unmatched") == ([], False)
-        for raw in source["value"].dropna().astype(str):
-            native = source.loc[
-                source["value"].astype(str).str.contains(raw, na=False, regex=False), "value"
-            ].value_counts()
-            found, _ = engine.column_values(source, "value", search=raw)
+        present = Counter(display(value) for value in source["value"].dropna())
+        for label in present:
+            found, _ = engine.column_values(source, "value", search=label)
             assert {item["value"]: item["count"] for item in found} == {
-                str(value): count for value, count in native.items() if count
+                other: count for other, count in present.items() if label in other
             }
         for empty in [source.iloc[:0], source.iloc[[4]]]:
-            assert engine.column_values(empty, "value", search=str(categories[2])) == ([], False)
+            assert engine.column_values(empty, "value", search=display(categories[2])) == ([], False)
         pd.testing.assert_frame_equal(source, before, check_exact=True)
         assert source.attrs == before.attrs
     finally:
@@ -1660,7 +1697,7 @@ def test_pandas_native_duration_categories_search_counts_and_skip_unused_labels(
 
 
 @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
-def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(monkeypatch, unit) -> None:
+def test_pandas_arrow_duration_category_search_matches_grid_labels(monkeypatch, unit) -> None:
     from collections import Counter
 
     import __main__
@@ -1699,7 +1736,7 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         choices = result["values"]
         assert not result["hasMore"] and sorted(item["count"] for item in choices) == [1, 1, 1, 1, 2]
         day = choices[0]
-        assert day["value"] == ("1 days 00:00:00" if unit == "ns" else "1 day, 0:00:00")
+        assert day["value"] == "1 day, 0:00:00"
         assert day["selectionValue"]["cell"]["raw"] == 86400
         native = source["value"].dropna().astype(str)
         row_labels = [
@@ -1708,15 +1745,11 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         for choice in choices:
             found, more = engine.column_values(source, "value", search=choice["value"])
             assert choice in found and not more
-        # A raw alias must retain every positive native match, even when Arrow's
-        # valid minimum tick is spelled NaT by Pandas. Missing codes have no choice.
-        for raw in dict.fromkeys([*(value for value in native if isinstance(value, str)), "NaT", "nan"]):
-            expected = Counter(
-                label
-                for raw_text, label in zip(native, row_labels, strict=True)
-                if isinstance(raw_text, str) and raw in raw_text or raw in label
-            )
-            found, more = engine.column_values(source, "value", search=raw)
+        # Search matches only the grid text. Pandas' own text, which spells Arrow's valid
+        # minimum tick as NaT, is not an alias. Missing codes have no choice.
+        for text in dict.fromkeys([*row_labels, *(value for value in native if isinstance(value, str)), "NaT", "nan"]):
+            expected = Counter(label for label in row_labels if text.lower() in label.lower())
+            found, more = engine.column_values(source, "value", search=text)
             assert not more
             assert {item["value"]: item["count"] for item in found} == dict(expected)
         searched = manager.get_column_values(session_id, revision, "value", query, search=day["value"])
@@ -1742,11 +1775,11 @@ def test_pandas_arrow_duration_category_search_preserves_labels_and_raw_aliases(
         assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
         positive = [item for item in choices if "day" in item["value"]]
         assert engine.column_values(source, "value", search="DaY", limit=1) == (positive[:1], len(positive) > 1)
-        unused_raw = pd.Series(pd.Categorical.from_codes([5], categories=categories)).astype(str).iloc[0]
-        displayed_matches = [item for item in choices if unused_raw in item["value"]]
-        assert engine.column_values(source, "value", search=unused_raw) == (displayed_matches, False)
+        unused = normalize_cell(categories[5])["display"]
+        displayed_matches = [item for item in choices if unused in item["value"]]
+        assert engine.column_values(source, "value", search=unused) == (displayed_matches, False)
         for empty in (source.iloc[:0], source.iloc[[5]]):
-            assert engine.column_values(empty, "value", search=unused_raw) == ([], False)
+            assert engine.column_values(empty, "value", search=unused) == ([], False)
             assert engine.column_values(empty, "value", search="[not-a-duration]") == ([], False)
         restored = manager.get_page(session_id, revision, 0, 7, query)
         assert restored["page"] == opened["page"]
@@ -1795,9 +1828,8 @@ def test_pandas_sparse_duration_choices_preserve_physical_values_and_membership(
             item["value"]: item["count"] for item in choices
         }
         for choice in choices:
-            assert engine.column_values(source, "value", search=choice["value"])[0] == [choice]
-        for raw in source.value.dropna().astype(str):
-            assert engine.column_values(source, "value", search=raw)[0]
+            found = engine.column_values(source, "value", search=choice["value"])[0]
+            assert found == [item for item in choices if choice["value"] in item["value"]]
         assert engine.column_values(source, "value", search="[not-a-duration]") == ([], False)
         assert engine.column_values(source.iloc[:0], "value") == ([], False)
         assert engine.column_values(source.iloc[3:4], "value") == ([], False)
@@ -1887,7 +1919,11 @@ def test_pandas_sparse_duration_index_keeps_physical_row_labels(unit: str, monke
     monkeypatch.setattr(pd.arrays.SparseArray, "to_numpy", bounded)
     engine = PandasEngine()
     page = engine.page(source, 1, 3)
-    assert [row["rowLabel"] for row in page["rows"]] == [str(native[1]), str(native[2]), "null"]
+    assert [row["rowLabel"] for row in page["rows"]] == [
+        "0:00:00",
+        "0:00:02" if unit == "2s" else "0:00:00.003000",
+        "null",
+    ]
     assert lengths and max(lengths) <= 3
     assert [row["values"][0]["raw"] for row in page["rows"]] == [1, 2, 3]
     assert engine.page(source.iloc[:0], 0, 3)["rows"] == []
@@ -2057,7 +2093,7 @@ def test_pandas_sparse_duration_fill_keeps_exact_native_storage(kind: str, monke
         choices, more = engine.column_values(source, "value")
         assert not more and sorted(choice["count"] for choice in choices) == [1, 2]
         choice = next(choice for choice in choices if choice["count"] == 2)
-        assert choice["value"] in {str(canonical), str(pd.Timedelta(canonical))}
+        assert choice["value"] == expected["display"]
         assert engine.column_values(source, "value", search=choice["value"])[0] == [choice]
         summary = engine.summaries(source, [(0, "value")])[0]
         assert summary["nullCount"] == 1 and summary["distinctCount"] == 2
@@ -3937,7 +3973,7 @@ def test_non_numpy_transport_does_not_require_numpy(monkeypatch: pytest.MonkeyPa
         ("timestamp", "1677-09-21T00:12:43.145224192"),
         ("utc", "1677-09-21T00:12:43.145224192+00:00"),
         ("berlin", "1677-09-21T01:06:11.145224192+00:53:28"),
-        ("duration", "-9223372036854775808 ns"),
+        ("duration", "-106752 days, 0:12:43.145224192"),
     ],
 )
 def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters(
@@ -4032,26 +4068,12 @@ def test_pandas_arrow_temporal_validity_keeps_bounded_cells_profiles_and_filters
 
 @pytest.mark.parametrize("dictionary", [False, True])
 @pytest.mark.parametrize(
-    "unit,scale,positive,negative,dictionary_positive,dictionary_negative",
+    "unit,scale,positive,negative,minimum_label",
     [
-        ("s", 1, "0 days 00:02:03", "-1 days +23:57:57", "0:02:03", "-1 day, 23:57:57"),
-        ("ms", 1000, "0 days 00:00:00.123000", "-1 days +23:59:59.877000", "0:00:00.123000", "-1 day, 23:59:59.877000"),
-        (
-            "us",
-            1000000,
-            "0 days 00:00:00.000123",
-            "-1 days +23:59:59.999877",
-            "0:00:00.000123",
-            "-1 day, 23:59:59.999877",
-        ),
-        (
-            "ns",
-            1000000000,
-            "0 days 00:00:00.000000123",
-            "-1 days +23:59:59.999999877",
-            "0 days 00:00:00.000000123",
-            "-1 days +23:59:59.999999877",
-        ),
+        ("s", 1, "0:02:03", "-1 day, 23:57:57", "-106751991167301 days, 8:29:52"),
+        ("ms", 1000, "0:00:00.123000", "-1 day, 23:59:59.877000", "-106751991168 days, 16:47:04.192000"),
+        ("us", 1000000, "0:00:00.000123", "-1 day, 23:59:59.999877", "-106751992 days, 19:59:05.224192"),
+        ("ns", 1000000000, "0:00:00.000000123", "-1 day, 23:59:59.999999877", "-106752 days, 0:12:43.145224192"),
     ],
 )
 def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
@@ -4061,9 +4083,10 @@ def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
     scale: int,
     positive: str,
     negative: str,
-    dictionary_positive: str,
-    dictionary_negative: str,
+    minimum_label: str,
 ) -> None:
+    from collections import Counter
+
     import pyarrow as pa
 
     from openwrangler_runtime.engines import pandas_engine
@@ -4104,43 +4127,26 @@ def test_pandas_arrow_duration_outputs_preserve_units_labels_and_projection(
         else:
             with pytest.raises(EngineError):
                 coerce_typed_view_value(token, "duration")
-    assert [cell["display"] for cell in cells[4:6]] == (
-        [dictionary_positive, dictionary_negative] if dictionary else [positive, negative]
-    )
-    if dictionary and unit == "us":
-        assert cells[0]["display"] == "-106751992 days, 19:59:05.224192"
+    assert [cell["display"] for cell in cells[4:6]] == [positive, negative]
+    assert cells[0]["display"] == minimum_label
     summary = engine.summaries(source, [(0, "value")])[0]
     assert (summary["nullCount"], summary["nanCount"], summary["distinctCount"]) == (2, 0, 5)
     choices, more = engine.column_values(source, "value", limit=1)
     assert summary["topValues"][0] == choices[0]
-    assert more and len(choices) == 1 and choices[0]["count"] == 2 and choices[0]["value"] == f"{minimum} {unit}"
+    assert more and len(choices) == 1 and choices[0]["count"] == 2 and choices[0]["value"] == minimum_label
     if unit == "us":
         assert coerce_typed_view_value(choices[0]["selectionValue"], "duration") == timedelta(microseconds=minimum)
     else:
         assert choices[0]["selectionValue"] is None
-    assert engine.column_values(source, "value", search="NaT") == ([], False)
-    if dictionary:
-        matches, more = engine.column_values(source, "value", search=positive)
-        assert not more and len(matches) == 1
-        assert matches[0]["value"] == positive and matches[0]["count"] == 1
-    else:
-        from collections import Counter
-
-        all_choices, all_more = engine.column_values(source, "value")
-        assert not all_more
-        displayed = [str(cell["display"]) for cell in cells if not cell["isNull"]]
-        raw = source["value"].dropna().astype(str).tolist()
-        effective = [
-            label if stored == minimum else text
-            for stored, label, text in zip([tick for tick in ticks if tick is not None], displayed, raw, strict=True)
-        ]
-        for search in dict.fromkeys([*displayed, *effective, "NaT", "[not-a-duration]"]):
-            expected = Counter(
-                label for label, text in zip(displayed, effective, strict=True) if search in label or search in text
-            )
-            matches = [item for item in all_choices if item["value"] in expected]
-            assert all(item["count"] == expected[item["value"]] for item in matches)
-            assert engine.column_values(source, "value", search=search) == (matches, False)
+    all_choices, all_more = engine.column_values(source, "value")
+    assert not all_more
+    displayed = [str(cell["display"]) for cell in cells if not cell["isNull"]]
+    # Search matches only the grid text, never Pandas' own text such as NaT for the minimum tick.
+    for search in dict.fromkeys([*displayed, "NaT", "0 days", "[not-a-duration]"]):
+        expected = Counter(label for label in displayed if search in label)
+        matches = [item for item in all_choices if item["value"] in expected]
+        assert all(item["count"] == expected[item["value"]] for item in matches)
+        assert engine.column_values(source, "value", search=search) == (matches, False)
     for empty in (source.iloc[:0], source.iloc[-2:]):
         assert engine.column_values(empty, "value") == ([], False)
         assert engine.column_values(empty, "value", search=positive) == ([], False)

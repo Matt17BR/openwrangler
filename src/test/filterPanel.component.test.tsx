@@ -230,7 +230,7 @@ describe("FilterPanel", () => {
       includeNulls: true,
       includeNaN: false
     });
-    fireEvent.click(screen.getByRole("checkbox", { name: /0 days 00:00:00.000001/u }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /0:00:00.000001/u }));
     expect(onApply.mock.lastCall?.[0].filters[0].valueFilter).toMatchObject({
       selectedValues: [valueActionChoices[1].selectionValue],
       includeNulls: true,

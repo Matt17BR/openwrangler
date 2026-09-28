@@ -1278,7 +1278,7 @@ describe("DataGrid", () => {
     fireEvent.click(unavailable);
     fireEvent.keyDown(unavailable, { key: "Enter" });
     expect(onApplyProfileFilter).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /^Filter city to 0 days 00:00:00.000001;/u }));
+    fireEvent.click(screen.getByRole("button", { name: /^Filter city to 0:00:00.000001;/u }));
     expect(onApplyProfileFilter.mock.lastCall?.[0].valueFilter.selectedValues).toEqual([
       valueActionChoices[1].selectionValue
     ]);

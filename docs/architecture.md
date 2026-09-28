@@ -861,8 +861,7 @@ Native count failures remain failures.
 Only object inputs whose count index became temporal enter the guard. Its existing scan admits restoring columns
 containing only built-in Python timedeltas and missing values to Python timedelta count labels. Restoration allocates
 Python values and an object index proportional to the distinct keys, which can include every row, without another
-source scan. Profiles and choices retain source spelling, native counts and selection keys; row-text search still
-runs before counting. Custom duration subclasses retain their native labels.
+source scan. Profiles and choices retain native counts and selection keys; row-text search still runs before counting.
 Current Pandas counts that retain an object index and native temporal columns bypass it. For these object columns,
 search and viewing filters narrow the input before counting; refusal leaves paging, source data and session revision intact.
 
@@ -874,18 +873,10 @@ Native NumPy `timedelta64` columns, categories with that native dtype, and dicti
 Unused categories are dropped after the search, so they never fill search results.
 Duration search uses the same scalar labels published in choices, including whole-day clocks and values outside the
 nanosecond range. It retains the full native distinct-count state before searching, without a full-source label array.
-Arrow-backed duration categories also search their counted display labels and native text for observed categories.
-Raw aliases preserve original positive matches. A nonempty search uses
-a mask across native category counts, then takes and formats only observed category values. Strings and the positional
-lookup grow with observed categories, without expanding strings to every row or bounding them by the requested limit.
-Unsearched choices skip this allocation. Non-text missing entries are not aliases; corrected display labels remain searchable.
-Direct and dictionary-encoded Arrow duration columns search counted display labels and native raw text after the
-existing dictionary decode. This preserves the corrected label for a valid minimum tick without accepting its
-misleading native `NaT` spelling. Native counts and raw text grow with all distinct values before filtering, even for
-an absent query; unsearched choices skip raw-text allocation. Supported Sparse durations also search counted labels.
-Multiplied Sparse search retains native clock aliases from the distinct-count index, allocating strings proportional
-to distinct values only for searched choices. Ordinary whole-day Sparse labels need no alias array. Count-first search
-retains full native counts even for selective or absent queries. Object durations keep their row-text search behavior.
+Arrow-backed, direct and dictionary-encoded Arrow and supported Sparse durations search only their counted display
+labels, so a valid minimum tick matches its corrected label and never Pandas' `NaT` spelling. Labels grow with
+distinct counted values, even for an absent query. Count-first search retains full native counts even for selective
+or absent queries. Object durations search their row text, which uses the same Python spelling.
 Multiplied fixed-unit Sparse pages and simple Sparse index labels iterate native NumPy values from the bounded slice;
 supported count indexes use the same output owner. Source storage, fills and indexes remain unchanged.
 Categorical timestamp and duration output reads stored values through category codes, preserving Arrow validity and
@@ -974,8 +965,8 @@ labels, categorical null spelling, row IDs and source index storage remain uncha
 Duration output reads native ticks before Pandas can overflow during boxing. Page conversion is limited to the
 projection and row slice; profile conversion follows the top-ten count limit. Choice ranking formats native count
 labels while retaining only the bounded candidates and their original positions for token validation.
-Dictionary durations in seconds, milliseconds and microseconds retain Python timedelta spelling where its range
-permits it. Nanosecond labels stay unchanged; wider values retain native duration text and the existing selection range limit.
+Arrow and dictionary durations in every unit use the shared Python duration spelling, including values outside the
+Python timedelta range; selection keeps its existing range limit.
 Profile extrema use native aggregation. Supported Fill methods retain native temporal donors and directional
 anchors in live and generated code without changing source arrays.
 Using the minimum nanosecond timestamp as a filter value remains unsupported under the existing microsecond input precision.
@@ -1205,7 +1196,7 @@ resident-frame work without another source scan or conversion through another da
 
 Datetime cells and labels use Python ISO text with exact offset seconds: whole seconds omit the fraction, and other
 values show six digits, or nine when nanoseconds remain. This does not replace native timezone offsets with Python's
-timezone data. Duration text uses Polars' signed-unit format, including at the Int64 minimum. Datetime value search
+timezone data. Duration text uses the shared Python duration spelling, including at the Int64 minimum. Datetime value search
 accepts either `T` or a space between the date and time, and preserves searches for padded fractions such as `.123000`.
 The shared duration raw conversion and typed-cell selection decoder retain the
 existing microsecond filter precision and minute-offset limit: unsupported values remain visible but refuse
@@ -2280,6 +2271,13 @@ Python mapping output, including bounded Pandas row-index labels, refuses distin
 representation before publication; otherwise, key spelling and insertion order are preserved. This cannot recover
 entries lost earlier by native engine boxing.
 User-derived keys in extension and webview state are held in `Map` or `Set`, not dynamic object properties.
+
+Every Python engine displays a duration as Python's `timedelta` does, such as `-1 day, 23:59:58.500000`. A fraction
+finer than microseconds grows three digits at a time, so remaining nanoseconds show nine digits. Pages, profiles,
+value choices and their ranking, value search and Find use this one text; native engine spellings, such as Pandas
+`0 days 00:00:00` or Polars `1m 40s`, are not search aliases. DuckDB builds the text in SQL from interval parts,
+counting a month as 30 days. R keeps difftime text with its unit, such as `90 secs`, and CSV export keeps each
+engine's native text.
 
 Python duration scalars use exact seconds at this boundary. Ordinary numeric seconds remain numeric when their
 decimal representation preserves the value within the portable microsecond filter syntax; other values use exact
