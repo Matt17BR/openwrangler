@@ -2694,6 +2694,42 @@ def test_pandas_schema_reuses_object_column_facts_only_for_the_same_values(monke
     assert scanned == ["text", "count", "text", "count", "count"]
 
 
+@pytest.mark.parametrize("parallel", [False, True])
+def test_pandas_sorted_rows_keep_object_column_facts(parallel: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "text": pd.Series(["b", None, "a"], dtype=object),
+            "mixed": pd.Series([2, "x", 1.5], dtype=object),
+            "count": pd.Series([3, 1, 2], dtype=object),
+            "key": [3, 1, 2],
+        }
+    )
+    frame = engine.ensure_row_ids(source, "sorted")
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    rule = {"column": lineage[3], "direction": "asc", "nulls": "last"}
+    operation = bind_step(
+        validate_step({"id": "sort", "kind": "sortRows", "params": {"rules": [rule]}}), schema, lineage
+    )
+    if parallel:
+        monkeypatch.setattr(pandas_engine_module, "_PANDAS_PARALLEL_TAKE_CELLS", 0)
+    scanned: list[str] = []
+    native = pandas_engine_module._pandas_has_missing
+
+    def counted(series: Any) -> bool:
+        scanned.append(str(series.name))
+        return native(series)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_has_missing", counted)
+    result = engine.apply_transform(frame, operation)
+
+    assert result["text"].tolist() == [None, "a", "b"]
+    assert engine.schema(result) == schema
+    assert "text" not in scanned and "mixed" not in scanned and "count" not in scanned
+    assert PandasEngine().schema(result) == schema
+
+
 @pytest.mark.parametrize(
     "case",
     [
