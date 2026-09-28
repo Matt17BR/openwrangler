@@ -44,6 +44,7 @@ page_window <- function(
 request_id <- "f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f0"
 source_environment <- new.env(parent = baseenv())
 latest_capture <- NULL
+editing_capture <- NULL
 
 # The agent accepts a frame-contract implementation. Record each immutable
 # operation result so this owner compares the real live dataframe with the
@@ -74,6 +75,12 @@ recording_contract$capture_custom_code_result <- function(...) {
 real_capture_pivot_longer_at <- recording_contract$capture_pivot_longer_at
 recording_contract$capture_pivot_longer_at <- function(...) {
   record_capture(real_capture_pivot_longer_at(...))
+}
+# Step results may share unchanged columns with the private frame a session starts editing, so record that frame.
+real_isolate_capture <- recording_contract$isolate_capture
+recording_contract$isolate_capture <- function(...) {
+  editing_capture <<- real_isolate_capture(...)
+  editing_capture
 }
 real_capture_pivot_wider_at <- recording_contract$capture_pivot_wider_at
 recording_contract$capture_pivot_wider_at <- function(...) {
@@ -661,6 +668,7 @@ run_catalog_case <- function(case, kind, index, library = "base") {
   assert_identical(opened$kind, "page", sprintf("%s %s did not open: %s", library, kind, if (is.null(opened$message)) "no diagnostic" else opened$message))
   assert_identical(opened$library, library, "open did not confirm the selected library")
   latest_capture <<- NULL
+  editing_capture <<- NULL
   preview <- dispatch("previewStep", list(
     sessionId = original_session, revision = 0L, step = step, page = page_window()
   ))
@@ -668,6 +676,13 @@ run_catalog_case <- function(case, kind, index, library = "base") {
     preview$kind,
     "stepPreview",
     sprintf("%s did not preview: %s", kind, if (is.null(preview$message)) "no diagnostic" else preview$message)
+  )
+  assert_true(!is.null(editing_capture), sprintf("%s %s did not start editing from a private frame", library, kind))
+  committed_capture <- editing_capture
+  assert_frame_identical(
+    get("snapshot", envir = committed_capture, inherits = FALSE),
+    unserialize(source_before),
+    sprintf("%s %s preview changed the frame it started from", library, kind)
   )
   assert_true(is.character(preview$code) && length(preview$code) == 1L, sprintf("%s omitted generated code", kind))
   assert_true(length(parse(text = preview$code, keep.source = FALSE)) > 0L, sprintf("%s emitted unparsable code", kind))
@@ -678,6 +693,11 @@ run_catalog_case <- function(case, kind, index, library = "base") {
   ))
   if (identical(library, "base")) assert_identical(applied$action, "apply", sprintf("%s did not apply", kind))
   assert_identical(applied$code, preview$code, sprintf("%s changed generated code at apply", kind))
+  assert_frame_identical(
+    get("snapshot", envir = committed_capture, inherits = FALSE),
+    unserialize(source_before),
+    sprintf("%s %s apply changed the frame its step started from", library, kind)
+  )
   assert_identical(
     serialize(get(variable_name, envir = source_environment), NULL, version = 3L),
     source_before,

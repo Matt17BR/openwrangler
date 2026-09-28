@@ -1923,10 +1923,12 @@ columns are copied through R serialization. A managed file frame exists only ins
 first draft shares the loaded vectors. Captured frames are never modified in place. An operation result built from
 captured or new vectors is captured without a second copy; Custom Code results, captures that restore element names,
 and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Rename, Clone,
-Drop, Select, Look Up Columns and row selections share their input's column vectors. A data.table input, or a
-`data.table` library run over columns with element names, still copies first because data.table changes its container
-and strips element names by reference. A derived capture skips rescanning clock, factor and nested columns identical to
-its already validated source column, and a row-preserving result inherits the source's validated row identities.
+Drop, Select, Look Up Columns, row selections and the steps that replace or add whole columns, such as Fill Missing
+Values, Convert Type, Formula Column, Format Datetime, One-hot Encode, Multi-label Binarize and the text and number
+steps, share their input's other column vectors. A data.table input, or a `data.table` library run over columns
+with element names, still copies first because data.table changes its container and strips element names by
+reference. A derived capture skips rescanning clock, factor and nested columns identical to its already validated
+source column, and a row-preserving result inherits the source's validated row identities.
 Committed and draft results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops
 inert column-element names according to native data-table copy semantics; the explicit retention exceptions are
 described below.
