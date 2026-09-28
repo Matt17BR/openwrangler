@@ -830,7 +830,11 @@ stay in source order. A later page or a read that needs every position sorts the
 with Arrow's stable sort. Multi-column sorts use the same stable sort for each such column.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
-source. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+source. Other Pandas steps never write into their input's arrays. Each starts from a shallow copy, replaces or adds
+whole columns and joins added columns without copying the rest, so a revision shares unchanged columns with the one
+before it. A captured source or a Custom Code result may share arrays with objects outside the session, so without
+Copy-on-Write it is copied once when it receives private row identities. Typed null, NaN, decimal, datetime, and
+wide-integer behavior is normalized at the protocol boundary.
 
 Pandas literal Split limits tokenization to the selected field or requested output count in live and generated code.
 It preserves the selected index, empty fields and null results, discarding one possible remainder.

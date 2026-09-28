@@ -1413,14 +1413,14 @@ class PandasEngine(DataFrameEngine):
         df = self.normalize(frame)
         return {"rows": int(df.shape[0]), "columns": len(self._visible_positions(df))}
 
-    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+    def ensure_row_ids(self, frame: Any, token: str, *, owned: bool = False) -> Any:
         import numpy as np
 
         df = self.normalize(frame)
         if self._row_id_column(df) is not None:
             return df
         # Copy-on-Write already isolates a shallow copy from the caller's frame.
-        result = df.copy(deep=not _pandas_copy_on_write())
+        result = df.copy(deep=not owned and not _pandas_copy_on_write())
         result[f"{INTERNAL_ROW_ID_PREFIX}{token}"] = np.arange(len(result), dtype=np.int64)
         return result
 
@@ -2012,7 +2012,9 @@ class PandasEngine(DataFrameEngine):
         import numpy as np
         import pandas as pd
 
-        df = self.normalize(frame).copy()
+        # Transforms replace or add whole columns and never write into input arrays, so a shallow
+        # copy isolates the input even without Copy-on-Write.
+        df = self.normalize(frame).copy(deep=False)
         kind = str(step["kind"])
         params = step["params"]
         if kind == "sortRows":
@@ -2125,10 +2127,10 @@ class PandasEngine(DataFrameEngine):
             selected = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             row_id_position = self._row_id_position(df)
             positions = [*([row_id_position] if row_id_position is not None else []), *selected]
-            return df.iloc[:, positions].copy()
+            return df.iloc[:, positions].copy(deep=False)
         if kind == "dropColumns":
             removed = {self._bound_frame_position(df, column, kind) for column in params["columns"]}
-            return df.iloc[:, [position for position in range(df.shape[1]) if position not in removed]].copy()
+            return df.iloc[:, [position for position in range(df.shape[1]) if position not in removed]].copy(deep=False)
         if kind == "renameColumn":
             position = self._bound_frame_position(df, params["column"], kind)
             columns = list(df.columns)
@@ -2137,7 +2139,7 @@ class PandasEngine(DataFrameEngine):
             return df
         if kind == "cloneColumn":
             position = self._bound_frame_position(df, params["column"], kind)
-            return pd.concat([df, df.iloc[:, position].rename(params["newName"])], axis=1)
+            return _pandas_concat_columns([df, df.iloc[:, position].rename(params["newName"])])
         if kind == "castColumn":
             position = self._bound_frame_position(df, params["column"], kind)
             conversion, target = _pandas_cast_strategy(params["dtype"])
@@ -2173,15 +2175,15 @@ class PandasEngine(DataFrameEngine):
                 else formula_scalar_value(params["value"])
             )
             result = _pandas_formula_result(left, right, params["operator"])
-            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
+            return _pandas_concat_columns([df, result.rename(params["newColumn"])])
         if kind == "textLength":
             position = self._bound_frame_position(df, params["column"], kind)
             result = _pandas_string_values(df.iloc[:, position]).str.len()
-            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
+            return _pandas_concat_columns([df, result.rename(params["newColumn"])])
         if kind == "denseRank":
             position = self._bound_frame_position(df, params["column"], kind)
             result = _pandas_dense_rank(df.iloc[:, position], params["direction"])
-            return pd.concat([df, result.rename(params["newColumn"])], axis=1)
+            return _pandas_concat_columns([df, result.rename(params["newColumn"])])
         if kind == "oneHotEncode":
             visible_positions = self._visible_positions(df)
             positions = [
@@ -2210,16 +2212,18 @@ class PandasEngine(DataFrameEngine):
                     series.eq(value).fillna(False).astype("int8").rename(name) for value, name in outputs
                 )
                 existing_names.update(name for _, name in outputs)
-            encoded = pd.concat(encoded_parts, axis=1) if encoded_parts else pd.DataFrame(index=df.index)
+            encoded = _pandas_concat_columns(encoded_parts) if encoded_parts else pd.DataFrame(index=df.index)
             encoded = encoded.iloc[
                 :, sorted(range(encoded.shape[1]), key=lambda position: str(encoded.columns[position]))
             ]
             base = (
-                df.iloc[:, [position for position in range(df.shape[1]) if position not in set(positions)]].copy()
+                df.iloc[:, [position for position in range(df.shape[1]) if position not in set(positions)]].copy(
+                    deep=False
+                )
                 if params.get("dropOriginal", True)
                 else df
             )
-            return pd.concat([base, encoded], axis=1)
+            return _pandas_concat_columns([base, encoded])
         if kind == "multiLabelBinarize":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2231,12 +2235,12 @@ class PandasEngine(DataFrameEngine):
             encoded = encoded.iloc[:, sorted(range(encoded.shape[1]), key=lambda item: str(encoded.columns[item]))]
             encoded = encoded.add_prefix(params.get("prefix", f"{column}_")).astype("int8")
             base = (
-                df.iloc[:, [item for item in range(df.shape[1]) if item != position]].copy()
+                df.iloc[:, [item for item in range(df.shape[1]) if item != position]].copy(deep=False)
                 if params.get("dropOriginal", False)
                 else df
             )
             ensure_output_columns_available(base.columns, encoded.columns, "Multi-label binarization")
-            return pd.concat([base, encoded], axis=1)
+            return _pandas_concat_columns([base, encoded])
         if kind == "splitTextColumns":
             position = self._bound_frame_position(df, params["column"], kind)
             output_names = list(params["newColumns"])
@@ -2244,10 +2248,12 @@ class PandasEngine(DataFrameEngine):
 
             def split_columns(values: Any) -> Any:
                 parts = _pandas_string_values(values).str.split(params["delimiter"], n=len(output_names), regex=False)
-                return pd.concat([parts.str.get(index).rename(name) for index, name in enumerate(output_names)], axis=1)
+                return _pandas_concat_columns(
+                    [parts.str.get(index).rename(name) for index, name in enumerate(output_names)]
+                )
 
             generated = _pandas_each_distinct(_pandas_scalar_values(df.iloc[:, position]), split_columns)
-            return pd.concat([df, generated], axis=1)
+            return _pandas_concat_columns([df, generated])
         if kind == "pivotLonger":
             positions = [self._bound_frame_position(df, column, kind) for column in params["columns"]]
             names = [bound_column_name(column, kind) for column in params["columns"]]
@@ -2268,18 +2274,18 @@ class PandasEngine(DataFrameEngine):
                 for position in range(df.shape[1])
                 if position not in selected and not is_internal_row_id_label(df.columns[position])
             ]
-            fragments = []
-            for position, name in zip(positions, names, strict=True):
-                fragment = df.iloc[:, unselected].reset_index(drop=True).copy()
-                # A scalar assignment to a MultiIndex-column frame is padded
-                # into that MultiIndex and can overwrite a matching top-level
-                # label. Preserve retained raw labels in a plain object Index
-                # before appending the two exact public output names.
-                fragment.columns = pd.Index(list(fragment.columns), dtype="object", tupleize_cols=False)
-                fragment[params["labelColumn"]] = pd.Series([name] * len(df), dtype="string")
-                fragment[params["valueColumn"]] = df.iloc[:, position].reset_index(drop=True)
-                fragments.append(fragment)
-            return pd.concat(fragments, axis=0, ignore_index=True)
+            repeats = len(positions)
+            columns = [
+                *(pd.concat([df.iloc[:, position]] * repeats, ignore_index=True) for position in unselected),
+                pd.Series(pd.array(names, dtype="string").take(np.repeat(np.arange(repeats), len(df)))),
+                pd.concat([df.iloc[:, position] for position in positions], ignore_index=True),
+            ]
+            result = pd.DataFrame(dict(enumerate(columns)), copy=False)
+            # Retained MultiIndex labels stay whole tuples beside the two public output names.
+            result.columns = pd.Index(
+                [*(df.columns[position] for position in unselected), *outputs], dtype="object", tupleize_cols=False
+            )
+            return result
         if kind == "pivotWider":
             names_position = self._bound_frame_position(df, params["namesFrom"], kind)
             values_position = self._bound_frame_position(df, params["valuesFrom"], kind)
@@ -2300,7 +2306,7 @@ class PandasEngine(DataFrameEngine):
                 return source.str.extract(f"({params['pattern']})", expand=True).iloc[:, params["group"]]
 
             extracted = _pandas_each_distinct(_pandas_scalar_values(df.iloc[:, position]), extract)
-            return pd.concat([df, extracted.rename(params["newColumn"])], axis=1)
+            return _pandas_concat_columns([df, extracted.rename(params["newColumn"])])
         if kind == "lookupColumns":
             lookup = self._lookup_frame(params["file"]["path"], params["file"]["format"])
             keys = [
@@ -2355,7 +2361,7 @@ class PandasEngine(DataFrameEngine):
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
-            return pd.concat([df, result.rename(target)], axis=1)
+            return _pandas_concat_columns([df, result.rename(target)])
         if kind == "minMaxScale":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2364,7 +2370,7 @@ class PandasEngine(DataFrameEngine):
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
-            return pd.concat([df, result.rename(target)], axis=1)
+            return _pandas_concat_columns([df, result.rename(target)])
         if kind in {"roundNumber", "floorNumber", "ceilNumber"}:
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2377,7 +2383,7 @@ class PandasEngine(DataFrameEngine):
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
-            return pd.concat([df, result.rename(target)], axis=1)
+            return _pandas_concat_columns([df, result.rename(target)])
         if kind == "formatDatetime":
             position = self._bound_frame_position(df, params["column"], kind)
             column = bound_column_name(params["column"], kind)
@@ -2389,7 +2395,7 @@ class PandasEngine(DataFrameEngine):
             if target is None or target == column:
                 df.isetitem(position, result)
                 return df
-            return pd.concat([df, result.rename(target)], axis=1)
+            return _pandas_concat_columns([df, result.rename(target)])
         if kind == "groupBy":
             key_positions = [self._bound_frame_position(df, reference, kind) for reference in params["keys"]]
             aggregations = [
@@ -6321,7 +6327,17 @@ def _pandas_append_result(df: Any, result: Any, name: str) -> Any:
     import pandas as pd
 
     series = result if isinstance(result, pd.Series) else pd.Series(result, index=df.index)
-    return pd.concat([df, series.rename(name)], axis=1)
+    return _pandas_concat_columns([df, series.rename(name)])
+
+
+def _pandas_concat_columns(objects: Any) -> Any:
+    import pandas as pd
+
+    # Without Copy-on-Write, concat copies every input column unless told not to. With it, the
+    # copy keyword is deprecated and unchanged columns are already shared lazily.
+    if _pandas_copy_on_write():
+        return pd.concat(objects, axis=1)
+    return pd.concat(objects, axis=1, copy=False)
 
 
 def _pandas_by_example_expression(

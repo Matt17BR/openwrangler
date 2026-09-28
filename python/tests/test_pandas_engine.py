@@ -2423,3 +2423,180 @@ def test_pandas_arrow_temporal_parquet_preserves_validity_through_public_history
     finally:
         manager.close_all()
     assert source_path.read_bytes() == source_bytes
+
+
+def test_pandas_transforms_never_write_into_their_input() -> None:
+    engine = PandasEngine()
+    source = engine.ensure_row_ids(
+        pd.DataFrame(
+            {
+                "group": pd.Series(["a", "b", None, "a", "c"], dtype=object),
+                "text": pd.Series([" alpha-1 ", "Beta-2", None, "alpha-1", "gamma-33"], dtype="string"),
+                "tags": pd.Series(["red|blue", "blue", None, "red", ""], dtype=object),
+                "value": [1.5, np.nan, 2.5, 1.5, -3.0],
+                "other": [0.5, 4.0, np.nan, 2.0, 1.0],
+                "count": pd.array([1, None, 3, 1, 5], dtype="Int64"),
+                "whole": np.array([3, 1, 2, 4, 6], dtype=np.int64),
+                "flag": [True, False, True, True, False],
+                "stamp": pd.to_datetime(
+                    ["2024-01-02 03:04", None, "2024-03-04 00:00", "2024-01-02 03:04", "2024-05-06 00:00"]
+                ),
+                "category": pd.Categorical(["x", "y", None, "x", "y"]),
+                "items": pd.Series([[1, 2], [3], None, [], [4]], dtype=object),
+                "label": pd.Series(["p", "q", "p", "q", "p"], dtype=object),
+            }
+        ),
+        "source",
+    )
+    before = source.copy(deep=True)
+    nested = [list(value) if isinstance(value, list) else value for value in source["items"]]
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    ref = {reference["name"]: reference for reference in lineage}
+    rule = {"column": ref["value"], "direction": "desc", "nulls": "last"}
+    group_filter = {
+        "column": ref["group"],
+        "type": "string",
+        "predicates": [{"kind": "predicate", "operator": "equals", "value": "a"}],
+    }
+    steps: list[tuple[str, dict[str, Any]]] = [
+        ("sortRows", {"rules": [rule, {"column": ref["group"], "direction": "asc", "nulls": "first"}]}),
+        ("filterRows", {"filterModel": {"filters": [group_filter], "sort": [rule]}}),
+        (
+            "conditionalColumn",
+            {
+                "column": ref["value"],
+                "columnType": "float",
+                "predicate": {"kind": "predicate", "operator": "gte", "value": 1},
+                "newColumn": "high",
+                "resultType": "string",
+                "trueValue": "yes",
+                "falseValue": "no",
+                "missingValue": None,
+            },
+        ),
+        ("dropMissingRows", {"columns": [ref["value"], ref["group"]], "how": "any"}),
+        ("fillMissingValues", {"column": ref["value"], "replacement": {"kind": "float", "value": "0"}}),
+        ("fillMissingValues", {"column": ref["count"], "replacement": {"kind": "median"}}),
+        ("fillMissingValues", {"column": ref["group"], "replacement": {"kind": "mostFrequent"}}),
+        (
+            "fillMissingValues",
+            {"column": ref["value"], "replacement": {"kind": "fallbackColumns", "columns": [ref["other"]]}},
+        ),
+        (
+            "fillMissingValues",
+            {
+                "column": ref["value"],
+                "replacement": {
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [{"column": ref["whole"], "direction": "asc", "nulls": "last"}],
+                },
+            },
+        ),
+        (
+            "fillMissingValues",
+            {
+                "column": ref["value"],
+                "replacement": {"kind": "groupedStatistic", "statistic": "mean", "keys": [ref["group"]]},
+            },
+        ),
+        (
+            "fillMissingValues",
+            {"column": ref["other"], "replacement": {"kind": "linearInterpolation", "coordinate": ref["whole"]}},
+        ),
+        ("dropDuplicates", {"columns": [ref["group"]], "keep": "first"}),
+        ("markDuplicates", {"columns": [ref["group"], ref["value"]], "newColumn": "duplicate"}),
+        ("selectColumns", {"columns": [ref["value"], ref["group"]]}),
+        ("dropColumns", {"columns": [ref["tags"]]}),
+        ("renameColumn", {"column": ref["group"], "newName": "team"}),
+        ("cloneColumn", {"column": ref["value"], "newName": "value copy"}),
+        ("castColumn", {"column": ref["count"], "dtype": "float"}),
+        ("castColumn", {"column": ref["value"], "dtype": "integer"}),
+        ("castColumn", {"column": ref["whole"], "dtype": "string"}),
+        ("castColumn", {"column": ref["stamp"], "dtype": "date"}),
+        ("formula", {"leftColumn": ref["value"], "operator": "add", "value": 2, "newColumn": "plus"}),
+        (
+            "formula",
+            {"leftColumn": ref["value"], "operator": "multiply", "rightColumn": ref["whole"], "newColumn": "product"},
+        ),
+        ("textLength", {"column": ref["text"], "newColumn": "length"}),
+        ("denseRank", {"column": ref["value"], "direction": "asc", "newColumn": "rank"}),
+        ("oneHotEncode", {"columns": [ref["group"]]}),
+        ("multiLabelBinarize", {"column": ref["tags"], "delimiter": "|", "dropOriginal": True}),
+        ("splitTextColumns", {"column": ref["text"], "delimiter": "-", "newColumns": ["left", "right"]}),
+        ("pivotLonger", {"columns": [ref["value"], ref["other"]], "labelColumn": "measure", "valueColumn": "amount"}),
+        (
+            "pivotWider",
+            {
+                "namesFrom": ref["label"],
+                "valuesFrom": ref["whole"],
+                "outputs": [
+                    {"key": engine_base.typed_selection_value(key, "string"), "name": f"{key}_whole"}
+                    for key in ["p", "q"]
+                ],
+            },
+        ),
+        ("extractRegexGroup", {"column": ref["text"], "pattern": "([0-9]+)", "group": 1, "newColumn": "digits"}),
+        (
+            "replaceMatches",
+            {
+                "columns": [ref["text"]],
+                "find": "a",
+                "replacement": "b",
+                "matchCase": False,
+                "wholeCell": False,
+                "spelling": "python",
+            },
+        ),
+        ("findReplace", {"column": ref["text"], "find": "-", "replacement": "+", "regex": False}),
+        ("stripText", {"column": ref["text"]}),
+        ("splitText", {"column": ref["text"], "delimiter": "-", "index": 0, "newColumn": "part"}),
+        ("capitalizeText", {"column": ref["text"]}),
+        ("lowerText", {"column": ref["group"]}),
+        ("upperText", {"column": ref["text"]}),
+        ("minMaxScale", {"column": ref["value"]}),
+        ("roundNumber", {"column": ref["value"], "decimals": 0}),
+        ("floorNumber", {"column": ref["other"]}),
+        ("ceilNumber", {"column": ref["value"]}),
+        ("formatDatetime", {"column": ref["stamp"], "format": "%Y"}),
+        (
+            "groupBy",
+            {
+                "keys": [ref["group"]],
+                "aggregations": [
+                    {"column": ref["value"], "operation": "sum", "alias": "total"},
+                    {"column": ref["text"], "operation": "first", "alias": "first text"},
+                ],
+            },
+        ),
+        (
+            "byExample",
+            {
+                "sourceColumns": [ref["whole"]],
+                "newColumn": "half",
+                "examples": [{"inputs": [2], "output": 1}, {"inputs": [6], "output": 3}],
+            },
+        ),
+        (
+            "customCode",
+            {"code": "df.iloc[0, 0] = 'changed'\ndf['items'].iloc[0].append(99)\nresult = df"},
+        ),
+    ]
+    # Pivot wider keeps every other column as an identifier, which cannot be a list.
+    flat = source.drop(columns="items")
+    flat_before = flat.copy(deep=True)
+    flat_schema = engine.schema(flat)
+    flat_lineage = [reference for reference in lineage if reference["name"] != "items"]
+    for index, (kind, params) in enumerate(steps):
+        frame, expected, frame_schema, frame_lineage = (
+            (flat, flat_before, flat_schema, flat_lineage)
+            if kind == "pivotWider"
+            else (source, before, schema, lineage)
+        )
+        public = validate_step({"id": f"step-{index}", "kind": kind, "params": params})
+        operation = bind_step(public, frame_schema, frame_lineage)
+        engine.validate_transform_preflight(frame, operation, engine.shape(frame))
+        engine.apply_transform(frame, operation)
+        pd.testing.assert_frame_equal(frame, expected, obj=f"{kind} input")
+        assert [list(value) if isinstance(value, list) else value for value in source["items"]] == nested, kind
