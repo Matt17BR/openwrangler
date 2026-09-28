@@ -31,7 +31,7 @@ maximum_error_bytes <- 4096L
 maximum_scanned_bindings <- 4096L
 maximum_variables <- 256L
 maximum_name_bytes <- 1024L
-identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"
 
 bounded_message <- function(error, fallback) {
   value <- conditionMessage(error)
@@ -121,7 +121,7 @@ initialize <- function() {
   if (
     (is.null(file_source) && length(source_names) < 1L) ||
       length(source_names) > maximum_source_units ||
-      any(!grepl("^[0-9]{8}\\.R$", source_names, perl = TRUE))
+      any(!grepl("^[0-9]{8}\\.R\\z", source_names, perl = TRUE))
   ) {
     stop("The R document contains an invalid set of source units.", call. = FALSE)
   }

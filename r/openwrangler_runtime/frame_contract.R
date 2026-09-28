@@ -255,7 +255,7 @@ openwrangler_r_frame_contract <- local({
     if (!base::is.character(value) || base::length(value) != 1L || base::is.na(value)) {
       abort("invalid-view-value", base::sprintf("%s must be an ISO datetime", label))
     }
-    matched <- base::regexec("^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:?[0-9]{2})?$", value, perl = TRUE)
+    matched <- base::regexec("^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:?[0-9]{2})?\\z", value, perl = TRUE)
     parts <- base::regmatches(value, matched)[[1L]]
     digits <- base::switch(semantics$precision, millisecond = 3L, microsecond = 6L, nanosecond = 9L)
     if (base::length(parts) == 0L || base::nchar(parts[[4L]]) > digits + 1L ||
@@ -646,7 +646,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   is_canonical_column_id <- function(value) {
-    source_match <- regexec("^r:c:(0|[1-9][0-9]*)$", value, perl = TRUE)
+    source_match <- regexec("^r:c:(0|[1-9][0-9]*)\\z", value, perl = TRUE)
     source_parts <- regmatches(value, source_match)[[1L]]
     if (length(source_parts) != 0L) {
       ordinal <- suppressWarnings(as.double(source_parts[[2L]]))
@@ -654,7 +654,7 @@ openwrangler_r_frame_contract <- local({
     }
 
     derived_match <- regexec(
-      "^c:step:([^\\x00]+):(0|[1-9][0-9]*)$",
+      "^c:step:([^\\x00]+):(0|[1-9][0-9]*)\\z",
       value,
       perl = TRUE
     )
@@ -2395,7 +2395,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       abort("invalid-view-value", sprintf("%s must be a decimal integer", label))
     }
-    if (!grepl("^[+-]?[0-9]+$", text, perl = TRUE)) {
+    if (!grepl("^[+-]?[0-9]+\\z", text, perl = TRUE)) {
       abort("invalid-view-value", sprintf("%s must be a decimal integer", label))
     }
     negative <- startsWith(text, "-")
@@ -2451,10 +2451,10 @@ openwrangler_r_frame_contract <- local({
     } else {
       abort("invalid-view-value", sprintf("%s must be a decimal number", label))
     }
-    if (allow_infinity && grepl("^(?:[+-]?Infinity|-?inf)$", text, perl = TRUE)) {
+    if (allow_infinity && grepl("^(?:[+-]?Infinity|-?inf)\\z", text, perl = TRUE)) {
       return(if (startsWith(text, "-")) -Inf else Inf)
     }
-    if (!grepl("^[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?$", text, perl = TRUE)) {
+    if (!grepl("^[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?\\z", text, perl = TRUE)) {
       abort("invalid-view-value", sprintf("%s must be a decimal number", label))
     }
     if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -2490,7 +2490,7 @@ openwrangler_r_frame_contract <- local({
 
   parse_date_key <- function(value, label) {
     text <- bounded_utf8(as.character(value), label)
-    if (!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", text, perl = TRUE)) {
+    if (!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", text, perl = TRUE)) {
       abort("invalid-view-value", sprintf("%s must use YYYY-MM-DD", label))
     }
     if (identical(substring(text, 1L, 4L), "0000")) {
@@ -2504,7 +2504,7 @@ openwrangler_r_frame_contract <- local({
   parse_datetime_key <- function(value, semantics, label) {
     text <- bounded_utf8(as.character(value), label)
     match <- regexec(
-      "^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$",
+      "^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?\\z",
       text,
       perl = TRUE
     )
@@ -2590,11 +2590,11 @@ openwrangler_r_frame_contract <- local({
 
   parse_duration_seconds <- function(value, label) {
     text <- bounded_utf8(as.character(value), label)
-    if (grepl("^[+-]?(?:[0-9]+(?:\\.[0-9]{0,6})?|\\.[0-9]{1,6})$", text, perl = TRUE)) {
+    if (grepl("^[+-]?(?:[0-9]+(?:\\.[0-9]{0,6})?|\\.[0-9]{1,6})\\z", text, perl = TRUE)) {
       validate_duration_microseconds(text, label)
       return(parse_finite_number(text, label))
     }
-    match <- regexec("^(?:(-?[0-9]+) days?, )?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,6}))?$", text, perl = TRUE)
+    match <- regexec("^(?:(-?[0-9]+) days?, )?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,6}))?\\z", text, perl = TRUE)
     parts <- regmatches(text, match)[[1L]]
     if (length(parts) == 0L) abort("invalid-view-value", sprintf("%s is not a valid duration", label))
     hours <- as.integer(parts[[3L]])
@@ -7637,7 +7637,7 @@ openwrangler_r_frame_contract <- local({
     if (!identical(participation_pattern, pattern) && any(found)) {
       candidates <- which(found)
       full <- substring(utf8[candidates], starts[candidates, 1L], starts[candidates, 1L] + lengths[candidates, 1L] - 1L)
-      participation <- regexpr(paste0("^(?:", participation_pattern, ")$"), full, perl = TRUE, useBytes = FALSE)
+      participation <- regexpr(paste0("^(?:", participation_pattern, ")\\z"), full, perl = TRUE, useBytes = FALSE)
       found[candidates[as.integer(participation) == -1L]] <- FALSE
     }
     output <- rep.int(NA_character_, length(distinct))
@@ -7730,7 +7730,7 @@ openwrangler_r_frame_contract <- local({
       if (!identical(participation_pattern, pattern)) {
         full_match <- if (lengths[[1L]] == 0L) "" else substr(source, starts[[1L]], starts[[1L]] + lengths[[1L]] - 1L)
         participation <- regexec(
-          paste0("^(?:", participation_pattern, ")$"),
+          paste0("^(?:", participation_pattern, ")\\z"),
           full_match,
           perl = TRUE,
           useBytes = FALSE
@@ -9330,7 +9330,7 @@ openwrangler_r_frame_contract <- local({
 
   cast_date_text <- function(values) {
     result <- structure(rep(NA_real_, length(values)), class = "Date")
-    valid <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", values, perl = TRUE)
+    valid <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", values, perl = TRUE)
     if (any(valid)) {
       result[valid] <- suppressWarnings(as.Date(values[valid], format = "%Y-%m-%d"))
     }
@@ -9344,7 +9344,7 @@ openwrangler_r_frame_contract <- local({
       "YYYY-MM-DD" = "%Y-%m-%d"
     )
     iso <- identical(input_format, "YYYY-MM-DD")
-    pattern <- if (iso) "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" else "^[0-9]{2}/[0-9]{2}/[0-9]{4}$"
+    pattern <- if (iso) "^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z" else "^[0-9]{2}/[0-9]{2}/[0-9]{4}\\z"
     positive_year <- if (iso) !startsWith(values, "0000-") else !endsWith(values, "/0000")
     valid <- !is.na(values) & nchar(values, type = "bytes") == 10L &
       grepl(pattern, values, perl = TRUE) & positive_year
@@ -9375,7 +9375,7 @@ openwrangler_r_frame_contract <- local({
     distinct <- unique.default(days)
     dates <- structure(distinct, class = "Date")
     rendered <- pad_iso_years(format(dates, format = "%Y-%m-%d"))
-    canonical <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", rendered, perl = TRUE) &
+    canonical <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", rendered, perl = TRUE) &
       !startsWith(rendered, "0000-")
     if (any(canonical)) {
       reparsed <- suppressWarnings(as.Date(rendered[canonical], format = "%Y-%m-%d"))
@@ -9391,7 +9391,7 @@ openwrangler_r_frame_contract <- local({
     if (!any(present)) return(result)
     rendered <- pad_iso_years(format(result[present], tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE))
     canonical <- grepl(
-      "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}$",
+      "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}\\z",
       rendered,
       perl = TRUE
     ) & !startsWith(rendered, "0000-")
@@ -9405,13 +9405,13 @@ openwrangler_r_frame_contract <- local({
       class = c("POSIXct", "POSIXt"),
       tzone = "UTC"
     )
-    date_values <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", values, perl = TRUE)
+    date_values <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", values, perl = TRUE)
     if (any(date_values)) {
       parsed_dates <- suppressWarnings(as.Date(values[date_values], format = "%Y-%m-%d"))
       result[date_values] <- as.POSIXct(parsed_dates, tz = "UTC")
     }
     datetime_values <- !is.na(values) & grepl(
-      "^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z?$",
+      "^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z?\\z",
       values,
       perl = TRUE
     )
@@ -12707,7 +12707,7 @@ openwrangler_r_frame_contract <- local({
     pattern <- replace_matches_pattern(find, match_case, kind %in% c("datetime", "clock"))
     replacement <- base::enc2utf8(replacement)
     texts <- if (whole_cell) {
-      base::ifelse(base::grepl(base::paste0("^(?:", pattern, ")$"), labels, perl = TRUE), replacement, labels)
+      base::ifelse(base::grepl(base::paste0("^(?:", pattern, ")\\z"), labels, perl = TRUE), replacement, labels)
     } else {
       base::gsub(pattern, base::gsub("\\", "\\\\", replacement, fixed = TRUE), labels, perl = TRUE)
     }
@@ -12726,8 +12726,8 @@ openwrangler_r_frame_contract <- local({
       bad <- base::which(!ok)
       if (base::length(bad) != 0L) refuse(texts[[bad[[1L]]]], expected)
     }
-    whole_number <- "^[+-]?[0-9]+$"
-    moment <- "^([0-9]{4})-([0-9]{2})-([0-9]{2})(?:[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\\.([0-9]{1,9}))?)?)?(Z|[+-][0-9]{2}:[0-9]{2})?$"
+    whole_number <- "^[+-]?[0-9]+\\z"
+    moment <- "^([0-9]{4})-([0-9]{2})-([0-9]{2})(?:[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\\.([0-9]{1,9}))?)?)?(Z|[+-][0-9]{2}:[0-9]{2})?\\z"
     moment_parts <- function(expected_shape, digits, offset) {
       parts <- base::regmatches(texts, base::regexec(moment, texts, perl = TRUE))
       first_refused(base::lengths(parts) != 0L, expected_shape)
@@ -12740,7 +12740,7 @@ openwrangler_r_frame_contract <- local({
         first_refused(offsets != "", "a date and time with a UTC offset such as +00:00")
       }
       fraction <- base::substr(base::paste0(field(8L), "000000000"), 1L, 9L)
-      first_refused(base::grepl(base::paste0("^[0-9]{", digits, "}0*$"), fraction, perl = TRUE),
+      first_refused(base::grepl(base::paste0("^[0-9]{", digits, "}0*\\z"), fraction, perl = TRUE),
         if (digits == 0L) "a time in whole seconds" else base::sprintf("a time with at most %d decimal places", digits))
       days <- base::as.Date(base::paste0(field(2L), "-", field(3L), "-", field(4L)), format = "%Y-%m-%d")
       hours <- base::as.integer(field(5L, "00"))
@@ -12779,13 +12779,13 @@ openwrangler_r_frame_contract <- local({
       }, base::logical(1L), USE.NAMES = FALSE), "a whole number from -9223372036854775807 to 9223372036854775807")
       base::unclass(bit64::as.integer64(base::sub("^\\+", "", texts)))
     } else if (kind == "double") {
-      number <- "^(?:[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:[+-]?inf(?:inity)?|nan))$"
+      number <- "^(?:[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:[+-]?inf(?:inity)?|nan))\\z"
       first_refused(base::grepl(number, texts, perl = TRUE), "a number")
       numbers <- base::as.numeric(base::sub("(?i)^([+-]?)inf(inity)?$", "\\1Inf", base::sub("(?i)^nan$", "NaN", texts, perl = TRUE), perl = TRUE))
       first_refused(!base::is.infinite(numbers) | base::grepl("(?i)inf", texts, perl = TRUE), "a number this column can store")
       numbers
     } else if (kind == "date") {
-      shaped <- base::grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", texts, perl = TRUE) & !base::startsWith(texts, "0000-")
+      shaped <- base::grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", texts, perl = TRUE) & !base::startsWith(texts, "0000-")
       days <- base::rep(NA_real_, base::length(texts))
       days[shaped] <- base::as.double(base::as.Date(texts[shaped], format = "%Y-%m-%d"))
       shown <- base::rep("", base::length(texts))

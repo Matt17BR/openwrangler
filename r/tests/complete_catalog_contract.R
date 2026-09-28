@@ -1057,6 +1057,12 @@ local({
       verify = function(output, input) assert_identical(output$value, c("Stra\u00dfe", "\u00c9COLE", "ecole", NA, "ete"),
         "Replace folded a non-ASCII letter")
     ),
+    trailingNewline = list(
+      source = function() data.frame(value = c("abc", "abc\n", "\n", NA)),
+      step = function(frame, id) replace_step(frame, id, "value", "abc", "x", whole_cell = TRUE),
+      verify = function(output, input) assert_identical(output$value, c("x", "abc\n", "\n", NA),
+        "Whole-cell Replace matched a cell that ends with a newline")
+    ),
     precise = list(
       source = precise_source,
       step = function(frame, id) replace_step(frame, id, c("precise", "instant"), ".000000002", ".000000009", spelling = "r"),
