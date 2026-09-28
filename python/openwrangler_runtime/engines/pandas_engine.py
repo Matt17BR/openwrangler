@@ -5406,7 +5406,7 @@ def _pandas_csv_duration_text(series: Any) -> Any:
         values = series.to_numpy()
         converted = None
         for position, value in enumerate(values):
-            if isinstance(value, (timedelta, np.timedelta64)) and not pd.isna(value):
+            if isinstance(value, timedelta) or (isinstance(value, np.timedelta64) and not np.isnat(value)):
                 if converted is None:
                     converted = values.copy()
                 converted[position] = normalize_cell(value)["display"]
