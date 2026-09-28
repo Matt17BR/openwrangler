@@ -496,6 +496,17 @@ def _pandas_numeric_filter(series: Any, method: str, values: Sequence[Any], dura
     return result
 
 
+def _pandas_object_values_key(series: Any) -> tuple[Any, tuple[int, ...]]:
+    """The array that owns an object column's values, and a key for the values it holds."""
+    import numpy as np
+
+    values = series.to_numpy()
+    owner = values
+    while isinstance(owner.base, np.ndarray):
+        owner = owner.base
+    return owner, (id(owner), values.__array_interface__["data"][0], len(values), values.strides[0])
+
+
 def _pandas_take_rows(frame: Any, positions: Any) -> Any:
     import pandas as pd
 
@@ -1540,26 +1551,29 @@ class PandasEngine(DataFrameEngine):
         Finding them visits every value, so they are kept for the array that owns the column's values. Session arrays
         are never written in place, so the facts hold for as long as that array lives.
         """
-        import numpy as np
-
-        values = series.to_numpy()
-        owner = values
-        while isinstance(owner.base, np.ndarray):
-            owner = owner.base
-        key = (id(owner), values.__array_interface__["data"][0], len(values), values.strides[0])
-        known = vars(self).get("_object_facts")
-        if known is None:
-            known = vars(self).setdefault("_object_facts", {})
+        owner, key = _pandas_object_values_key(series)
+        known = vars(self).setdefault("_object_facts", {})
         cached = known.get(key)
         if cached is not None and cached[0]() is owner:
             return cached[1]
         facts = (_pandas_semantic_type(series), _pandas_has_missing(series))
+        self._remember_object_column_facts(owner, key, facts)
+        return facts
+
+    def _carry_object_column_facts(self, source: Any, target: Any) -> None:
+        """Give ``target`` the known facts of ``source``, whose values it holds in another order."""
+        owner, key = _pandas_object_values_key(source)
+        cached = vars(self).get("_object_facts", {}).get(key)
+        if cached is not None and cached[0]() is owner:
+            self._remember_object_column_facts(*_pandas_object_values_key(target), cached[1])
+
+    def _remember_object_column_facts(self, owner: Any, key: tuple[int, ...], facts: tuple[str, bool]) -> None:
+        known = vars(self).setdefault("_object_facts", {})
         if len(known) >= _MAX_OBJECT_COLUMN_FACTS:
             for stale in [item for item, (reference, _) in list(known.items()) if reference() is None]:
                 known.pop(stale, None)
         if len(known) < _MAX_OBJECT_COLUMN_FACTS:
             known[key] = (weakref.ref(owner), facts)
-        return facts
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         return self.normalize(self.filter_view(frame, model))
@@ -2665,6 +2679,8 @@ class PandasEngine(DataFrameEngine):
         ]
 
     def _apply_bound_sort_rules(self, frame: Any, rules: Any, operation: str) -> Any:
+        import numpy as np
+
         if not isinstance(rules, list) or not rules:
             raise EngineError(f"{operation} requires bound sort rules.")
         order = None
@@ -2677,7 +2693,12 @@ class PandasEngine(DataFrameEngine):
                 frame, position, rule.get("direction", "asc") == "asc", rule.get("nulls", "last"), order
             )
             order = step if order is None else order[step]
-        return _pandas_take_rows(frame, order)
+        result = _pandas_take_rows(frame, order)
+        # Sorting only moves values, so each object column keeps its type and whether it has missing values.
+        for position, (before, after) in enumerate(zip(frame.dtypes, result.dtypes, strict=True)):
+            if before == after == np.dtype(object):
+                self._carry_object_column_facts(frame.iloc[:, position], result.iloc[:, position])
+        return result
 
     def _apply_bound_filter_model(self, frame: Any, model: Any) -> Any:
         import numpy as np

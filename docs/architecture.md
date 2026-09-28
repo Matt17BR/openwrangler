@@ -882,7 +882,8 @@ whole columns and joins added columns without copying the rest, so a revision sh
 before it. A notebook variable or output and a Custom Code result may share arrays with objects outside the session,
 so without Copy-on-Write each is copied once when it receives private row identities; a file frame the runtime just
 read is not. An object column's semantic type and missing-value flag are kept for the array that owns its values, so a
-schema after a step that leaves the column unchanged doesn't scan it again. Typed null, NaN, decimal, datetime, and
+schema after a step that leaves the column unchanged doesn't scan it again. Sort Rows gives each sorted object column
+its source column's facts, because a permutation changes neither. Typed null, NaN, decimal, datetime, and
 wide-integer behavior is normalized at the protocol boundary.
 
 Pandas literal Split limits tokenization to the selected field or requested output count in live and generated code.
