@@ -45,6 +45,7 @@ from ..portable_regex import (
 from ..trusted_pickle_to_parquet import _source_fingerprint
 from . import (
     _pandas_arrow_formula_helpers,
+    _pandas_cast_helpers,
     _pandas_duration_helpers,
     _pandas_group_sum_helpers,
     _pandas_linear_fill_helpers,
@@ -54,6 +55,7 @@ from . import (
     _pandas_replace_matches_helpers,
 )
 from ._pandas_arrow_formula_helpers import _open_wrangler_arrow_formula_repair as _pandas_arrow_formula_repair
+from ._pandas_cast_helpers import _open_wrangler_cast_values as _pandas_cast_values
 from ._pandas_directional_fill_helpers import _open_wrangler_fill_directional_gaps
 from ._pandas_duration_helpers import _open_wrangler_duration_keys as _pandas_duration_keys
 from ._pandas_duration_helpers import _open_wrangler_duration_operand as _pandas_duration_operand
@@ -2155,12 +2157,13 @@ class PandasEngine(DataFrameEngine):
                 df.isetitem(position, _pandas_string_values(df.iloc[:, position]))
                 return df
             series = _pandas_scalar_values(df.iloc[:, position])
-            if target == "Int64":
-                result = _pandas_cast_integer(series)
-            elif conversion == "to_datetime":
+            if conversion == "to_datetime":
                 result = _open_wrangler_datetime_result(series, target)
             else:
-                result = series.astype(target)
+                try:
+                    result = _pandas_cast_values(series, params["dtype"])
+                except ValueError as error:
+                    raise EngineError(str(error)) from error
             df.isetitem(position, result)
             return df
         if kind == "formula":
@@ -2799,26 +2802,10 @@ class PandasEngine(DataFrameEngine):
             lines.extend(_generated_pandas_round_helpers())
         if any(step["kind"] in {"floorNumber", "ceilNumber"} for step in plan):
             lines.extend(_generated_pandas_floor_ceil_helpers())
-        if any(step["kind"] == "castColumn" and step["params"]["dtype"] == "integer" for step in plan):
-            lines.extend(
-                [
-                    "def _open_wrangler_cast_integer(series):",
-                    "    invalid = False",
-                    "    if pd.api.types.is_unsigned_integer_dtype(series.dtype):",
-                    "        invalid = series.notna().any() and int(series.max()) >= 2 ** 63",
-                    "    elif pd.api.types.is_float_dtype(series.dtype):",
-                    "        present = series.dropna()",
-                    "        invalid = not np.isfinite(present).all() or (not present.empty and (",
-                    "            present.min() < np.longdouble(-(2 ** 63))",
-                    "            or present.max() >= np.longdouble(2 ** 63)))",
-                    "    if invalid:",
-                    "        raise ValueError(",
-                    "            'Convert type cannot represent a present value as a signed 64-bit integer.')",
-                    "    return series.astype('Int64')",
-                    "",
-                    "",
-                ]
-            )
+        if any(
+            step["kind"] == "castColumn" and step["params"]["dtype"] in {"integer", "float", "boolean"} for step in plan
+        ):
+            lines.extend([getsource(_pandas_cast_helpers), ""])
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend([getsource(_pandas_min_max_helpers), ""])
         if any(step["kind"] == "replaceMatches" for step in plan):
@@ -3468,10 +3455,8 @@ class PandasEngine(DataFrameEngine):
                 expression = f"_open_wrangler_string_values(df.iloc[:, {position}])"
             elif conversion == "to_datetime":
                 expression = f"_open_wrangler_datetime_result({series}, {target!r})"
-            elif target == "Int64":
-                expression = f"_open_wrangler_cast_integer({series})"
             else:
-                expression = f"{series}.astype({target!r})"
+                expression = f"_open_wrangler_cast_values({series}, {params['dtype']!r})"
             return [f"{prefix}df.isetitem({position}, {expression})"]
         if kind == "formula":
             left_position = bound_column_position(params["leftColumn"], kind)
@@ -4356,23 +4341,6 @@ def _pandas_group_by_positions(
             normalized = _pandas_group_nulls(result.iloc[:, output_position], null_mask)
         result.isetitem(output_position, normalized)
     return result
-
-
-def _pandas_cast_integer(series: Any) -> Any:
-    import numpy as np
-    import pandas as pd
-
-    invalid = False
-    if pd.api.types.is_unsigned_integer_dtype(series.dtype):
-        invalid = series.notna().any() and int(series.max()) >= 2**63
-    elif pd.api.types.is_float_dtype(series.dtype):
-        present = series.dropna()
-        invalid = not np.isfinite(present).all() or (
-            not present.empty and (present.min() < np.longdouble(-(2**63)) or present.max() >= np.longdouble(2**63))
-        )
-    if invalid:
-        raise EngineError("Convert type cannot represent a present value as a signed 64-bit integer.")
-    return series.astype("Int64")
 
 
 def _pandas_floor_ceil(series: Any, ceiling: bool) -> Any:

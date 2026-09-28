@@ -326,6 +326,11 @@ supported by Python and native R. Python-specific extreme offsets remain in Pyth
 parser limits. Live and standalone comparisons use independently constructed native values rather than widening the
 shared fixture to imply unsupported behavior.
 
+The shared [`fixtures/convert-type-contract.json`](../fixtures/convert-type-contract.json) owns the Convert Type
+source and target matrix and its value cases. `src/test/convertType.unit.test.ts`,
+`python/tests/test_convert_type_contract.py` and the native-R frame and kernel contracts check every case in live and
+generated execution.
+
 The shared [`fixtures/replace-portability-contract.json`](../fixtures/replace-portability-contract.json) decides which
 Replace steps replay on both Python and R. `src/test/findReplaceStep.unit.test.ts`,
 `python/tests/test_replace_matches.py` and the native-R catalog contract each check every case.

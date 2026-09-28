@@ -3367,7 +3367,7 @@ cat("generated-ok\\n")
       payload: { sessionId: editingSessionId }
     });
     const result = runR(`
-frame <- data.frame(amount = c("42.9", "bad", NA_character_), check.names = FALSE)
+frame <- data.frame(amount = c(" 42 ", "42.9", NA_character_), check.names = FALSE)
 frame_before <- serialize(frame, NULL, version = 3L)
 ${bootstrap}
 ${open.code}

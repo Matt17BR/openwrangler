@@ -1558,7 +1558,14 @@ class DuckDBEngine(DataFrameEngine):
                         _quote_ident(column), raw_type, target_type, params.get("inputFormat")
                     ),
                 )
-            return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
+            if params["dtype"] == "string":
+                return self._assign(frame, column, f"try_cast({_quote_ident(column)} AS {target_type})")
+            raw_type = str(frame.types[self._columns(frame).index(column)])
+            try:
+                expression = _duckdb_scalar_cast_expression(_quote_ident(column), raw_type, params["dtype"])
+            except ValueError as error:
+                raise EngineError(str(error)) from error
+            return self._assign(frame, column, expression)
         if kind == "formula":
             right = (
                 _quote_ident(bound_column_name(params["rightColumn"], kind))
@@ -2181,6 +2188,12 @@ class DuckDBEngine(DataFrameEngine):
                 expression = (
                     f"_duckdb_temporal_cast_expression({_quote_ident(column)!r}, "
                     f"str(df.types[_ow_columns(df).index({column!r})]), {target!r}{input_format})"
+                )
+                return [f"{prefix}df = _ow_assign(df, {column!r}, {expression})"]
+            if params["dtype"] != "string":
+                expression = (
+                    f"_duckdb_scalar_cast_expression({_quote_ident(column)!r}, "
+                    f"str(df.types[_ow_columns(df).index({column!r})]), {params['dtype']!r})"
                 )
                 return [f"{prefix}df = _ow_assign(df, {column!r}, {expression})"]
             return [f"{prefix}df = _ow_assign(df, {column!r}, 'try_cast(' + _ow_ident({column!r}) + ' AS {target})')"]
@@ -4464,6 +4477,33 @@ def _duckdb_temporal_cast_expression(
     )
 
 
+def _duckdb_scalar_cast_expression(column: str, raw_type: str, target: str) -> str:
+    semantic_type = _semantic_type(raw_type)
+    native = {"integer": "BIGINT", "float": "DOUBLE", "boolean": "BOOLEAN"}[target]
+    if semantic_type == "string":
+        whitespace = "system.main.concat(' ', system.main.chr(9), system.main.chr(13), system.main.chr(10))"
+        text = f"system.main.trim(CAST({column} AS VARCHAR), {whitespace})"
+        if target == "boolean":
+            return (
+                f"CASE WHEN system.main.regexp_full_match({text}, '[Tt][Rr][Uu][Ee]') THEN true "
+                f"WHEN system.main.regexp_full_match({text}, '[Ff][Aa][Ll][Ss][Ee]') THEN false END"
+            )
+        pattern = "[+-]?[0-9]+" if target == "integer" else r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+        parsed = f"try_cast(CASE WHEN system.main.regexp_full_match({text}, '{pattern}') THEN {text} END AS {native})"
+        return parsed if target == "integer" else f"CASE WHEN system.main.isfinite({parsed}) THEN {parsed} END"
+    if semantic_type == "boolean":
+        return f"CAST({column} AS {native})"
+    if semantic_type not in {"integer", "float", "decimal"}:
+        raise ValueError("Convert type cannot turn values of this column type into the selected type.")
+    if target == "boolean":
+        if semantic_type == "float":
+            return f"CASE WHEN system.main.isnan({column}) THEN NULL ELSE {column} <> 0 END"
+        return f"{column} <> 0"
+    if target == "integer" and semantic_type != "integer":
+        return f"try_cast(system.main.trunc({column}) AS BIGINT)"
+    return f"try_cast({column} AS {native})"
+
+
 def _duckdb_datetime_format_expression(column: str, raw_type: str, format_literal: str) -> str:
     if raw_type == "TIMESTAMP_NS":
         # The native nanosecond formatter rejects some lower endpoints that
@@ -5333,6 +5373,7 @@ def _generated_helper_source() -> str:
             f"_OW_VIEW_COMPARABLE_TYPES = {tuple(sorted(VIEW_COMPARABLE_TYPES))!r}",
             getsource(_semantic_type),
             getsource(_duckdb_temporal_cast_expression),
+            getsource(_duckdb_scalar_cast_expression),
             getsource(_duckdb_datetime_format_expression),
             getsource(_guard_duckdb_integer_formula),
             "from typing import Any",

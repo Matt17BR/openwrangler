@@ -9313,14 +9313,6 @@ openwrangler_r_frame_contract <- local({
       format_iso_datetime(column, "UTC", utc_suffix = TRUE)
     } else if (identical(kind, "clock_datetime")) {
       clock_display(column)
-    } else if (identical(kind, "difftime")) {
-      units <- semantics$units
-      numeric_values <- as.double(column, units = units)
-      vapply(seq_along(numeric_values), function(index) {
-        value <- numeric_values[[index]]
-        if (is.na(value)) return(NA_character_)
-        paste(exact_double(value), units)
-      }, character(1L), USE.NAMES = FALSE)
     } else {
       abort("internal-error", "castColumn encountered an unknown R source kind")
     }
@@ -9423,21 +9415,40 @@ openwrangler_r_frame_contract <- local({
     cast_canonical_datetimes(result)
   }
 
+  cast_number_sources <- c("logical", "integer", "integer64", "double", "character", "factor")
+  cast_calendar_sources <- c("character", "factor", "date", "datetime", "clock_datetime")
+  cast_source_labels <- c(
+    logical = "Boolean", integer = "Integer", integer64 = "Integer", double = "Float", character = "Text",
+    factor = "Text", date = "Date", datetime = "Datetime", clock_datetime = "Datetime", difftime = "Duration"
+  )
+  cast_target_labels <- c(
+    string = "Text", integer = "Integer", float = "Float", boolean = "Boolean", date = "Date", datetime = "Datetime"
+  )
+
+  cast_trimmed_text <- function(column, kind, label) {
+    trimws(cast_text_source(column, kind, label), whitespace = "[ \t\r\n]")
+  }
+
   cast_column_values <- function(column, semantics, raw_type, dtype, label, input_format = NULL) {
     source_kind <- semantics$kind
     supported_sources <- switch(
       dtype,
-      string = c("logical", "integer", "double", "character", "factor", "date", "datetime", "clock_datetime", "difftime", "integer64"),
-      integer = c("logical", "integer", "double", "character", "factor", "integer64"),
-      float = c("logical", "integer", "double", "character", "factor"),
-      boolean = c("logical", "integer", "double", "character", "factor"),
-      date = c("character", "factor", "date", "datetime", "clock_datetime"),
-      datetime = c("character", "factor", "date", "datetime", "clock_datetime")
+      string = union(cast_number_sources, cast_calendar_sources),
+      integer = cast_number_sources,
+      float = cast_number_sources,
+      boolean = cast_number_sources,
+      date = cast_calendar_sources,
+      datetime = cast_calendar_sources
     )
     if (!source_kind %in% supported_sources) {
+      source_label <- cast_source_labels[source_kind]
       abort(
         "invalid-view-query",
-        sprintf("castColumn cannot convert an R %s column to %s", raw_type, dtype)
+        sprintf(
+          "Convert type cannot turn %s into %s.",
+          if (is.na(source_label)) "values of this column type" else paste(source_label, "values"),
+          cast_target_labels[[dtype]]
+        )
       )
     }
 
@@ -9452,20 +9463,32 @@ openwrangler_r_frame_contract <- local({
       if (identical(source_kind, "logical") || identical(source_kind, "double")) {
         return(suppressWarnings(as.integer(column)))
       }
-      text <- cast_text_source(column, source_kind, label)
-      return(suppressWarnings(as.integer(trimws(text))))
+      text <- cast_trimmed_text(column, source_kind, label)
+      result <- rep.int(NA_integer_, length(text))
+      valid <- grepl("^[+-]?[0-9]+\\z", text, perl = TRUE)
+      result[valid] <- suppressWarnings(as.integer(text[valid]))
+      return(result)
     }
     if (identical(dtype, "float")) {
       if (identical(source_kind, "double")) return(column)
       if (source_kind %in% c("logical", "integer")) return(as.double(column))
-      text <- cast_text_source(column, source_kind, label)
-      return(suppressWarnings(as.double(trimws(text))))
+      if (identical(source_kind, "integer64")) return(suppressWarnings(integer64_as_double(column, ensure_integer64_bindings())))
+      text <- cast_trimmed_text(column, source_kind, label)
+      result <- rep.int(NA_real_, length(text))
+      valid <- grepl("^[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?\\z", text, perl = TRUE)
+      result[valid] <- as.double(text[valid])
+      result[!is.finite(result)] <- NA_real_
+      return(result)
     }
     if (identical(dtype, "boolean")) {
       if (identical(source_kind, "logical")) return(column)
-      if (source_kind %in% c("integer", "double")) return(suppressWarnings(as.logical(column)))
-      text <- cast_text_source(column, source_kind, label)
-      return(suppressWarnings(as.logical(trimws(text))))
+      if (source_kind %in% c("integer", "double")) return(as.logical(column))
+      if (identical(source_kind, "integer64")) return(as.logical(suppressWarnings(integer64_as_double(column, ensure_integer64_bindings()))))
+      text <- cast_trimmed_text(column, source_kind, label)
+      result <- rep.int(NA, length(text))
+      result[grepl("^[Tt][Rr][Uu][Ee]\\z", text, perl = TRUE)] <- TRUE
+      result[grepl("^[Ff][Aa][Ll][Ss][Ee]\\z", text, perl = TRUE)] <- FALSE
+      return(result)
     }
     if (identical(dtype, "date")) {
       if (identical(source_kind, "date")) return(cast_canonical_dates(column))

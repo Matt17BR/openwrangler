@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
+from .convert_type import cast_refusal
 from .engines.base import (
     REPLACE_MATCHES_TYPES,
     VIEW_COMPARABLE_TYPES,
@@ -309,6 +310,11 @@ class _BindingContext:
                 f"{label} has unsupported {column.semantic_type!r} type; "
                 "by-example sources must be portable scalar columns."
             )
+
+    def require_cast_source(self, reference: Mapping[str, Any], dtype: Any) -> None:
+        refusal = cast_refusal(self._column_for(reference, "castColumn.column").semantic_type, str(dtype))
+        if refusal is not None:
+            raise ColumnBindingError(refusal)
 
     def require_text_source(self, reference: Mapping[str, Any], label: str) -> None:
         column = self._column_for(reference, label)
@@ -803,6 +809,9 @@ def bind_step(
         "formatDatetime",
     }:
         params["column"] = context.bind(params.get("column"), f"{kind}.column")
+
+    if kind == "castColumn":
+        context.require_cast_source(params["column"], params.get("dtype"))
 
     if kind == "fillMissingValues":
         replacement = params.get("replacement")

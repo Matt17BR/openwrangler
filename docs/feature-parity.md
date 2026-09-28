@@ -239,6 +239,14 @@ For example, `02/03/2026` means 2 March with the first layout and 3 February wit
 invalid or out-of-range values become missing, and valid dates become midnight. Native date ranges differ.
 Clone the column first to keep its text values, then convert the clone.
 
+Convert Type offers the same targets in every editing engine. Text, Integer, Float, Decimal and Boolean columns
+convert to Text, Integer, Float or Boolean. Text, Date and Datetime columns convert to Date or Datetime, and Date and
+Datetime columns also convert to Text. Other types, such as Duration, List and Struct, aren't offered. Text parsing
+trims spaces, tabs and line breaks, then accepts only plain decimal integers, decimal or scientific numbers, and
+`true` or `false` in any letter case. Anything else becomes missing, as do numbers outside the target's range and
+non-finite floats. Integer targets truncate toward zero, and Boolean targets treat zero as false. R converts Text,
+Float and Boolean to its 32-bit integer type, so values beyond that range become missing there.
+
 To create an integer year, month or day column, select the typed temporal column in Format Datetime, enter `%Y`,
 `%m` or `%d` and give the output a new name. Convert that output to Integer. Missing values remain missing. These
 composed workflows support Pandas, Polars, DuckDB and native R within their existing temporal limits.
@@ -247,7 +255,7 @@ the column's timezone; R uses UTC when none is recorded. DuckDB file sessions us
 standalone generated code use the caller connection's timezone. A stored DuckDB instant does not retain its original named zone.
 
 Floor and Ceiling retain exact integer and Decimal values in the Python editing engines, with matching generated
-code. Pandas Convert Type rejects values outside its signed integer target instead of wrapping them. The operation
+code. Convert Type turns values outside the signed 64-bit integer range into missing values instead of wrapping them. The operation
 and session-transaction tests cover value boundaries, missing values and rollback.
 
 Round retains exact integer and Decimal values in live and generated Python execution, including half-even ties
@@ -472,8 +480,8 @@ rows retain the original UUID objects, and unrelated object values are not conve
 Pandas scalar Arrow dictionaries use logical values for profiles, value selection, filters, sorting and row removal.
 Null dictionary entries and duplicate values across chunks retain their meaning. Nested and arbitrary extension
 dictionary values do not gain scalar operations.
-Convert Type uses the dictionary's logical input type, so valid casts work across chunks and signed-integer range
-checks also cover encoded unsigned values.
+Convert Type uses the dictionary's logical input type, so valid casts work across chunks, and encoded unsigned
+values beyond the signed 64-bit range become missing.
 Fill supports logical dictionary values across its existing methods and retains encoded targets when no cells change.
 Generated Fill code treats native Arrow dates as dates, including empty and all-null columns.
 CSV and Parquet writers support scalar dictionary columns and preserved index levels, including null codebook entries.

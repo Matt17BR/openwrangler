@@ -8,6 +8,7 @@ import {
 import { createPredicate } from "../../shared/filterModel";
 import { isTransformStep } from "../../shared/protocolValidation";
 import { LOOKUP_KEY_TYPES } from "../../shared/lookupColumns";
+import { CONVERT_TYPE_LABELS, CONVERT_TYPE_SOURCES } from "../../shared/convertType";
 import {
   directionalOrderColumnsForTarget,
   explicitFillValueKind,
@@ -275,14 +276,22 @@ function savedOperationTypeError(
     case "fillMissingValues":
       return fillCompatibilityError(step, inputSchema, columnsById);
     case "castColumn":
-      return step.params.inputFormat === undefined
-        ? undefined
-        : incompatibleReferenceType(
-            [{ label: "input date column", reference: step.params.column }],
-            columnsById,
-            textColumnTypes,
-            "an input date format requires a Text column"
-          );
+      return (
+        incompatibleReferenceType(
+          [{ label: "converted column", reference: step.params.column }],
+          columnsById,
+          CONVERT_TYPE_SOURCES.get(step.params.dtype) ?? new Set(),
+          `Convert type cannot turn it into ${CONVERT_TYPE_LABELS.get(step.params.dtype) ?? step.params.dtype}`
+        ) ??
+        (step.params.inputFormat === undefined
+          ? undefined
+          : incompatibleReferenceType(
+              [{ label: "input date column", reference: step.params.column }],
+              columnsById,
+              textColumnTypes,
+              "an input date format requires a Text column"
+            ))
+      );
     case "sortRows":
     case "filterRows":
     case "dropMissingRows":
