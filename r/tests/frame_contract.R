@@ -1614,6 +1614,20 @@ assert_error(
   sprintf("custom-code column 2 values %d is not valid UTF-8", large_custom_rows)
 )
 rm(large_custom_capture, large_custom_output)
+# A column identical to its source column may keep text Custom Code could not create, as other steps do.
+long_text <- strrep("x", openwrangler_r_frame_contract$limits$textBytes + 1L)
+long_text_source <- openwrangler_r_frame_contract$capture_frame(data.frame(label = c("a", long_text)))
+long_text_output <- data.frame(twice = 1:2, label = c("a", long_text))
+assert_identical(
+  openwrangler_r_frame_contract$capture_custom_code_result(long_text_output, long_text_source, "unchanged-text")$descriptor$shape$columns,
+  2L,
+  "Custom Code rejected text its source column already held"
+)
+long_text_output$label[[1L]] <- long_text
+assert_error(
+  openwrangler_r_frame_contract$capture_custom_code_result(long_text_output, long_text_source, "changed-text"),
+  "custom-code column 2 values 1 exceeds"
+)
 custom_row_name_limit <- data.frame(value = 1:2, row.names = c("a", strrep("n", 1024L)))
 assert_identical(
   openwrangler_r_frame_contract$capture_custom_code_result(custom_row_name_limit, custom_validation_source, "row-name-limit")$descriptor$shape$rows,

@@ -1928,7 +1928,9 @@ Values, Convert Type, Formula Column, Format Datetime, One-hot Encode, Multi-lab
 steps, share their input's other column vectors. A data.table input, or a `data.table` library run over columns
 with element names, still copies first because data.table changes its container and strips element names by
 reference. A derived capture skips rescanning clock, factor and nested columns identical to its already validated
-source column, and a row-preserving result inherits the source's validated row identities.
+source column, and a row-preserving result inherits the source's validated row identities. A Custom Code result also
+skips those rescans for each column identical to the captured source column whose identity it keeps, and skips its
+output text and value checks when such a column is flat; nested columns still charge the operation budget.
 Committed and draft results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops
 inert column-element names according to native data-table copy semantics; the explicit retention exceptions are
 described below.

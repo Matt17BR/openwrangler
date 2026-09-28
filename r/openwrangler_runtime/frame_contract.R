@@ -4392,6 +4392,7 @@ openwrangler_r_frame_contract <- local({
     cast_dtypes = NULL,
     preserve_data_table_element_names = FALSE,
     expected_schema = NULL,
+    validated_columns = NULL,
     owned = FALSE
   ) {
     if (!is.data.frame(value)) {
@@ -4407,6 +4408,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.logical(owned) || length(owned) != 1L || is.na(owned)) {
       abort("internal-error", "the owned-frame flag is invalid")
+    }
+    if (!is.null(validated_columns) && !is.list(validated_columns)) {
+      abort("internal-error", "the validated columns are invalid")
     }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
     if (
@@ -4541,10 +4545,10 @@ openwrangler_r_frame_contract <- local({
     }
     assert_frame_attributes(snapshot, flavor)
     metrics <- new_capture_metrics()
-    validated_columns <- if (!is.null(nullability_source) && identical(nullability_source$mode, "isolated")) {
+    if (is.null(validated_columns) && !is.null(nullability_source) && identical(nullability_source$mode, "isolated")) {
       validated_frame <- nullability_source$snapshot
       mapping <- if (is.null(source_positions)) seq_len(storage_length(snapshot)) else source_positions
-      lapply(seq_len(storage_length(snapshot)), function(index) {
+      validated_columns <- lapply(seq_len(storage_length(snapshot)), function(index) {
         position <- if (index <= length(mapping)) mapping[[index]] else NA
         if (is.numeric(position) && length(position) == 1L && !is.na(position) && position >= 1L &&
             position <= storage_length(validated_frame) && position == floor(position)) {
@@ -10347,14 +10351,14 @@ openwrangler_r_frame_contract <- local({
     invisible(NULL)
   }
 
-  charge_native_column <- function(column, semantics, position, budget, nested_value = FALSE) {
+  charge_native_column <- function(column, semantics, position, budget, nested_value = FALSE, values_accepted = FALSE) {
     charge_text <- function(...) charge_native_text(..., budget = budget, native_values = nested_value)
     validate_nested_metadata <- function(...) validate_native_text_attributes(..., budget = budget)
     # Native vector headers are distinct from encoded cell envelopes. NULL is
     # the shared singleton and is charged only by its containing pointer slot.
     if (isTRUE(nested_value)) spend_operation_output_budget(budget, native_vector_header_bytes, "native nested vector header")
     kind <- semantics$kind
-    if (!nested_kind(semantics)) validate_native_atomic_values(column, semantics)
+    if (!nested_kind(semantics) && !values_accepted) validate_native_atomic_values(column, semantics)
     if (isTRUE(nested_value)) {
       for (attribute in attributes(column)) {
         spend_operation_output_budget(budget, native_vector_header_bytes + as.double(storage_length(attribute)) * character_vector_slot_bytes, "native nested attributes")
@@ -10433,7 +10437,7 @@ openwrangler_r_frame_contract <- local({
     } else if (identical(kind, "character")) {
       if (isTRUE(nested_value)) {
         charge_text(column, sprintf("custom-code column %d values", position), charge_slots = FALSE)
-      } else {
+      } else if (!values_accepted) {
         validate_flat_text(column, sprintf("custom-code column %d values", position))
       }
     } else if (identical(kind, "factor")) {
@@ -10491,7 +10495,7 @@ openwrangler_r_frame_contract <- local({
     schema
   }
 
-  validate_custom_code_output_budget <- function(frame, descriptor) {
+  validate_custom_code_output_budget <- function(frame, descriptor, validated_columns) {
     schema <- plain_metadata_storage(descriptor$schema)
     row_count <- as.double(descriptor$shape$rows)
     budget <- new_payload_budget()
@@ -10544,7 +10548,11 @@ openwrangler_r_frame_contract <- local({
     }
 
 
-    for (position in seq_along(schema)) charge_native_column(.subset2(frame, position), schema[[position]]$semantics, position, budget, nested_kind(schema[[position]]$semantics))
+    for (position in seq_along(schema)) {
+      nested <- nested_kind(schema[[position]]$semantics)
+      charge_native_column(.subset2(frame, position), schema[[position]]$semantics, position, budget, nested,
+        values_accepted = !nested && !is.null(.subset2(validated_columns, position)))
+    }
     invisible(NULL)
   }
 
@@ -10609,18 +10617,37 @@ openwrangler_r_frame_contract <- local({
     if (preflight$descriptor$shape$columns < 1L) {
       abort("invalid-view-query", "Custom Code must return at least one column")
     }
-    validate_custom_code_output_budget(normalized, preflight$descriptor)
 
-    captured <- capture_frame(normalized, preserve_data_table_element_names = TRUE)
+    # Each output column keeps the identity of the first unmatched source column with its name.
+    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
+    source_names <- vapply(source_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    output_names <- vapply(plain_metadata_storage(preflight$descriptor$schema), `[[`, character(1L), "name", USE.NAMES = FALSE)
+    consumed <- logical(length(source_schema))
+    matched_sources <- vapply(output_names, function(name) {
+      matches <- which(!consumed & source_names == name)
+      if (length(matches) == 0L) return(NA_integer_)
+      consumed[[matches[[1L]]]] <<- TRUE
+      matches[[1L]]
+    }, integer(1L), USE.NAMES = FALSE)
+    # A column identical to its source column holds only values the session already accepted, so neither the output
+    # checks nor the capture scan its values again. The immutable snapshot is compared, never the copy the code received.
+    source_frame <- if (identical(source_capture$mode, "isolated")) source_capture$snapshot
+    validated_columns <- lapply(seq_along(output_names), function(position) {
+      matched <- matched_sources[[position]]
+      if (!is.null(source_frame) && !is.na(matched) &&
+          identical(.subset2(normalized, position), .subset2(source_frame, matched), num.eq = FALSE, single.NA = FALSE)) {
+        .subset2(source_frame, matched)
+      }
+    })
+    validate_custom_code_output_budget(normalized, preflight$descriptor, validated_columns)
+
+    captured <- capture_frame(normalized, preserve_data_table_element_names = TRUE, validated_columns = validated_columns)
     if (!identical(captured$descriptor, preflight$descriptor)) {
       abort("internal-error", "Custom Code output changed while it was captured")
     }
 
-    source_schema <- plain_metadata_storage(source_capture$descriptor$schema)
     output_schema <- plain_metadata_storage(captured$descriptor$schema)
-    source_names <- vapply(source_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
-    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
-    output_names <- vapply(output_schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
     if (any(output_names == "")) {
       abort("invalid-view-query", "Custom Code must return non-empty column names")
     }
@@ -10628,15 +10655,10 @@ openwrangler_r_frame_contract <- local({
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
 
-    consumed <- logical(length(source_schema))
     created_ordinal <- 0L
     output_ids <- vapply(seq_along(output_schema), function(position) {
-      matches <- which(!consumed & source_names == output_names[[position]])
-      if (length(matches) != 0L) {
-        matched <- matches[[1L]]
-        consumed[[matched]] <<- TRUE
-        return(source_ids[[matched]])
-      }
+      matched <- matched_sources[[position]]
+      if (!is.na(matched)) return(source_ids[[matched]])
       result <- bounded_utf8(
         paste0("c:step:", step_id, ":", created_ordinal),
         sprintf("custom-code output identity %d", position),
