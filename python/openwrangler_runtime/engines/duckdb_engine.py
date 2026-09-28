@@ -4091,6 +4091,13 @@ def _write_relation_export(
             known = [(name, arrow_type) for name, arrow_type in arrow_fields if arrow_type is not None]
             if durations and len(known) == len(arrow_fields):
                 metadata = arrow_schema_metadata(known)
+        elif any(dtype.id == "interval" for dtype in relation.types):
+            relation = relation.project(
+                ", ".join(
+                    f"{_duckdb_interval_text(column)} AS {column}" if dtype.id == "interval" else column
+                    for column, dtype in zip(map(_quote_ident, relation.columns), relation.types, strict=True)
+                )
+            )
         if isinstance(path, ExportWriterPath):
             try:
                 from .duckdb_export_filesystem import registered_duckdb_export_writer

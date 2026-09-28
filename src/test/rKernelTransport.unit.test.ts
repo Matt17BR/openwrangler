@@ -559,11 +559,15 @@ describe("native R kernel protocol", () => {
         }),
         summaryRequestId
       );
-    for (const type of ["integer", "float", "duration"]) {
+    for (const type of ["integer", "float"]) {
       expect(
         decode({ ...summary, type, nullCount: type === "float" ? 1 : 2, nanCount: type === "float" ? 1 : 0 })
       ).toMatchObject({ summaries: [{ distinctCount: 900, topValues }] });
     }
+    // Durations profile by their text, as the Python engines do.
+    expect(() => decode({ ...summary, type: "duration", nullCount: 2, nanCount: 0 })).toThrow(
+      "numeric visualization for the wrong column type"
+    );
     expect(decode({ ...summary, distinctCount: 120_000 })).toMatchObject({ summaries: [{ distinctCount: 120_000 }] });
     // A numeric population can have no finite values to put in a histogram.
     expect(

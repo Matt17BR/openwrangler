@@ -1,0 +1,14 @@
+{
+  "durations": [
+    { "nanoseconds": 0, "text": "0:00:00" },
+    { "nanoseconds": 90000000000, "text": "0:01:30" },
+    { "nanoseconds": 93784500000000, "text": "1 day, 2:03:04.500000" },
+    { "nanoseconds": 259200000000005, "text": "3 days, 0:00:00.000000005" },
+    { "nanoseconds": 1500, "text": "0:00:00.000001500" },
+    { "nanoseconds": 1, "text": "0:00:00.000000001" },
+    { "nanoseconds": -1, "text": "-1 day, 23:59:59.999999999" },
+    { "nanoseconds": -2000000000, "text": "-1 day, 23:59:58" },
+    { "nanoseconds": -90061000001000, "text": "-2 days, 22:58:58.999999" },
+    { "nanoseconds": null, "text": "" }
+  ]
+}

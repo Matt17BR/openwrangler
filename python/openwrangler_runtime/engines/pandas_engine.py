@@ -5385,6 +5385,95 @@ def _pandas_preserve_integer_result(value: Any) -> Any:
     return _pandas_normalize_integer_series(value, enforce_envelope=False)
 
 
+def _pandas_csv_duration_text(series: Any) -> Any:
+    """Durations spelled as the grid shows them, or ``None`` when the series holds none."""
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    dtype = series.dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        categories = _pandas_csv_duration_text(pd.Series(series.cat.categories, copy=False))
+        if categories is None:
+            return None
+        codes = series.cat.codes.to_numpy()
+        text = categories.array.__arrow_array__().take(pa.array(codes, mask=codes < 0))
+        return pd.Series(pd.arrays.ArrowExtensionArray(text), index=series.index, name=series.name)
+    if isinstance(dtype, np.dtype) and dtype.kind == "O":
+        if pd.api.types.infer_dtype(series, skipna=True) not in {"timedelta", "timedelta64", "mixed"}:
+            return None
+        values = series.to_numpy()
+        converted = None
+        for position, value in enumerate(values):
+            if isinstance(value, timedelta) or (isinstance(value, np.timedelta64) and not np.isnat(value)):
+                if converted is None:
+                    converted = values.copy()
+                converted[position] = normalize_cell(value)["display"]
+        return None if converted is None else pd.Series(converted, dtype=object, index=series.index, name=series.name)
+    if isinstance(dtype, pd.SparseDtype):
+        if dtype.subtype.kind != "m":
+            return None
+        series = series.sparse.to_dense()
+        dtype = series.dtype
+    if isinstance(dtype, np.dtype):
+        if dtype.kind != "m":
+            return None
+        values = series.to_numpy()
+        missing = np.isnat(values)
+        ticks = values.view(np.int64)
+        unit = np.datetime_data(dtype)[0]
+    else:
+        array = _pandas_arrow_temporal_array(series)
+        if array is None or not pa.types.is_duration(array.type):
+            return None
+        missing = np.asarray(array.is_null())
+        ticks = np.asarray(pc.fill_null(array.cast(pa.int64()), 0))
+        unit = array.type.unit
+    # Pandas and Arrow durations, including densified Sparse ones, use only these units.
+    scale = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
+    chunks = [
+        _pandas_duration_text_chunk(
+            ticks[start : start + _MAX_CSV_TEMPORAL_CHUNK_VALUES],
+            missing[start : start + _MAX_CSV_TEMPORAL_CHUNK_VALUES],
+            scale,
+        )
+        for start in range(0, len(ticks), _MAX_CSV_TEMPORAL_CHUNK_VALUES)
+    ]
+    result = pd.arrays.ArrowExtensionArray(pa.chunked_array(chunks, type=pa.string()))
+    return pd.Series(result, index=series.index, name=series.name)
+
+
+def _pandas_duration_text_chunk(ticks: Any, missing: Any, scale: int) -> Any:
+    """``duration_display`` for integer ticks at a scale of at most nanoseconds, in native string kernels."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    days, remainder = np.divmod(ticks, 86_400 * scale)
+    seconds, fraction = np.divmod(remainder, scale)
+    nanoseconds = fraction * (1_000_000_000 // scale)
+
+    def text(values: Any) -> Any:
+        return pc.cast(pa.array(values), pa.string())
+
+    def digits(values: Any, width: int) -> Any:
+        return pc.call_function("utf8_lpad", [text(values)], pc.PadOptions(width, "0"))
+
+    def join(*parts: Any, separator: str = "") -> Any:
+        return pc.call_function("binary_join_element_wise", [*parts, pa.scalar(separator)])
+
+    def choose(condition: Any, chosen: Any, otherwise: Any) -> Any:
+        return pc.call_function("if_else", [pa.array(condition), chosen, otherwise])
+
+    clock = join(text(seconds // 3_600), digits(seconds // 60 % 60, 2), digits(seconds % 60, 2), separator=":")
+    day_word = choose(np.abs(days) == 1, pa.scalar(" day, "), pa.scalar(" days, "))
+    day_text = choose(days == 0, pa.scalar(""), join(text(days), day_word))
+    fraction_digits = choose(nanoseconds % 1_000 == 0, digits(nanoseconds // 1_000, 6), digits(nanoseconds, 9))
+    fraction_text = choose(nanoseconds == 0, pa.scalar(""), join(pa.scalar("."), fraction_digits))
+    return choose(missing, pa.scalar(None, pa.string()), join(day_text, clock, fraction_text))
+
+
 def _pandas_csv_temporal_values(series: Any, *, format_category_values: bool = False) -> Any:
     import pandas as pd
 
@@ -5565,6 +5654,9 @@ def _pandas_scalar_export_frame(df: Any, preserve_index: bool, *, for_csv: bool 
         logical = _pandas_scalar_values(series)
         if for_csv:
             _pandas_require_nested_timestamp_boxing(logical)
+            text = _pandas_csv_duration_text(logical)
+            if text is not None:
+                return text
         dtype = None if for_csv else negative_decimal_type(logical)
         if dtype is not None:
             import pyarrow as pa

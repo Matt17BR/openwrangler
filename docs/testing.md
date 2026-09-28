@@ -343,6 +343,11 @@ source and target matrix and its value cases. `src/test/convertType.unit.test.ts
 `python/tests/test_convert_type_contract.py` and the native-R frame and kernel contracts check every case in live and
 generated execution.
 
+The shared [`fixtures/duration-text-contract.json`](../fixtures/duration-text-contract.json) owns duration text,
+including negative, sub-microsecond and missing values. `python/tests/test_duration_text_contract.py` checks the grid
+and CSV export of Pandas, Polars and DuckDB, which holds whole microseconds; the native-R capture-and-export contract
+checks every difftime unit.
+
 The shared [`fixtures/replace-portability-contract.json`](../fixtures/replace-portability-contract.json) decides which
 Replace steps replay on both Python and R. `src/test/findReplaceStep.unit.test.ts`,
 `python/tests/test_replace_matches.py` and the native-R catalog contract each check every case.

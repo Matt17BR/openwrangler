@@ -16,6 +16,7 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError
+from openwrangler_runtime.engines.base import duration_display
 from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
 from openwrangler_runtime.engines.pandas_engine import PandasEngine
 from openwrangler_runtime.engines.polars_engine import PolarsEngine
@@ -727,9 +728,9 @@ def test_pandas_sparse_duration_csv_preserves_reserved_destination(
                 {"device": str(identity[0]), "inode": str(identity[1])},
             )
             assert exported["kind"] == "dataExported"
-            expected = [["value"], ["0 days 00:00:00.000001"], ["0 days 00:00:00"], ["0 days 00:00:00.000001"], [""]]
+            expected = [["value"], ["0:00:00.000001"], ["0:00:00"], ["0:00:00.000001"], [""]]
             if unit == "ns":
-                expected = [["value"], *[["0 days 00:00:00.000000001"]] * 3, [""]]
+                expected = [["value"], *[["0:00:00.000000001"]] * 3, [""]]
             if index_only:
                 expected = [
                     ["duration", "row"],
@@ -778,13 +779,13 @@ def test_pandas_temporal_csv_preserves_exact_fields_and_source(tmp_path: Path, f
         ]
         if timestamp
         else [
-            "0 days 00:00:00",
-            "-9223372036854775808 ns",
-            "-106752 days +00:12:43.145224193",
+            "0:00:00",
+            "-106752 days, 0:12:43.145224192",
+            "-106752 days, 0:12:43.145224193",
             "",
-            "-1 days +23:59:59.999999999",
-            "106751 days 23:47:16.854775807",
-            "0 days 00:00:00.123456",
+            "-1 day, 23:59:59.999999999",
+            "106751 days, 23:47:16.854775807",
+            "0:00:00.123456",
         ]
     )
     native = pa.array(ticks, type=dtype)
@@ -890,8 +891,15 @@ def test_pandas_temporal_csv_preserves_timezone_boundary_values(
     assert source.index is original_index and source["row"].tolist() == [0, 1]
 
 
-@pytest.mark.parametrize("unit", ["s", "ms", "us"])
-def test_pandas_temporal_csv_preserves_coarse_duration_sentinels(tmp_path: Path, unit: str) -> None:
+@pytest.mark.parametrize(
+    "unit,minimum",
+    [
+        ("s", "-106751991167301 days, 8:29:52"),
+        ("ms", "-106751991168 days, 16:47:04.192000"),
+        ("us", "-106751992 days, 19:59:05.224192"),
+    ],
+)
+def test_pandas_temporal_csv_preserves_coarse_duration_sentinels(tmp_path: Path, unit: str, minimum: str) -> None:
     import pyarrow as pa
 
     values = pa.array([0, -(2**63), None], type=pa.duration(unit))
@@ -901,8 +909,8 @@ def test_pandas_temporal_csv_preserves_coarse_duration_sentinels(tmp_path: Path,
     PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
     assert list(csv.reader(io.StringIO(destination.read_text()))) == [
         ["value", "row"],
-        ["0 days 00:00:00", "0"],
-        [f"{-(2**63)} {unit}", "1"],
+        ["0:00:00", "0"],
+        [minimum, "1"],
         ["", "2"],
     ]
     current: Any = source["value"].array
@@ -910,7 +918,7 @@ def test_pandas_temporal_csv_preserves_coarse_duration_sentinels(tmp_path: Path,
 
 
 @pytest.mark.parametrize("family", ["timestamp", "duration"])
-def test_pandas_temporal_csv_categorical_nulls_keep_coarse_native_spelling(tmp_path: Path, family: str) -> None:
+def test_pandas_temporal_csv_categorical_nulls_stay_empty(tmp_path: Path, family: str) -> None:
     import pyarrow as pa
 
     timestamp = family == "timestamp"
@@ -924,7 +932,7 @@ def test_pandas_temporal_csv_categorical_nulls_keep_coarse_native_spelling(tmp_p
     expected = (
         ["1970-01-01 00:00:00+00:00", "", "1970-01-01 00:00:00.000001+00:00", "2500-01-01 00:00:00+00:00"]
         if timestamp
-        else ["0 days 00:00:00", "", "0 days 00:00:00.000001", "115740 days 17:46:40"]
+        else ["0:00:00", "", "0:00:00.000001", "115740 days, 17:46:40"]
     )
     assert list(csv.reader(io.StringIO(destination.read_text())))[1:] == [[value] for value in expected]
     assert source["value"].cat.codes.tolist() == [0, -1, 1, 2]
@@ -1116,8 +1124,8 @@ def test_pandas_temporal_csv_bounds_high_cardinality_category_boxing(
     PandasEngine().export_data(source, destination, {**PANDAS_CSV_OPTIONS, "rowAxisPolicy": "omit"})
     fields = [row[0] for row in list(csv.reader(io.StringIO(destination.read_text())))[1:]]
     assert fields == [
-        *[str(pd.Timedelta(value, unit="ns")) for value in range(70000)],
-        "-9223372036854775808 ns",
+        *[duration_display(value, 10**9) for value in range(70000)],
+        "-106752 days, 0:12:43.145224192",
     ]
     assert source["value"].cat.codes.tolist() == codes
     assert source["value"].cat.categories.array.__arrow_array__().equals(pa.chunked_array([values]))

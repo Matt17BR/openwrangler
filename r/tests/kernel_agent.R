@@ -14572,8 +14572,8 @@ local({
   assert_identical(exported$kind, "dataExported", "Unicode CSV export did not complete")
   chunk <- dispatch("readDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export, offset = 0L, limit = 1024L))
   expected <- c(charToRaw("\"text\",\"duration\",\"at\"\n\""), as.raw(c(0xc3, 0xa9)),
-    charToRaw("\",0.25,\"1970-01-01 00:01:00\"\n,,\n"))
-  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text, duration decimals or timestamp carry under the caller locale/options")
+    charToRaw("\",\"0:15:00\",\"1970-01-01 00:01:00\"\n,,\n"))
+  assert_identical(jsonlite::base64_dec(chunk$data), expected, "public CSV export changed UTF-8 text, duration text or timestamp carry under the caller locale/options")
   assert_identical(exported$bytes, length(expected), "public CSV export reported the wrong UTF-8 byte count")
   assert_identical(serialize(source_environment$csv_unicode, NULL, version = 3L), source_before, "public CSV export mutated source text")
   current <- dispatch("getPage", list(sessionId = csv_session, page = page_window()))
@@ -14625,7 +14625,7 @@ local({
     list(value = c(12L, NA_integer_), delimiter = "1", expected = "12", refused = TRUE),
     list(value = c(TRUE, NA), delimiter = "T", expected = "TRUE", refused = TRUE),
     list(value = structure(c(1.5, NA_real_), class = "difftime", units = "secs"),
-      delimiter = ".", expected = "1.5", refused = TRUE)
+      delimiter = ".", expected = "0:00:01.500000", refused = FALSE)
   )
   on.exit({
     dispatch("closeDataExport", list(sessionId = csv_session, revision = 0L, exportId = csv_export))

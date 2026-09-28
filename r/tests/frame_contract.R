@@ -861,8 +861,7 @@ local({
     restricted <- list(
       list(value = 2L, delimiters = "-0123456789"),
       list(value = 1.25, delimiters = ".0123456789e+-Inf"),
-      list(value = FALSE, delimiters = "TRUEFALSE"),
-      list(value = structure(1.25, class = "difftime", units = "hours"), delimiters = ".0123456789e+-Inf")
+      list(value = FALSE, delimiters = "TRUEFALSE")
     )
     target <- tempfile(fileext = ".csv")
     on.exit(if (file.exists(target)) unlink(target))
@@ -891,6 +890,13 @@ local({
       assert_identical(write_bytes(data.frame(value = c(1.25, NA_real_, NaN)), options_for(delimiter)),
         charToRaw("\"value\"\n1.25\n\n\n"), "a safe custom delimiter changed native numeric CSV values")
     }
+    for (delimiter in c(".", ":", "0")) {
+      assert_identical(
+        write_bytes(data.frame(value = structure(c(1.25, NA_real_), class = "difftime", units = "hours")), options_for(delimiter)),
+        charToRaw("\"value\"\n\"1:15:00\"\n\n"),
+        "a delimiter inside duration text was not quoted"
+      )
+    }
   })
   local({
     original_options <- options(OutDec = ",")
@@ -900,22 +906,25 @@ local({
       structure(c(0.25, -1.5, 0, NA_real_), class = "difftime", units = unit)
     }), units))
     durations$number <- c(0.25, -1.5, 0, NA_real_)
-    expected_rows <- c(
-      "0.25,0.25,0.25,0.25,0.25,0.25",
-      "-1.5,-1.5,-1.5,-1.5,-1.5,-1.5",
-      "0,0,0,0,0,0",
-      ",,,,,"
+    expected_fields <- list(
+      c("\"0:00:00.250000\"", "\"0:00:15\"", "\"0:15:00\"", "\"6:00:00\"", "\"1 day, 18:00:00\"", "0.25"),
+      c(
+        "\"-1 day, 23:59:58.500000\"", "\"-1 day, 23:58:30\"", "\"-1 day, 22:30:00\"", "\"-2 days, 12:00:00\"",
+        "\"-11 days, 12:00:00\"", "-1.5"
+      ),
+      c(rep("\"0:00:00\"", 5L), "0"),
+      rep("", 6L)
     )
-    expected <- charToRaw(paste0(
-      "\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n",
-      paste0(expected_rows, "\n", collapse = "")
-    ))
+    expected_rows <- function(delimiter) {
+      paste0(vapply(expected_fields, paste, character(1L), collapse = delimiter), "\n", collapse = "")
+    }
+    expected <- charToRaw(paste0("\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n", expected_rows(",")))
     for (value in list(durations, tibble::as_tibble(durations), data.table::as.data.table(durations))) {
-      assert_identical(write_bytes(value), expected, "CSV duration decimals or stored-unit magnitudes changed under OutDec")
+      assert_identical(write_bytes(value), expected, "CSV durations changed their timedelta text under OutDec")
     }
     assert_identical(
       write_bytes(durations, list(format = "csv", delimiter = "§", quoteChar = "\"", encoding = "utf-8", header = FALSE)),
-      charToRaw(gsub(",", "§", paste0(expected_rows, "\n", collapse = ""), fixed = TRUE)),
+      charToRaw(expected_rows("§")),
       "headerless CSV duration export changed the configured delimiter"
     )
     assert_identical(write_bytes(durations[FALSE, , drop = FALSE]),
@@ -925,9 +934,9 @@ local({
       charToRaw("\"secs\",\"mins\",\"hours\",\"days\",\"weeks\",\"number\"\n,,,,,\n"),
       "all-missing CSV duration columns changed")
     assert_identical(
-      write_bytes(data.frame(duration = structure(c(NA_real_, Inf, -Inf), class = "difftime", units = "hours"))),
-      charToRaw("\"duration\"\n\nInf\n-Inf\n"),
-      "CSV duration missing or infinity tokens changed"
+      write_bytes(data.frame(duration = structure(c(NA_real_, NA_real_), class = "difftime", units = "hours"))),
+      charToRaw("\"duration\"\n\n\n"),
+      "CSV missing durations changed"
     )
     invalid_duration <- data.frame(duration = structure(c(rep(0.25, 65536L), NaN), class = "difftime", units = "hours"))
     before <- serialize(invalid_duration, NULL, version = 3L)
@@ -939,6 +948,33 @@ local({
     assert_error(openwrangler_r_frame_contract$write_csv(capture, target), "export-write-failed")
     assert_true(!file.exists(target), "off-page duration NaN created a CSV artifact")
     assert_identical(serialize(invalid_duration, NULL, version = 3L), before, "refused CSV duration export changed its source")
+    for (value in c(Inf, -Inf, 2^50, -2^50)) {
+      unshowable <- openwrangler_r_frame_contract$capture_frame(
+        data.frame(duration = structure(c(0.25, value), class = "difftime", units = "hours"))
+      )
+      assert_error(openwrangler_r_frame_contract$materialize_page(unshowable, row_limit = 2L), "unsupported-cell")
+      assert_error(openwrangler_r_frame_contract$write_csv(unshowable, target), "export-write-failed")
+      assert_true(!file.exists(target), "an infinite or too long duration created a CSV artifact")
+    }
+  })
+  local({
+    # Every engine shows and exports a duration as the text in the shared contract, whatever its R units.
+    contract <- jsonlite::fromJSON("fixtures/duration-text-contract.json", simplifyVector = FALSE)$durations
+    nanoseconds <- vapply(contract, function(case) if (is.null(case$nanoseconds)) NA_real_ else as.double(case$nanoseconds), double(1L))
+    texts <- vapply(contract, `[[`, character(1L), "text")
+    unit_seconds <- c(secs = 1, mins = 60, hours = 3600, days = 86400, weeks = 604800)
+    for (unit in names(unit_seconds)) {
+      source <- data.frame(elapsed = structure(nanoseconds / 1e9 / unit_seconds[[unit]], class = "difftime", units = unit))
+      # One quoted field per line; strsplit drops the empty text after the final line break.
+      exported <- sub("^\"(.*)\"$", "\\1", strsplit(rawToChar(write_bytes(source)), "\n", fixed = TRUE)[[1L]][-1L])
+      assert_identical(exported, texts, sprintf("CSV durations in %s differ from the shared duration text", unit))
+      page <- openwrangler_r_frame_contract$materialize_page(
+        openwrangler_r_frame_contract$capture_frame(source), row_limit = length(texts)
+      )
+      shown <- vapply(page$page$rows, function(row) row$values[[1L]]$display, character(1L))
+      present <- !is.na(nanoseconds)
+      assert_identical(shown[present], texts[present], sprintf("grid durations in %s differ from the shared duration text", unit))
+    }
   })
   local({
     original_options <- options(OutDec = ",", digits.secs = 3L)
@@ -6826,10 +6862,11 @@ local({
       capture, lapply(seq_along(frame), function(position) profile_reference(capture, position))
     )
     assert_identical(actual, profiles[[i]], "registered means changed complete small or chunked profiles")
-    for (position in 1:4) {
+    for (position in 1:3) {
       assert_identical(actual[[position]]$numeric$mean, 2, "a numeric profile mean changed")
       assert_identical(actual[[position]]$numeric$median, 2, "an even numeric profile median dispatched mean")
     }
+    assert_true(is.null(actual[[4L]]$numeric), "a duration profile gained numeric statistics")
     for (position in 5:6) assert_identical(actual[[position]]$text$meanLength, 2, "a text profile mean changed")
     assert_identical(serialize(frame, NULL, version = 3L), before, "registered-method profiling mutated source")
   }
@@ -6890,9 +6927,11 @@ assert_identical(
   "2026-01-01T12:00:00+01:00",
   "POSIXct profile minimum changed"
 )
-assert_identical(base_summaries[[9L]]$numeric$min, 1, "difftime profile minimum changed")
-assert_identical(base_summaries[[9L]]$numeric$max, 3, "difftime profile maximum changed")
-assert_identical(base_summaries[[9L]]$numeric$sum, 4, "difftime profile sum changed")
+# Durations profile as categories, as in every Python engine.
+assert_true(is.null(base_summaries[[9L]]$numeric), "a difftime profile published numeric statistics")
+assert_identical(base_summaries[[9L]]$visualization$kind, "categorical", "a difftime profile lost its categories")
+assert_identical(vapply(base_summaries[[9L]]$topValues, `[[`, character(1L), "value"), c("1:00:00", "3:00:00"),
+  "difftime profile values differ from Python's timedelta text")
 assert_identical(
   base_summaries[[10L]]$numeric$exactMin$raw,
   "-9223372036854775807",
@@ -7258,7 +7297,7 @@ local({
     list(values = c(-Inf, -0, 0, 1, 2, Inf, NA_real_, NaN), distinct = 5L),
     list(values = c(-Inf, Inf, -Inf, Inf, NA_real_, NaN), distinct = 2L),
     list(values = c(1, 1 + .Machine$double.eps, 1 + 2 * .Machine$double.eps), distinct = 3L),
-    list(values = as.difftime(c(-0, 0, 1, 2), units = "hours"), distinct = 4L),
+    list(values = as.difftime(c(-0, 0, 1, 2), units = "hours"), distinct = 3L, top = c("0:00:00", "1:00:00", "2:00:00")),
     list(values = c(9L, 4L, NA_integer_, 6L, 4L), distinct = 3L, top = c("4", "9", "6")),
     list(values = c(5, -0, 5, 0, 1), distinct = 3L),
     list(values = c(-0, 2, 0, 9, 2147483647, -2147483647), distinct = 5L),
@@ -7279,7 +7318,9 @@ local({
     assert_identical(summary$nanCount, as.integer(sum(is.nan(projected)) * repeats), "large NaN count changed")
     assert_identical(summary$distinctCount, case$distinct, "large numeric distinct count lost native identity")
     expected_median <- stats::median(rep(projected[!is.na(projected)], repeats))
-    if (is.finite(expected_median)) {
+    if (inherits(values, "difftime")) {
+      assert_true(is.null(summary$numeric), "a large duration profile published numeric statistics")
+    } else if (is.finite(expected_median)) {
       assert_identical(summary$numeric$median, expected_median, "large numeric median was not exact")
     } else {
       assert_true(is.null(summary$numeric$median), "a non-finite large median was published")
@@ -7290,7 +7331,9 @@ local({
         "large top values lost count or first-occurrence order")
     }
     bins <- summary$visualization$bins
-    if (length(finite) == 0L) {
+    if (inherits(values, "difftime")) {
+      assert_identical(summary$visualization$kind, "categorical", "a large duration profile lost its categories")
+    } else if (length(finite) == 0L) {
       assert_true(is.null(summary$visualization), "non-finite values invented histogram bins")
     } else {
       assert_identical(bins[[1L]]$min, min(finite), "histogram lost its finite minimum")
@@ -7335,14 +7378,16 @@ local({
   for (position in seq_along(summaries)) {
     summary <- summaries[[position]]
     assert_identical(summary$distinctCount, 900L, "large ordinary numeric distinct count was omitted")
-    assert_identical(summary$numeric$median, stats::median(as.double(frame[[position]])), "large numeric median was not exact")
+    if (!inherits(frame[[position]], "difftime")) {
+      assert_identical(summary$numeric$median, stats::median(as.double(frame[[position]])), "large numeric median was not exact")
+    }
     assert_identical(vapply(summary$topValues, `[[`, integer(1L), "count"), rep(134L, 10L), "large numeric top counts changed")
   }
   assert_identical(serialize(frame, NULL, version = 3L), before, "numeric profiling mutated its source")
 
   cases <- list(
     list(values = c(rep(seq_len(10000L), length.out = 110000L), 10001L), distinct = 10001L),
-    list(values = as.difftime(c(rep(0:9999, length.out = 110000L), -0), units = "hours"), distinct = 10001L),
+    list(values = as.difftime(c(rep(0:9999, length.out = 110000L), -0, 10000), units = "hours"), distinct = 10001L),
     list(values = c(seq_len(10001L), rep(NA_integer_, 100000L)), distinct = 10001L),
     list(values = as.double(seq_len(200001L)), distinct = 200001L)
   )
@@ -7351,6 +7396,7 @@ local({
     capture <- openwrangler_r_frame_contract$capture_live_frame(function() frame)
     summary <- openwrangler_r_frame_contract$materialize_summaries(capture, list(profile_reference(capture, 1L)))[[1L]]
     assert_identical(summary$distinctCount, case$distinct, "high-cardinality numeric distinct count was not exact")
+    if (inherits(case$values, "difftime")) next
     assert_identical(summary$numeric$median, stats::median(as.double(case$values), na.rm = TRUE), "high-cardinality median was not exact")
     assert_identical(sum(vapply(summary$visualization$bins, `[[`, integer(1L), "count")),
       as.integer(sum(!is.na(case$values))), "high-cardinality histogram lost rows")
@@ -7558,7 +7604,7 @@ local({
   )
   fold <- function(value) chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
   queries <- c("1", "12", "alpha", "ALPHA", "-0", "0.0", "Inf", "inf", "TRUE", "true", "2024-10-01 00:05",
-    "2024-10-01T00:05", "T00", "caf\u00e9", "a", "1.5", "e", "NaN", "00:05", "+02:00", "0 hours", "b", "-12")
+    "2024-10-01T00:05", "T00", "caf\u00e9", "a", "1.5", "e", "NaN", "00:05", "+02:00", "1:30:00", "b", "-12")
   for (view in views) {
     rows <- fc$materialize_view_page(capture, view, 0L, 100L, 0L, 100L)$page$rows
     for (text in queries) for (match_case in c(FALSE, TRUE)) for (whole_cell in c(FALSE, TRUE)) {
@@ -8086,7 +8132,8 @@ for (case in list(
 }
 
 local({
-  # Every engine displays doubles as Python's float repr and temporal values as ISO text with padded years.
+  # Every engine displays doubles as Python's float repr, temporal values as ISO text with padded years and
+  # durations as Python's timedelta text.
   values <- c(0.1, 0.1 + 0.2, 1/3, 100, -0, 1e16, 1e-5, 1e-4, 123456789.125, 2^53 + 2, 5e-324,
     1.7976931348623157e308, 1e15, 1234567890123456.7, 2.2250738585072014e-308, 60000000000000008, 1e23,
     -0x1.a48900157abb9p+19)
@@ -8107,8 +8154,13 @@ local({
   assert_identical(displays(2L)[1:3], c("0999-12-30", "0999-12-31", "1000-01-01"), "dates before 1000 lost padded years")
   assert_identical(displays(3L)[1:2], c("0999-12-31T00:00:01+00:00", "0999-12-31T00:00:02+00:00"),
     "datetimes before 1000 lost padded years or their offset")
-  assert_identical(displays(4L)[1:5], c("90 secs", "1e-06 secs", "1.5 secs", "-0 secs", "-5 secs"),
-    "durations lost their shortest decimal text")
+  assert_identical(displays(4L)[1:5], c("0:01:30", "0:00:00.000001", "0:00:01.500000", "0:00:00", "-1 day, 23:59:55"),
+    "durations differ from Python's timedelta text")
+  longest <- openwrangler_r_frame_contract$materialize_page(openwrangler_r_frame_contract$capture_frame(
+    data.frame(elapsed = as.difftime(c(2^53 - 1, 1 - 2^53), units = "secs"))
+  ))
+  assert_identical(vapply(longest$page$rows, function(row) row$values[[1L]]$display, character(1L)),
+    c("104249991374 days, 7:36:31", "-104249991375 days, 16:23:29"), "the longest exact durations lost their clock")
   summary <- openwrangler_r_frame_contract$materialize_summaries(
     openwrangler_r_frame_contract$capture_frame(data.frame(value = c(-0, 0, 1))),
     list(list(id = "r:c:0", name = "value"))
@@ -8329,7 +8381,7 @@ assert_typed_selection_round_trip(
   "2026-01-03T02:00:00+00:00",
   "r:r:2"
 )
-assert_typed_selection_round_trip("r:c:5", "elapsed", "duration", "3 hours", "r:r:2")
+assert_typed_selection_round_trip("r:c:5", "elapsed", "duration", "3:00:00", "r:r:2")
 
 searched_values <- openwrangler_r_frame_contract$materialize_column_values(
   filter_capture,

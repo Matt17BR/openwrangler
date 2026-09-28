@@ -409,9 +409,9 @@ representation limits.
 Pandas Arrow duration pages, profiles and choices preserve valid int64 extrema and dictionary labels. The minimum
 microsecond value remains selectable; native and generated filters compare it exactly without an overflowing conversion.
 
-Pandas, Polars and DuckDB show durations as Python's `timedelta` does, such as `1 day, 2:03:04.500000`, with nine
-fraction digits when nanoseconds remain. Grid cells, profiles, value choices, value search and Find use this one text
-in every Python engine, including whole days, large durations and Arrow, dictionary, categorical and Sparse storage.
+Pandas, Polars, DuckDB and every R library show durations as Python's `timedelta` does, such as
+`1 day, 2:03:04.500000`, with nine fraction digits when nanoseconds remain. Grid cells, profiles, value choices,
+value search, Find and CSV export use this one text in every engine, including whole days, large durations and Arrow, dictionary, categorical and Sparse storage.
 Other native spellings are not searchable. Unused duration categories are not listed.
 
 Pandas temporal categories preserve exact displayed values, missing counts and directional Fill anchors. Supported
@@ -833,8 +833,9 @@ native range limits. One-hot encoding refuses a selection that produces no indic
 all-missing duration columns. Other selected columns can still contribute categories. One-hot and Multi-label can
 replace every original `data.table` column, including on single-column inputs, with matching generated R code.
 
-CSV export uses UTF-8, double quotes and LF records. Fractional durations retain decimal points regardless of
-`OutDec`; duration NaN refuses export because the writer would otherwise make it indistinguishable from missing.
+CSV export uses UTF-8, double quotes and LF records. Durations export as the grid's timedelta text regardless of
+`OutDec`; duration NaN refuses export because the writer would otherwise make it indistinguishable from missing,
+and infinite durations or durations of 2^53 seconds or more, which the grid can't show, refuse as well.
 Dates, timestamps and integer64 values are quoted when using custom delimiters. Numeric and logical columns with
 non-missing values refuse delimiters their native text could contain, even when the current values do not contain
 them. Comma, tab, semicolon and pipe remain available; empty and all-missing columns do not impose this restriction.
@@ -918,8 +919,8 @@ Parquet exports store top-level HUGEINT/UHUGEINT values exactly as Decimal with 
 Values outside that range and nested 128-bit integer fields are refused before publication. These fields reopen
 with Decimal storage. Parquet also refuses interval precision or capacity loss and time-zone map-key changes.
 Top-level TIMETZ values retain their UTC time; DuckDB 1.5.4 requires explicit conversion for nested nonzero offsets.
-Representable intervals, compatible keys, nulls and empty containers remain supported. CSV retains its native text
-output.
+Representable intervals, compatible keys, nulls and empty containers remain supported. CSV writes intervals as the
+grid's duration text.
 
 | Surface                                      | Availability     | Status      | Current evidence                                        | Limit or missing proof                              |
 | -------------------------------------------- | ---------------- | ----------- | ------------------------------------------------------- | --------------------------------------------------- |

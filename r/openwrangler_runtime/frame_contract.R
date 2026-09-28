@@ -895,9 +895,49 @@ openwrangler_r_frame_contract <- local({
     displays
   }
 
-  display_difftime_values <- function(values, units) {
-    # R prints whole durations without a decimal point.
-    paste(sub("\\.0$", "", display_double_values(values)), units)
+  # Python's timedelta text, which every engine shows: signed whole days, then the clock with
+  # microseconds, or nanoseconds when they remain. Missing and non-finite values have no text.
+  display_difftime_values <- function(values, units, label = "R duration") {
+    seconds <- as.double(values) * duration_unit_seconds[[units]]
+    # From 2^53 seconds, about 285 million years, a double no longer holds every whole second of the clock.
+    too_long <- which(is.finite(seconds) & abs(seconds) >= 2^53)
+    if (length(too_long) != 0L) {
+      abort("unsupported-cell", sprintf(
+        "%s is outside the supported duration range", indexed_value_label(label, too_long[[1L]], length(seconds))
+      ))
+    }
+    present <- which(is.finite(seconds))
+    displays <- rep(NA_character_, length(seconds))
+    if (length(present) == 0L) return(displays)
+    seconds <- seconds[present]
+    whole <- floor(seconds)
+    nanoseconds <- round((seconds - whole) * 1e9)
+    # Microseconds whenever they read back as the same double, so binary noise never shows as nanoseconds.
+    noisy <- which(nanoseconds %% 1000 != 0)
+    if (length(noisy) != 0L) {
+      microseconds <- round((seconds[noisy] - whole[noisy]) * 1e6)
+      exact <- whole[noisy] + microseconds / 1e6 == seconds[noisy]
+      nanoseconds[noisy[exact]] <- microseconds[exact] * 1000
+    }
+    carry <- which(nanoseconds == 1e9)
+    whole[carry] <- whole[carry] + 1
+    nanoseconds[carry] <- 0
+    days <- floor(whole / 86400)
+    clock <- whole - days * 86400
+    # Each distinct day count and clock is formatted once, so a value allocates only its digits and its text.
+    clocks <- unique(clock)
+    clock_text <- sprintf("%.0f:%02.0f:%02.0f", clocks %/% 3600, clocks %/% 60 %% 60, clocks %% 60)[match(clock, clocks)]
+    day_values <- unique(days)
+    day_text <- ifelse(
+      day_values == 0, "", sprintf("%.0f %s, ", day_values, ifelse(abs(day_values) == 1, "day", "days"))
+    )[match(days, day_values)]
+    fraction <- character(length(seconds))
+    micro <- which(nanoseconds != 0 & nanoseconds %% 1000 == 0)
+    nano <- which(nanoseconds %% 1000 != 0)
+    fraction[micro] <- formatC(as.integer(nanoseconds[micro] / 1000), width = 6L, flag = "0")
+    fraction[nano] <- formatC(as.integer(nanoseconds[nano]), width = 9L, flag = "0")
+    displays[present] <- paste0(day_text, clock_text, c("", ".")[1L + (nanoseconds != 0)], fraction)
+    displays
   }
 
   indexed_value_label <- function(label, index, count) {
@@ -1506,7 +1546,7 @@ openwrangler_r_frame_contract <- local({
     }
     if (kind == "difftime") {
       exact <- exact_double(numeric_value)
-      display <- display_difftime_values(numeric_value, semantics$units)
+      display <- display_difftime_values(numeric_value, semantics$units, label)
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
       return(ordinary_cell("duration", exact, display))
@@ -3158,9 +3198,7 @@ openwrangler_r_frame_contract <- local({
       return(display_datetime_values(values, semantics$timezone, "column values"))
     }
     if (kind == "difftime") {
-      numbers <- as.double(values, units = semantics$units)
-      numbers[numbers == 0] <- 0
-      return(display_difftime_values(numbers, semantics$units))
+      return(display_difftime_values(as.double(values, units = semantics$units), semantics$units))
     }
     abort("internal-error", "unknown R column kind")
   }
@@ -3193,7 +3231,7 @@ openwrangler_r_frame_contract <- local({
       )
       display <- encoded$display
       # Equal zeros share one label regardless of which sign occurred first.
-      if (semantics$kind %in% c("double", "difftime")) display <- sub("^-0(\\.0)?( |$)", "0\\1\\2", display)
+      if (identical(semantics$kind, "double")) display <- sub("^-0(\\.0)?$", "0\\1", display)
       list(value = display, count = as.integer(counts[[selected[[result_index]]]]))
     })
     list(
@@ -3222,8 +3260,8 @@ openwrangler_r_frame_contract <- local({
       if (kind == "integer64" && length(values) != 0L && max(abs(values)) >= 9007199254740992) {
         return(profile_value_keys(column, semantics, indices, integer64_bindings))
       }
-      # unique() merges signed zeros; date-time and duration keys keep negative zero apart as the unused NA.
-      if (kind %in% c("datetime", "difftime")) values[values == 0 & 1 / values < 0] <- NA_real_
+      # unique() merges signed zeros; date-time keys keep negative zero apart as the unused NA.
+      if (kind == "datetime") values[values == 0 & 1 / values < 0] <- NA_real_
       return(values)
     }
     profile_value_keys(column, semantics, indices, integer64_bindings)
@@ -3663,10 +3701,12 @@ openwrangler_r_frame_contract <- local({
     )
 
     if (nested_kind(semantics)) summary$distinctCount <- NULL
-    if (semantics$kind %in% c("integer", "integer64", "double", "difftime")) {
+    if (semantics$kind %in% c("integer", "integer64", "double")) {
       profile <- numeric_profile(column, semantics, present_indices, counts$keys, budget, label)
       if (!is.null(profile$numeric)) summary$numeric <- profile$numeric
       if (!is.null(profile$visualization)) summary$visualization <- profile$visualization
+    } else if (semantics$kind == "difftime") {
+      summary$visualization <- categorical_visualization(counts$topValues, length(present_indices))
     } else if (semantics$kind == "logical") {
       values <- column[present_indices]
       summary$visualization <- list(
@@ -3752,7 +3792,7 @@ openwrangler_r_frame_contract <- local({
     state$numeric_bin_values <- NULL
     state$numeric_finite_count <- 0
     state$numeric_mean <- 0
-    state$numeric_exact_mean <- if (state$kind %in% c("integer", "double", "difftime")) exact_mean_new() else NULL
+    state$numeric_exact_mean <- if (state$kind %in% c("integer", "double")) exact_mean_new() else NULL
     state$numeric_m2 <- 0
     state$numeric_sum <- 0
     state$numeric_has_nonfinite <- FALSE
@@ -3827,7 +3867,7 @@ openwrangler_r_frame_contract <- local({
           present <- if (complete) chunk else if (state$kind == "integer64") {
             integer64_subset(chunk, present_indices)
           } else chunk[present_indices]
-          if (!state$kind %in% c("integer", "integer64", "double", "difftime")) {
+          if (!state$kind %in% c("integer", "integer64", "double")) {
             visible_positions <- seq.int(as.integer(state$start), length.out = as.integer(count))[present_indices]
             present_sources <- source_positions[present_indices]
           }
@@ -3874,7 +3914,7 @@ openwrangler_r_frame_contract <- local({
               state$datetime_maximum <- values[[chunk_maximum]]
               state$datetime_maximum_source <- present_sources[[chunk_maximum]]
             }
-          } else if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
+          } else if (state$kind %in% c("integer", "integer64", "double")) {
             values <- numeric_profile_values(chunk, state$semantics, if (!complete) present_indices, integer64_bindings)
             # Doubles below 2^53 represent these integers exactly.
             exact_doubles <- state$kind %in% c("integer", "integer64") && max(abs(values)) < 9007199254740992
@@ -3969,7 +4009,7 @@ openwrangler_r_frame_contract <- local({
       }
       exact <- profile_population_counts(population, state$semantics, present, integer64_bindings, numeric_values)
       counts <- profile_count_summary(state$column, state$semantics, sources[exact$first], exact$counts, state$budget, state$label)
-      if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
+      if (state$kind %in% c("integer", "integer64", "double")) {
         group_values <- numeric_values[exact$local]
         # Sorting few distinct values is cheaper than selecting among every row.
         median_value <- if (length(group_values) * 4 <= length(numeric_values)) {
@@ -4015,7 +4055,7 @@ openwrangler_r_frame_contract <- local({
       topValues = counts$topValues
     )
 
-    if (state$kind %in% c("integer", "integer64", "double", "difftime")) {
+    if (state$kind %in% c("integer", "integer64", "double")) {
       numeric <- list()
       if (state$kind %in% c("integer", "integer64")) {
         fold_profile_exact_sum(state)
@@ -4051,6 +4091,8 @@ openwrangler_r_frame_contract <- local({
       if (!is.null(state$histogram_edges)) {
         summary$visualization <- numeric_histogram_from_counts(state$histogram_edges, state$histogram_counts)
       }
+    } else if (state$kind == "difftime") {
+      summary$visualization <- categorical_visualization(counts$topValues, state$present_count)
     } else if (state$kind == "logical") {
       summary$visualization <- list(
         kind = "boolean",
@@ -11419,23 +11461,20 @@ openwrangler_r_frame_contract <- local({
       } else if (is.factor(column)) {
         attr(column, "levels") <- csv_text(attr(column, "levels", exact = TRUE), "CSV factor level")
       } else if (inherits(column, "difftime")) {
-        # Keep stored magnitudes while the native numeric writer owns decimal punctuation.
-        column <- plain_metadata_storage(column)
-        row_count <- length(column)
-        if (row_count > 0L) {
-          for (start in seq.int(1, row_count, by = 65536)) {
-            values <- .subset(column, seq.int(start, min(start + 65535, row_count)))
-            if (any(is.nan(values))) {
-              abort("export-write-failed", "R duration NaN cannot be exported as CSV without becoming missing")
-            }
-          }
+        values <- plain_metadata_storage(column)
+        if (any(is.nan(values))) {
+          abort("export-write-failed", "R duration NaN cannot be exported as CSV without becoming missing")
         }
+        units <- capture$descriptor$schema[[index]]$semantics$units
+        if (any(abs(values) * duration_unit_seconds[[units]] >= 2^53, na.rm = TRUE)) {
+          abort("export-write-failed", "R durations that are infinite or 2^53 seconds or longer cannot be exported as CSV")
+        }
+        column <- display_difftime_values(values, units)
       }
       kind <- capture$descriptor$schema[[index]]$semantics$kind
       unquoted_characters <- switch(kind,
         integer = "-0123456789",
         double = ".0123456789e+-Inf",
-        difftime = ".0123456789e+-Inf",
         logical = "TRUEFALSE"
       )
       if (!is.null(unquoted_characters) && grepl(options$delimiter, unquoted_characters, fixed = TRUE)) {
@@ -11444,9 +11483,8 @@ openwrangler_r_frame_contract <- local({
           for (start in seq.int(1, row_count, by = 65536)) {
             values <- .subset(column, seq.int(start, min(start + 65535, row_count)))
             if (any(!is.na(values))) {
-              label <- if (identical(kind, "difftime")) "duration" else kind
               abort("export-write-failed", paste0(
-                "R CSV export does not support this delimiter for non-missing ", label,
+                "R CSV export does not support this delimiter for non-missing ", kind,
                 " columns, even when their current values do not contain it. Choose comma, tab, semicolon or pipe."
               ))
             }

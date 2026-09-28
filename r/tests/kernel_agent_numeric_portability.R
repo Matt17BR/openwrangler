@@ -198,9 +198,7 @@ local({
     maximum = list(values = rep.int(.Machine$double.xmax, 100001L), expected = "0x1.fffffffffffffp+1023"),
     cancellation_sign = list(values = c(rep.int(0x1.c7b1f3cac7433p+1019, 131072L), rep.int(-0x1.c7b3bb7e82c1bp+1020, 65535L)), expected = "0x1.d675f22750b7cp+963"),
     cancellation_zero = list(values = c(rep.int(0x1.1ccf385ebc8a0p+1023, 65536L), rep.int(-0x1.1cd0552f11b91p+1023, 65535L)), expected = "0x1.b910dc886e443p+966"),
-    small = list(values = c(2^1000, 0, -2^1000, 4), expected = "0x1p+0"),
-    duration = list(values = as.difftime(c(rep.int(-0x1.6c8e5ca239029p+1016, 65536L), rep.int(0x1.6c8e5ca239029p+1016, 34465L)), units = "hours"),
-      expected = "-0x1.c514935f8595fp+1014")
+    small = list(values = c(2^1000, 0, -2^1000, 4), expected = "0x1p+0")
   )
   for (name in names(cases)) {
     case <- cases[[name]]

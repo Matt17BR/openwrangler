@@ -629,7 +629,15 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
         max: "2026-01-04T00:00:00+00:00"
       }
     });
-    expect(profiled.summaries[6]).toMatchObject({ numeric: { min: 1, max: 4 } });
+    expect(profiled.summaries[6]).toMatchObject({
+      topValues: [
+        { value: "1:00:00", count: 1 },
+        { value: "2:00:00", count: 1 },
+        { value: "4:00:00", count: 1 }
+      ],
+      visualization: { kind: "categorical", otherCount: 0 }
+    });
+    expect(profiled.summaries[6]?.numeric).toBeUndefined();
     expect(profiled.summaries[7]).toMatchObject({
       numeric: {
         exactMin: { raw: "-9223372036854775807" },
@@ -654,18 +662,15 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
     if (largeProfiled.kind === "error") throw new Error(largeProfiled.message);
     expect(largeProfiled).toMatchObject({ kind: "summary", sessionId: largeSessionId });
     if (largeProfiled.kind !== "summary") throw new Error("Expected large typed R summaries.");
-    expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 3, 2]);
+    expect(largeProfiled.summaries.map((entry) => entry.distinctCount)).toEqual([900, 900, 2, 2]);
     expect(largeProfiled.summaries.map((entry) => entry.topValues.map((value) => value.count))).toEqual([
       Array<number>(10).fill(134),
       Array<number>(10).fill(134),
-      [40_000, 40_000, 40_000],
+      [80_000, 40_000],
       [60_000, 60_000]
     ]);
-    // Adding zero folds a negative-zero duration median into the plain zero it equals.
-    expect(largeProfiled.summaries.slice(0, 3).map((entry) => (entry.numeric?.median ?? Number.NaN) + 0)).toEqual([
-      448, 44.8, 0
-    ]);
-    for (const [index, entry] of largeProfiled.summaries.slice(0, 3).entries()) {
+    expect(largeProfiled.summaries.slice(0, 2).map((entry) => entry.numeric?.median)).toEqual([448, 44.8]);
+    for (const [index, entry] of largeProfiled.summaries.slice(0, 2).entries()) {
       expect(entry).toMatchObject({
         totalCount: 120_002,
         nullCount: index === 1 ? 1 : 2,
@@ -675,6 +680,17 @@ stopifnot(identical(serialize(large_typed, NULL, version = 3L), large_before))
       if (entry.visualization?.kind !== "numeric") throw new Error("Expected complete numeric histogram.");
       expect(entry.visualization.bins.reduce((count, bin) => count + bin.count, 0)).toBe(120_000);
     }
+    // Negative and plain zero durations both show as 0:00:00, so they count as one value.
+    expect(largeProfiled.summaries[2]).toMatchObject({
+      totalCount: 120_002,
+      nullCount: 2,
+      nanCount: 0,
+      topValues: [
+        { value: "0:00:00", count: 80_000 },
+        { value: "1:00:00", count: 40_000 }
+      ],
+      visualization: { kind: "categorical", otherCount: 0 }
+    });
     expect(largeProfiled.summaries[3]).toMatchObject({ totalCount: 120_002, nullCount: 1, nanCount: 1 });
     expect(largeProfiled.summaries[3]?.numeric).toEqual({});
     expect(largeProfiled.summaries[3]?.visualization).toBeUndefined();
