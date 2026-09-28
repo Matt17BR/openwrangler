@@ -65,6 +65,13 @@
     { "type": "datetime", "value": "2024-01-31T23:59:58.1234567Z" },
     { "type": "datetime", "value": "2024-01-31T23:59:58+00:53:28" },
     { "type": "datetime", "value": "2024-01-31T23:60:00Z" },
-    { "type": "datetime", "value": "2024-01-31T23:59:60Z" }
+    { "type": "datetime", "value": "2024-01-31T23:59:60Z" },
+    { "type": "integer", "value": "1000\n" },
+    { "type": "float", "value": "1.5\n" },
+    { "type": "float", "value": "inf\n" },
+    { "type": "date", "value": "2024-01-31\n" },
+    { "type": "datetime", "value": "2024-01-31T23:59:58\n" },
+    { "type": "duration", "value": "1.25\n" },
+    { "type": "duration", "value": "00:00:01\n" }
   ]
 }

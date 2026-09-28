@@ -60,7 +60,7 @@ openwrangler_r_kernel_agent <- local({
     "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a",
     "\u2028\u2029\u202f\u205f\u3000"
   )
-  identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+  identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"
 
   anyDuplicated <- function(value) base::anyDuplicated.default(value)
 
@@ -974,10 +974,10 @@ openwrangler_r_kernel_agent <- local({
     )
     pattern <- switch(
       kind,
-      integer = "^-?(?:0|[1-9][0-9]*)$",
-      float = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
-      decimal = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
-      date = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      integer = "^-?(?:0|[1-9][0-9]*)\\z",
+      float = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\z",
+      decimal = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\z",
+      date = "^[0-9]{4}-[0-9]{2}-[0-9]{2}\\z",
       NULL
     )
     if (!is.null(pattern) && !grepl(pattern, text, perl = TRUE)) {
@@ -1251,7 +1251,7 @@ openwrangler_r_kernel_agent <- local({
       stop("Open Wrangler could not serialize a finite by-example double", call. = FALSE)
     }
     matched <- regexec(
-      "^([0-9]+)(?:\\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$",
+      "^([0-9]+)(?:\\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?\\z",
       shortest,
       perl = TRUE
     )[[1L]]
@@ -1503,7 +1503,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   by_example_normalize_integer_text <- function(value) {
-    if (!is.character(value) || length(value) != 1L || is.na(value) || !grepl("^-?[0-9]+$", value, perl = TRUE)) {
+    if (!is.character(value) || length(value) != 1L || is.na(value) || !grepl("^-?[0-9]+\\z", value, perl = TRUE)) {
       stop("Open Wrangler by-example received invalid exact integer text", call. = FALSE)
     }
     negative <- startsWith(value, "-")
@@ -8300,7 +8300,7 @@ openwrangler_r_kernel_agent <- local({
             # Skip only whole unquoted blank records; quoted-empty and delimiter-only records retain their fields.
             skip <- counts == 1L & !quoted[ends] & values[ends] == ""
             if (base::is.null(width)) {
-              padding <- counts == 1L & !quoted[ends] & base::grepl("^[ \t]*$", values[ends], perl = TRUE, useBytes = TRUE)
+              padding <- counts == 1L & !quoted[ends] & base::grepl("^[ \t]*\\z", values[ends], perl = TRUE, useBytes = TRUE)
               first_record <- base::which(!padding)
               prefix_count <- if (base::length(first_record)) first_record[[1L]] - 1L else base::length(ends)
               if (prefix_count) skip[base::seq_len(prefix_count)] <- TRUE
@@ -8738,7 +8738,7 @@ openwrangler_r_kernel_agent <- local({
       source$quoteChar <- bounded_text(source$quoteChar, "file source.quoteChar", 1L)
       source$encoding <- bounded_text(source$encoding, "file source.encoding", 16L)
       if (!source$encoding %in% c("utf-8", "utf8-lossy", "utf-16le", "utf-16be", "iso-8859-1", "windows-1252")) abort("invalid_source", "R CSV encoding is unsupported")
-      if (!grepl("^[\\t -~]$", source$delimiter, perl = TRUE) || !grepl("^[\\t -~]$", source$quoteChar, perl = TRUE) || source$delimiter == source$quoteChar) abort("invalid_source", "R CSV requires different ASCII delimiter and quote characters, without record endings")
+      if (!grepl("^[\\t -~]\\z", source$delimiter, perl = TRUE) || !grepl("^[\\t -~]\\z", source$quoteChar, perl = TRUE) || source$delimiter == source$quoteChar) abort("invalid_source", "R CSV requires different ASCII delimiter and quote characters, without record endings")
     } else if (source$format %in% c("parquet", "jsonl")) {
       source <- exact_record(source, c("path", "format"), "file source")
     } else if (identical(source$format, "excel")) {
@@ -11104,7 +11104,7 @@ openwrangler_r_kernel_agent <- local({
     fragments <- character(length(values))
     missing <- is.na(values)
     fragments[missing] <- "null"
-    plain <- !missing & grepl("^[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]*$", values, perl = TRUE, useBytes = TRUE)
+    plain <- !missing & grepl("^[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]*\\z", values, perl = TRUE, useBytes = TRUE)
     spend(4 * sum(missing) + sum(nchar(values[plain], type = "bytes")) + 2 * sum(plain))
     fragments[plain] <- paste0("\"", values[plain], "\"")
     for (index in which(!missing & !plain)) {

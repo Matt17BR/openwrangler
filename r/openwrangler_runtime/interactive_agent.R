@@ -13,8 +13,8 @@ openwrangler_r_interactive_agent <- local({
   terminal_binding <- ".openwrangler_r_interactive_terminal_872e5b61"
   dispatcher_binding <- ".openwrangler_r_interactive_dispatcher_872e5b61"
   runtime_owner <- "openwrangler-native-r-runtime-v1"
-  identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-  command_binding_pattern <- "^\\.openwrangler_r_request_[a-f0-9]{16}$"
+  identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"
+  command_binding_pattern <- "^\\.openwrangler_r_request_[a-f0-9]{16}\\z"
   transport_contexts <- new.env(parent = emptyenv())
   workspace_callback_name <- "openwrangler.workspace.872e5b61"
   workspace_callback_running <- FALSE
@@ -518,10 +518,10 @@ openwrangler_r_interactive_agent <- local({
     expected_process_id,
     command_binding
   ) {
-    if (!grepl("^[A-Za-z0-9._:-]{1,128}$", owner_token, perl = TRUE)) {
+    if (!grepl("^[A-Za-z0-9._:-]{1,128}\\z", owner_token, perl = TRUE)) {
       stop("Open Wrangler received an invalid runtime owner.", call. = FALSE)
     }
-    if (!grepl("^[a-f0-9]{16}$", bundle_id, perl = TRUE)) {
+    if (!grepl("^[a-f0-9]{16}\\z", bundle_id, perl = TRUE)) {
       stop("Open Wrangler received an invalid runtime bundle identity.", call. = FALSE)
     }
     if (!grepl(command_binding_pattern, command_binding, perl = TRUE)) {
@@ -624,10 +624,10 @@ openwrangler_r_interactive_agent <- local({
     response_parent <- validate_path(dirname(response_path), "response directory", TRUE)
     response_path <- file.path(response_parent, basename(response_path))
     runtime_root <- validate_path(runtime_root, "runtime root", TRUE)
-    if (!grepl("^[A-Za-z0-9._:-]{1,128}$", owner_token, perl = TRUE)) {
+    if (!grepl("^[A-Za-z0-9._:-]{1,128}\\z", owner_token, perl = TRUE)) {
       stop("Open Wrangler received an invalid runtime owner.", call. = FALSE)
     }
-    if (!grepl("^[a-f0-9]{16}$", bundle_id, perl = TRUE)) {
+    if (!grepl("^[a-f0-9]{16}\\z", bundle_id, perl = TRUE)) {
       stop("Open Wrangler received an invalid runtime bundle identity.", call. = FALSE)
     }
     if (!is.logical(allow_terminal_claim) || length(allow_terminal_claim) != 1L || is.na(allow_terminal_claim)) {
