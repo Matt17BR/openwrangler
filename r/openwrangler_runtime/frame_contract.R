@@ -1896,7 +1896,11 @@ openwrangler_r_frame_contract <- local({
     metadata$names <- output_names
     base::length(metadata$element_names) <- base::length(output_names)
     for (i in base::seq_along(positions)) metadata$element_names[positions[[i]]] <- column_names[i]
-    if (base::any(previous_names[positions[positions <= base::length(previous_names)]] %in% metadata$key)) metadata$key <- NULL
+    if (!base::is.null(metadata$key)) {
+      replaced <- metadata$key %in% previous_names[positions[positions <= base::length(previous_names)]]
+      prefix <- if (base::any(replaced)) base::which(replaced)[[1L]] - 1L else base::length(replaced)
+      metadata$key <- if (prefix == 0L) NULL else metadata$key[base::seq_len(prefix)]
+    }
     values <- stats::setNames(columns, base::paste0("ow_c", positions))
     if (library %in% c("data.table", "collapse")) {
       for (i in base::seq_along(values)) {
@@ -6930,17 +6934,6 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
-    if (
-      in_place &&
-        identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort(
-        "invalid-view-query",
-        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
-      )
-    }
-
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
     transformed <- if (operation %in% c("lowerText", "upperText")) {
@@ -8144,18 +8137,6 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
-    source_key <- if (identical(inspected$flavor, "r.data.table")) {
-      data.table::key(value) %||% character()
-    } else {
-      character()
-    }
-    if (in_place && old_name %in% source_key) {
-      abort(
-        "invalid-view-query",
-        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
-      )
-    }
-
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- result[[position]]
     transformed <- if (identical(operation, "minMaxScale")) {
@@ -8253,17 +8234,6 @@ openwrangler_r_frame_contract <- local({
     if (!in_place && column_count >= maximum_columns) {
       abort("invalid-view-query", "formatDatetime exceeds the supported R column limit")
     }
-    if (
-      in_place &&
-        identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort(
-        "invalid-view-query",
-        "formatDatetime cannot replace a data.table key column; choose a new output column"
-      )
-    }
-
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- result[[position]]
     check_output <- function(item, index) bounded_operation_output(item, "Format datetime")
@@ -8607,12 +8577,6 @@ openwrangler_r_frame_contract <- local({
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
-    if (
-      identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
-    }
     filled <- fill_missing_value(value[[position]], descriptor, replacement)
     result <- isolated_snapshot(value, inspected$flavor)
     if (!identical(library, "base")) {
@@ -8653,12 +8617,6 @@ openwrangler_r_frame_contract <- local({
     }
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
-    }
-    if (
-      identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
     }
     if (
       !is.numeric(fallback_positions) ||
@@ -8838,12 +8796,6 @@ openwrangler_r_frame_contract <- local({
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
     if (
-      identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
-    }
-    if (
       !is.numeric(order_positions) ||
         anyNA(order_positions) ||
         any(!is.finite(order_positions)) ||
@@ -9010,12 +8962,6 @@ openwrangler_r_frame_contract <- local({
     if (is_private_column_name(old_name) || is_private_column_name(coordinate_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
-    if (
-      identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
-    }
     if (!identical(target_descriptor$semantics$kind, "double")) {
       abort("invalid-view-query", "linear interpolation requires a floating-point R target column")
     }
@@ -9149,12 +9095,6 @@ openwrangler_r_frame_contract <- local({
     }
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
-    }
-    if (
-      identical(inspected$flavor, "r.data.table") &&
-        old_name %in% (data.table::key(value) %||% character())
-    ) {
-      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
     }
     if (
       !is.numeric(key_positions) ||
@@ -9555,12 +9495,7 @@ openwrangler_r_frame_contract <- local({
     } else {
       character()
     }
-    if (old_name %in% source_key) {
-      abort(
-        "invalid-view-query",
-        "castColumn cannot replace a data.table key column; clone the column before casting it"
-      )
-    }
+    retained_key <- source_key[seq_len(match(old_name, source_key, nomatch = length(source_key) + 1L) - 1L)]
 
     result <- isolated_snapshot(value, inspected$flavor)
     converted <- cast_column_values(
@@ -9575,7 +9510,7 @@ openwrangler_r_frame_contract <- local({
       result <- library_assign(result, position, list(converted), names(result), library)
     } else if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = position, value = converted)
-      if (!identical(data.table::key(result) %||% character(), source_key)) {
+      if (!identical(data.table::key(result) %||% character(), retained_key)) {
         abort("internal-error", "castColumn changed a retained data.table key")
       }
     } else {
@@ -12871,11 +12806,6 @@ openwrangler_r_frame_contract <- local({
       if (position < 1L || position > length(schema) || !identical(schema[[position]]$name, old_names[[index]])) {
         abort("stale-column", "the Replace column no longer matches the R dataframe")
       }
-    }
-    source_key <- if (identical(inspected$flavor, "r.data.table")) data.table::key(value) %||% character() else character()
-    keyed <- intersect(old_names, source_key)
-    if (length(keyed) != 0L) {
-      abort("invalid-view-query", sprintf("Replace can't change %s, a data.table key column; clone it first.", replace_matches_quote(keyed[[1L]])))
     }
     result <- isolated_snapshot(value, inspected$flavor)
     columns <- lapply(seq_along(positions), function(index) {

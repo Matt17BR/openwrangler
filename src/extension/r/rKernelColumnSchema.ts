@@ -117,8 +117,7 @@ export function schemaAfterRegexExtraction(
 
 export function schemaAfterFillMissing(
   inputSchema: readonly ColumnSchema[],
-  step: FillMissingValuesTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: FillMissingValuesTransformStep
 ): readonly ColumnSchema[] {
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -132,9 +131,6 @@ export function schemaAfterFillMissing(
   }
   if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
     throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
-  }
-  if (activeKeyColumnIds.includes(source.id)) {
-    throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
   }
   const replacement = step.params.replacement;
   if (replacement.kind === "linearInterpolation") {
@@ -266,8 +262,7 @@ export function schemaAfterFillMissing(
 
 export function schemaAfterCast(
   inputSchema: readonly ColumnSchema[],
-  step: CastColumnTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: CastColumnTransformStep
 ): readonly ColumnSchema[] {
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -278,11 +273,6 @@ export function schemaAfterCast(
   const source = matches[0] as ColumnSchema;
   if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
     throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
-  }
-  if (activeKeyColumnIds.includes(source.id)) {
-    throw new TypeError(
-      "Convert type cannot replace a data.table key column. Clone the column first, then convert it."
-    );
   }
 
   const target = rCastTarget(source.rawType, step.params.dtype);
@@ -351,8 +341,7 @@ function unsupportedRCast(sourceRawType: string, dtype: string): TypeError {
 
 export function schemaAfterTextTransform(
   inputSchema: readonly ColumnSchema[],
-  step: RTextTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: RTextTransformStep
 ): readonly ColumnSchema[] {
   const label = textTransformLabel(step);
   const description = label.toLowerCase();
@@ -376,11 +365,6 @@ export function schemaAfterTextTransform(
     throw new TypeError("Split text requires a new output column.");
   }
   if (inPlace) {
-    if (activeKeyColumnIds.includes(source.id)) {
-      throw new TypeError(
-        `${label} cannot replace a keyed data.table column in place. Choose a new output column instead.`
-      );
-    }
     return Object.freeze(
       inputSchema.map((column) =>
         Object.freeze(

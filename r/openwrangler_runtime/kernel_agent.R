@@ -3765,11 +3765,6 @@ openwrangler_r_kernel_agent <- local({
       abort("invalid_request", "Format Datetime requires an R Date, POSIXct or clock timestamp column", TRUE)
     }
     in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, column$name)
-    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
-    if (is.null(key_column_ids)) key_column_ids <- character()
-    if (in_place && column$id %in% key_column_ids) {
-      abort("invalid_request", "Format Datetime cannot replace a data.table key column", TRUE)
-    }
     new_name <- if (in_place) column$name else step$params$newColumn
     names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
     ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
@@ -4086,15 +4081,6 @@ openwrangler_r_kernel_agent <- local({
     }
     in_place <- !identical(step$kind, "denseRank") &&
       (is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name))
-    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
-    if (is.null(key_column_ids)) key_column_ids <- character()
-    if (in_place && column$id %in% key_column_ids) {
-      abort(
-        "invalid_request",
-        sprintf("%s cannot replace a data.table key column; choose a new output column", step$kind),
-        TRUE
-      )
-    }
     list(
       id = step$id,
       kind = step$kind,
@@ -4155,11 +4141,6 @@ openwrangler_r_kernel_agent <- local({
     }
     if (!compatible) {
       abort("invalid_request", "The replacement is incompatible with the selected R column", TRUE)
-    }
-    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
-    if (is.null(key_column_ids)) key_column_ids <- character()
-    if (column$id %in% key_column_ids) {
-      abort("invalid_request", "Fill Missing Values cannot replace a data.table key column", TRUE)
     }
     fallback_columns <- list()
     if (identical(replacement_kind, "fallbackColumns")) {
@@ -10359,10 +10340,6 @@ openwrangler_r_kernel_agent <- local({
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
-            sprintf(
-              "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_text_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
-              operation_name
-            ),
             if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_text_position, list(.ow_text_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_text_position, value = .ow_text_values) else .ow_result[[.ow_text_position]] <- .ow_text_values"
           )
         } else {
@@ -10431,10 +10408,6 @@ openwrangler_r_kernel_agent <- local({
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
-            sprintf(
-              "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_numeric_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
-              operation_name
-            ),
             if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_numeric_position, list(.ow_numeric_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_numeric_position, value = .ow_numeric_values) else .ow_result[[.ow_numeric_position]] <- .ow_numeric_values"
           )
         } else {
@@ -10552,7 +10525,6 @@ openwrangler_r_kernel_agent <- local({
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
-            "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_datetime_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Format Datetime cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
             if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_datetime_position, list(.ow_datetime_values), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_datetime_position, value = .ow_datetime_values) else .ow_result[[.ow_datetime_position]] <- .ow_datetime_values"
           )
         } else {
@@ -10593,8 +10565,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (ncol(.ow_result) < .ow_fill_position || !identical(names(.ow_result)[[.ow_fill_position]], .ow_fill_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  .ow_fill_source <- .ow_result[[.ow_fill_position]]",
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
-          if (identical(step$semanticKind, "clock_datetime")) clock_type_guard(".ow_fill_source", step),
-          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
+          if (identical(step$semanticKind, "clock_datetime")) clock_type_guard(".ow_fill_source", step)
         )
         if (interpolation_fill) {
           coordinate <- step$interpolationCoordinate
@@ -10735,7 +10706,6 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_replace_positions <- c(%s)", paste(sprintf("%dL", step$positions), collapse = ", ")),
           sprintf("  .ow_replace_names <- c(%s)", paste(vapply(step$names, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")),
           "  if (any(.ow_replace_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_replace_positions], .ow_replace_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  if (inherits(.ow_result, \"data.table\") && any(.ow_replace_names %in% data.table::key(.ow_result))) stop(\"Replace can't change a data.table key column; clone it first.\", call. = FALSE)",
           sprintf(
             "  .ow_replace_columns <- lapply(seq_along(.ow_replace_positions), function(.ow_index) .ow_replace_helpers$replace(.ow_result[[.ow_replace_positions[[.ow_index]]]], .ow_replace_names[[.ow_index]], %s, %s, %s, %s, %s))",
             r_string(step$find),
@@ -10760,7 +10730,6 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_cast_source_name <- %s", r_string(step$oldName)),
           sprintf("  .ow_cast_dtype <- %s", r_string(step$dtype)),
           "  if (ncol(.ow_result) < .ow_cast_position || !identical(names(.ow_result)[[.ow_cast_position]], .ow_cast_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_cast_source_name %in% data.table::key(.ow_result)) stop(\"castColumn cannot replace a data.table key column; clone the column before casting it\", call. = FALSE)",
           sprintf("  .ow_cast_result <- .ow_cast_values(.ow_result[[.ow_cast_position]], .ow_cast_dtype%s)",
             if (is.null(step$inputFormat)) "" else paste0(", ", r_string(step$inputFormat))),
           if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_cast_position, list(.ow_cast_result), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_cast_position, value = .ow_cast_result) else .ow_result[[.ow_cast_position]] <- .ow_cast_result"

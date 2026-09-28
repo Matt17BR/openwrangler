@@ -361,7 +361,6 @@ export function schemaAfterNestedStep(
 export function schemaAfterRStep(
   inputSchema: readonly ColumnSchema[],
   step: RPreviewTransformStep,
-  activeKeyColumnIds: readonly string[],
   inputRSchema: readonly RColumnSchema[] = []
 ): readonly ColumnSchema[] {
   if (step.kind === "extractStructFields" || step.kind === "explodeList")
@@ -438,20 +437,17 @@ export function schemaAfterRStep(
   }
   if (step.kind === "replaceMatches") {
     for (const reference of step.params.columns) {
-      const column = requireTransformColumn(reference, inputSchema, "Replace");
-      if (activeKeyColumnIds.includes(column.id)) {
-        throw new TypeError(`Replace can't change '${column.name}', a data.table key column; clone it first.`);
-      }
+      requireTransformColumn(reference, inputSchema, "Replace");
     }
     return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
   }
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "formula") return schemaAfterFormula(inputSchema, step);
-  if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
-  if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
-  if (step.kind === "minMaxScale") return schemaAfterMinMaxScale(inputSchema, step, activeKeyColumnIds);
-  if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
-  if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step);
+  if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step);
+  if (step.kind === "minMaxScale") return schemaAfterMinMaxScale(inputSchema, step);
+  if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step);
+  if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "splitTextColumns") return schemaAfterSplitTextColumns(inputSchema, step);
   if (step.kind === "pivotLonger") return schemaAfterPivotLonger(inputSchema, step);
@@ -477,7 +473,7 @@ export function schemaAfterRStep(
     step.kind === "lowerText" ||
     step.kind === "upperText"
   ) {
-    return schemaAfterTextTransform(inputSchema, step, activeKeyColumnIds);
+    return schemaAfterTextTransform(inputSchema, step);
   }
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -851,8 +847,7 @@ export function schemaAfterFormula(
 
 export function schemaAfterFormatDatetime(
   inputSchema: readonly ColumnSchema[],
-  step: FormatDatetimeTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: FormatDatetimeTransformStep
 ): readonly ColumnSchema[] {
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -876,9 +871,6 @@ export function schemaAfterFormatDatetime(
   const outputName = step.params.newColumn;
   const inPlace = outputName === undefined || outputName === source.name;
   if (inPlace) {
-    if (activeKeyColumnIds.includes(source.id)) {
-      throw new TypeError("Format Datetime cannot replace a keyed data.table column in place.");
-    }
     return Object.freeze(
       inputSchema.map((column) =>
         Object.freeze(
@@ -1025,8 +1017,7 @@ export function schemaAfterGroupBy(
 
 export function schemaAfterNumericRounding(
   inputSchema: readonly ColumnSchema[],
-  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep
 ): readonly ColumnSchema[] {
   const label = numericRoundingLabel(step);
   const matches = inputSchema.filter(
@@ -1060,9 +1051,6 @@ export function schemaAfterNumericRounding(
       ? { rawType: "integer64", type: "integer" as const }
       : { rawType: "double", type: "float" as const };
   if (inPlace) {
-    if (activeKeyColumnIds.includes(source.id)) {
-      throw new TypeError(`${label} cannot replace a keyed data.table column in place. Choose a new output column.`);
-    }
     return Object.freeze(
       inputSchema.map((column) => Object.freeze(column.id === source.id ? { ...column, ...targetType } : { ...column }))
     );
@@ -1102,8 +1090,7 @@ export function schemaAfterNumericRounding(
 
 export function schemaAfterMinMaxScale(
   inputSchema: readonly ColumnSchema[],
-  step: MinMaxScaleTransformStep,
-  activeKeyColumnIds: readonly string[]
+  step: MinMaxScaleTransformStep
 ): readonly ColumnSchema[] {
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
@@ -1126,11 +1113,6 @@ export function schemaAfterMinMaxScale(
   const inPlace = isRMinMaxScaleInPlace(step);
   const targetType = { rawType: "double", type: "float" as const };
   if (inPlace) {
-    if (activeKeyColumnIds.includes(source.id)) {
-      throw new TypeError(
-        "Min-max scale cannot replace a keyed data.table column in place. Choose a new output column."
-      );
-    }
     return Object.freeze(
       inputSchema.map((column) =>
         Object.freeze(column.id === source.id ? { ...column, ...targetType, nullable: true } : { ...column })
@@ -1178,7 +1160,36 @@ export function keyColumnsAfterRStep(
   if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
     return Object.freeze([]);
   }
-  return Object.freeze([...retainedKeyPrefix(inputKeyColumnIds, outputSchema)]);
+  const retained = retainedKeyPrefix(inputKeyColumnIds, outputSchema);
+  const replaced = new Set(columnIdsReplacedInPlace(step));
+  const firstReplaced = retained.findIndex((id) => replaced.has(id));
+  return Object.freeze(firstReplaced === -1 ? [...retained] : retained.slice(0, firstReplaced));
+}
+
+function columnIdsReplacedInPlace(step: RPreviewTransformStep): readonly string[] {
+  switch (step.kind) {
+    case "fillMissingValues":
+    case "castColumn":
+      return [step.params.column.id];
+    case "replaceMatches":
+      return step.params.columns.map((column) => column.id);
+    case "minMaxScale":
+      return isRMinMaxScaleInPlace(step) ? [step.params.column.id] : [];
+    case "findReplace":
+    case "stripText":
+    case "capitalizeText":
+    case "lowerText":
+    case "upperText":
+    case "formatDatetime":
+    case "roundNumber":
+    case "floorNumber":
+    case "ceilNumber":
+      return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name
+        ? [step.params.column.id]
+        : [];
+    default:
+      return [];
+  }
 }
 
 export function rowCountAfterRStep(step: RPreviewTransformStep, inputRows: number, diff: DataDiff): number {

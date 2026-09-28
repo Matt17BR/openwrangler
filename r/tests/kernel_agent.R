@@ -5497,7 +5497,7 @@ most_fill_closed <- dispatch("closeSession", list(sessionId = most_fill_session_
 assert_identical(most_fill_closed$kind, "closed", "the R most-common-value session did not close")
 
 source_environment$fill_table <- data.table::data.table(primary_key = c(1L, 2L), payload = c(NA_character_, "ready"))
-data.table::setkey(source_environment$fill_table, primary_key)
+data.table::setkeyv(source_environment$fill_table, c("primary_key", "payload"))
 fill_table_before <- data.table::copy(source_environment$fill_table)
 fill_table_open <- dispatch(
   "openSession",
@@ -5509,13 +5509,27 @@ fill_table_key <- dispatch(
   list(
     sessionId = fill_table_session_id,
     revision = 0L,
-    step = fill_step("fill-table-key", "r:c:0", "primary_key", list(kind = "integer", value = "0")),
+    step = fill_step("fill-table-key", "r:c:1", "payload", list(kind = "string", value = "missing")),
     page = page_window()
   )
 )
-assert_identical(fill_table_key$kind, "error", "R Fill Missing Values silently replaced a data.table key")
-assert_identical(fill_table_key$code, "invalid_request", "the R fill key diagnostic changed")
-assert_identical(source_environment$fill_table, fill_table_before, "the failed R data.table fill mutated its source")
+assert_identical(fill_table_key$kind, "stepPreview", "R Fill Missing Values could not replace a data.table key column")
+assert_identical(
+  fill_table_key$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "R Fill Missing Values did not keep the key columns before the filled key"
+)
+fill_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = fill_table_session_id, revision = 1L, page = page_window())
+)
+assign("fill_table", source_environment$fill_table, envir = .GlobalEnv)
+eval(parse(text = fill_table_apply$code), envir = .GlobalEnv)
+fill_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(fill_table_generated$payload, c("missing", "ready"), "generated R Fill Missing Values changed a key column wrongly")
+assert_identical(data.table::key(fill_table_generated), "primary_key", "generated R Fill Missing Values did not keep the leading key")
+rm("fill_table", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(source_environment$fill_table, fill_table_before, "R data.table fill mutated its source")
 fill_table_closed <- dispatch("closeSession", list(sessionId = fill_table_session_id))
 assert_identical(fill_table_closed$kind, "closed", "the R data.table fill session did not close")
 
@@ -5834,7 +5848,7 @@ cast_table_open <- dispatch(
   list(sessionId = cast_table_session_id, variableName = "cast_table", page = page_window())
 )
 assert_identical(cast_table_open$kind, "page", "the R data.table Cast session did not open")
-cast_key_error <- dispatch(
+cast_key <- dispatch(
   "previewStep",
   list(
     sessionId = cast_table_session_id,
@@ -5843,11 +5857,18 @@ cast_key_error <- dispatch(
     page = page_window()
   )
 )
-assert_identical(cast_key_error$kind, "error", "R Cast silently replaced a data.table key")
-assert_identical(cast_key_error$code, "invalid_request", "the data.table Cast key diagnostic changed")
-if (!grepl("clone the column before casting it", cast_key_error$message, fixed = TRUE)) {
-  stop("R Cast did not explain how to preserve a data.table key", call. = FALSE)
-}
+assert_identical(cast_key$kind, "stepPreview", "R Cast could not convert a data.table key column")
+assert_identical(cast_key$page$frameSemantics$keyColumnIds, list(), "R Cast kept a stale data.table key")
+cast_key_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = cast_table_session_id, revision = 1L, page = page_window())
+)
+assign("cast_table", source_environment$cast_table, envir = .GlobalEnv)
+eval(parse(text = cast_key_apply$code), envir = .GlobalEnv)
+cast_key_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(cast_key_generated$primary_key, c(1L, 2L), "generated R Cast did not convert a data.table key column")
+assert_identical(data.table::key(cast_key_generated), NULL, "generated R Cast kept a stale data.table key")
+rm("cast_table", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(source_environment$cast_table, cast_table_before, "R Cast mutated a keyed data.table")
 cast_table_closed <- dispatch("closeSession", list(sessionId = cast_table_session_id))
 assert_identical(cast_table_closed$kind, "closed", "the R data.table Cast session did not close")
@@ -6412,7 +6433,7 @@ numeric_table_open <- dispatch(
   list(sessionId = numeric_table_session_id, variableName = "numeric_table", page = page_window())
 )
 assert_identical(numeric_table_open$kind, "page", "the R numeric data.table session did not open")
-numeric_key_error <- dispatch(
+numeric_key <- dispatch(
   "previewStep",
   list(
     sessionId = numeric_table_session_id,
@@ -6421,13 +6442,18 @@ numeric_key_error <- dispatch(
     page = page_window()
   )
 )
-assert_identical(numeric_key_error$kind, "error", "R Round silently replaced a data.table key")
-assert_identical(numeric_key_error$code, "invalid_request", "the R numeric key diagnostic changed")
+assert_identical(numeric_key$kind, "stepPreview", "R Round could not replace a data.table key column")
+assert_identical(numeric_key$page$frameSemantics$keyColumnIds, list(), "in-place R Round kept a stale data.table key")
+numeric_key_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = numeric_table_session_id, revision = 1L, page = page_window())
+)
+assert_identical(numeric_key_discard$action, "discard", "R data.table key Round did not discard")
 numeric_key_copy <- dispatch(
   "previewStep",
   list(
     sessionId = numeric_table_session_id,
-    revision = 0L,
+    revision = 2L,
     step = numeric_step("round-key-copy", "roundNumber", 1L, "primary_key", 0L, "rounded key"),
     page = page_window()
   )
@@ -6436,7 +6462,7 @@ assert_identical(numeric_key_copy$kind, "stepPreview", "derived R Round could no
 assert_identical(numeric_key_copy$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Round lost the key")
 numeric_table_apply <- dispatch(
   "applyDraft",
-  list(sessionId = numeric_table_session_id, revision = 1L, page = page_window())
+  list(sessionId = numeric_table_session_id, revision = 3L, page = page_window())
 )
 assign("numeric_table", source_environment$numeric_table, envir = .GlobalEnv)
 eval(parse(text = numeric_table_apply$code), envir = .GlobalEnv)
@@ -8901,7 +8927,7 @@ datetime_table_open <- dispatch(
   list(sessionId = datetime_table_session_id, variableName = "datetime_table", page = page_window())
 )
 assert_identical(datetime_table_open$kind, "page", "the keyed R Format Datetime session did not open")
-datetime_key_error <- dispatch(
+datetime_key <- dispatch(
   "previewStep",
   list(
     sessionId = datetime_table_session_id,
@@ -8910,13 +8936,18 @@ datetime_key_error <- dispatch(
     page = page_window()
   )
 )
-assert_identical(datetime_key_error$kind, "error", "R Format Datetime replaced a data.table key in place")
-assert_identical(datetime_key_error$code, "invalid_request", "the R Format Datetime key diagnostic changed")
+assert_identical(datetime_key$kind, "stepPreview", "R Format Datetime could not replace a data.table key column")
+assert_identical(datetime_key$page$frameSemantics$keyColumnIds, list(), "in-place R Format Datetime kept a stale key")
+datetime_key_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = datetime_table_session_id, revision = 1L, page = page_window())
+)
+assert_identical(datetime_key_discard$action, "discard", "R data.table key Format Datetime did not discard")
 datetime_key_copy <- dispatch(
   "previewStep",
   list(
     sessionId = datetime_table_session_id,
-    revision = 0L,
+    revision = 2L,
     step = datetime_format_step("datetime-key-copy", 1L, "key_time", "%Y-%m-%d", "formatted key"),
     page = page_window()
   )
@@ -8925,7 +8956,7 @@ assert_identical(datetime_key_copy$kind, "stepPreview", "R Format Datetime could
 assert_identical(datetime_key_copy$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Format Datetime lost the key identity")
 datetime_key_apply <- dispatch(
   "applyDraft",
-  list(sessionId = datetime_table_session_id, revision = 1L, page = page_window())
+  list(sessionId = datetime_table_session_id, revision = 3L, page = page_window())
 )
 assign("datetime_table", source_environment$datetime_table, envir = .GlobalEnv)
 eval(parse(text = datetime_key_apply$code), envir = .GlobalEnv)

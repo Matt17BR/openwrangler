@@ -69,7 +69,7 @@ describe("pivot-wider public contract", () => {
 
   it("derives retained lineage and output identities from declared ordinal", () => {
     const operation = step(3);
-    expect(schemaAfterRStep(source, operation, [])).toEqual([
+    expect(schemaAfterRStep(source, operation)).toEqual([
       source[0],
       {
         id: `c:step:${operation.id}:0`,

@@ -547,7 +547,7 @@ lower_table_discard <- dispatch(
 )
 assert_identical(lower_table_discard$action, "discard", "R data.table Lowercase did not discard")
 
-lower_table_key_error <- dispatch(
+lower_table_key <- dispatch(
   "previewStep",
   list(
     sessionId = lower_table_session_id,
@@ -556,17 +556,19 @@ lower_table_key_error <- dispatch(
     page = page_window()
   )
 )
-assert_identical(lower_table_key_error$kind, "error", "R Lowercase silently replaced a data.table key")
-assert_identical(lower_table_key_error$code, "invalid_request", "the data.table key diagnostic changed")
-if (!grepl("choose a new output column", lower_table_key_error$message, fixed = TRUE)) {
-  stop("R Lowercase did not explain how to preserve a data.table key", call. = FALSE)
-}
+assert_identical(lower_table_key$kind, "stepPreview", "R Lowercase could not replace a data.table key column")
+assert_identical(lower_table_key$page$frameSemantics$keyColumnIds, list(), "in-place R Lowercase kept a stale data.table key")
+lower_table_key_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = lower_table_session_id, revision = 3L, page = page_window())
+)
+assert_identical(lower_table_key_discard$action, "discard", "R data.table key Lowercase did not discard")
 
 lower_table_derived <- dispatch(
   "previewStep",
   list(
     sessionId = lower_table_session_id,
-    revision = 2L,
+    revision = 4L,
     step = lower_step("lower-table-derived", "r:c:0", "primary_key", "lower key"),
     page = page_window()
   )
@@ -575,7 +577,7 @@ assert_identical(lower_table_derived$kind, "stepPreview", "derived R data.table 
 assert_identical(lower_table_derived$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Lowercase lost the key")
 lower_table_apply <- dispatch(
   "applyDraft",
-  list(sessionId = lower_table_session_id, revision = 3L, page = page_window())
+  list(sessionId = lower_table_session_id, revision = 5L, page = page_window())
 )
 assign("lower_table", source_environment$lower_table, envir = .GlobalEnv)
 eval(parse(text = lower_table_apply$code), envir = .GlobalEnv)
@@ -594,22 +596,16 @@ generated_key_source <- data.table::copy(lower_table_before)
 data.table::setkey(generated_key_source, payload)
 generated_key_before <- data.table::copy(generated_key_source)
 assign("lower_table", generated_key_source, envir = .GlobalEnv)
-generated_key_error <- tryCatch(
-  {
-    eval(parse(text = lower_table_non_key_code), envir = .GlobalEnv)
-    NULL
-  },
-  error = function(error) error
-)
-if (is.null(generated_key_error) || !grepl("choose a new output column", conditionMessage(generated_key_error), fixed = TRUE)) {
-  stop("generated R Lowercase silently replaced a data.table key", call. = FALSE)
-}
+eval(parse(text = lower_table_non_key_code), envir = .GlobalEnv)
+generated_key_result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(generated_key_result$payload, tolower(generated_key_before$payload), "generated R Lowercase did not change a key column")
+assert_identical(data.table::key(generated_key_result), NULL, "generated R Lowercase kept a stale data.table key")
 assert_identical(
   get("lower_table", envir = .GlobalEnv, inherits = FALSE),
   generated_key_before,
-  "the generated R Lowercase key guard mutated its source"
+  "generated R Lowercase mutated its keyed source"
 )
-rm("lower_table", envir = .GlobalEnv)
+rm("lower_table", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(source_environment$lower_table, lower_table_before, "the R data.table Lowercase lifecycle mutated its source")
 lower_table_closed <- dispatch("closeSession", list(sessionId = lower_table_session_id))
 assert_identical(lower_table_closed$kind, "closed", "the R data.table Lowercase session did not close")
@@ -1233,7 +1229,7 @@ text_cleanup_table_open <- dispatch(
   list(sessionId = text_cleanup_table_session_id, variableName = "text_cleanup_table", page = page_window())
 )
 assert_identical(text_cleanup_table_open$kind, "page", "the R data.table text-cleanup session did not open")
-text_cleanup_table_key_error <- dispatch(
+text_cleanup_table_key <- dispatch(
   "previewStep",
   list(
     sessionId = text_cleanup_table_session_id,
@@ -1250,16 +1246,18 @@ text_cleanup_table_key_error <- dispatch(
     page = page_window()
   )
 )
-assert_identical(text_cleanup_table_key_error$kind, "error", "R Find and Replace silently replaced a data.table key")
-assert_identical(text_cleanup_table_key_error$code, "invalid_request", "the R Find and Replace key diagnostic changed")
-if (!grepl("choose a new output column", text_cleanup_table_key_error$message, fixed = TRUE)) {
-  stop("R Find and Replace did not explain how to preserve a data.table key", call. = FALSE)
-}
+assert_identical(text_cleanup_table_key$kind, "stepPreview", "R Find and Replace could not replace a data.table key column")
+assert_identical(text_cleanup_table_key$page$frameSemantics$keyColumnIds, list(), "in-place R Find and Replace kept a stale key")
+text_cleanup_table_key_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = text_cleanup_table_session_id, revision = 1L, page = page_window())
+)
+assert_identical(text_cleanup_table_key_discard$action, "discard", "R data.table key Find and Replace did not discard")
 text_cleanup_table_derived <- dispatch(
   "previewStep",
   list(
     sessionId = text_cleanup_table_session_id,
-    revision = 0L,
+    revision = 2L,
     step = text_transform_step(
       "findReplace",
       "find-table-derived",
@@ -1281,7 +1279,7 @@ assert_identical(
 )
 text_cleanup_table_apply <- dispatch(
   "applyDraft",
-  list(sessionId = text_cleanup_table_session_id, revision = 1L, page = page_window())
+  list(sessionId = text_cleanup_table_session_id, revision = 3L, page = page_window())
 )
 assign("text_cleanup_table", source_environment$text_cleanup_table, envir = .GlobalEnv)
 eval(parse(text = text_cleanup_table_apply$code), envir = .GlobalEnv)

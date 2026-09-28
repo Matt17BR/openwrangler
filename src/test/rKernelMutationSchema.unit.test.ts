@@ -8,6 +8,7 @@ import type {
   GroupByTransformStep,
   LookupColumnsTransformStep,
   OneHotEncodeTransformStep,
+  ReplaceMatchesTransformStep,
   SortRowsTransformStep
 } from "../shared/protocol";
 import type { RColumnSchema, RFramePageContract } from "../extension/r/rFrameContract";
@@ -173,7 +174,7 @@ describe("R kernel mutation schema", () => {
         missingValue: null
       }
     };
-    const output = schemaAfterRStep(schema, step, ["b"]);
+    const output = schemaAfterRStep(schema, step);
     expect(output).toEqual([
       ...schema,
       { id: "c:step:condition:0", name: "flag", position: 2, type: "boolean", rawType: "logical", nullable: true }
@@ -184,22 +185,21 @@ describe("R kernel mutation schema", () => {
       ...step,
       params: { ...step.params, predicate: { kind: "predicate" as const, operator: "isNull" as const } }
     };
-    expect(schemaAfterRStep(schema, nullary, ["b"])[2]?.nullable).toBe(false);
+    expect(schemaAfterRStep(schema, nullary)[2]?.nullable).toBe(false);
     expect(
-      schemaAfterRStep(
-        schema,
-        { ...nullary, params: { ...nullary.params, resultType: "string", trueValue: "", falseValue: null } },
-        ["b"]
-      )[2]
+      schemaAfterRStep(schema, {
+        ...nullary,
+        params: { ...nullary.params, resultType: "string", trueValue: "", falseValue: null }
+      })[2]
     ).toMatchObject({
       rawType: "character",
       type: "string",
       nullable: true
     });
-    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } })).toThrow(
       "already exists"
     );
-    expect(() => schemaAfterRStep(output, { ...step, params: { ...step.params, newColumn: "other" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(output, { ...step, params: { ...step.params, newColumn: "other" } })).toThrow(
       "identity already exists"
     );
   });
@@ -209,19 +209,19 @@ describe("R kernel mutation schema", () => {
       kind: "markDuplicates",
       params: { columns: [reference(0), reference(1)], newColumn: "is_duplicate" }
     };
-    const actual = schemaAfterRStep(schema, step, ["b"]);
+    const actual = schemaAfterRStep(schema, step);
     expect(actual).toEqual([
       ...schema,
       { id: "c:step:mark:0", name: "is_duplicate", position: 2, rawType: "logical", type: "boolean", nullable: false }
     ]);
     expect(keyColumnsAfterRStep(["b"], actual, step)).toEqual(["b"]);
-    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } })).toThrow(
       "already exists"
     );
     expect(() =>
-      schemaAfterRStep(schema, { ...step, params: { ...step.params, columns: [{ id: "stale", name: "count" }] } }, [])
+      schemaAfterRStep(schema, { ...step, params: { ...step.params, columns: [{ id: "stale", name: "count" }] } })
     ).toThrow("stale or mismatched");
-    expect(() => schemaAfterRStep(actual, { ...step, params: { ...step.params, newColumn: "again" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(actual, { ...step, params: { ...step.params, newColumn: "again" } })).toThrow(
       "identity already exists"
     );
   });
@@ -235,27 +235,27 @@ describe("R kernel mutation schema", () => {
       ...schema,
       { id: "c:step:rank:0", name: "rank", position: 2, rawType: "integer", type: "integer", nullable: false }
     ];
-    expect(schemaAfterRStep(schema, step, ["b"])).toEqual(expected);
+    expect(schemaAfterRStep(schema, step)).toEqual(expected);
     expect(keyColumnsAfterRStep(["b"], expected, step)).toEqual(["b"]);
-    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, newColumn: "count" } })).toThrow(
       "already exists"
     );
     expect(() =>
-      schemaAfterRStep(schema, { ...step, params: { ...step.params, column: { id: "missing", name: "count" } } }, [])
+      schemaAfterRStep(schema, { ...step, params: { ...step.params, column: { id: "missing", name: "count" } } })
     ).toThrow("no longer matches");
-    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, column: reference(0) } }, [])).toThrow(
+    expect(() => schemaAfterRStep(schema, { ...step, params: { ...step.params, column: reference(0) } })).toThrow(
       "numeric"
     );
-    expect(() => schemaAfterRStep(expected, { ...step, params: { ...step.params, newColumn: "second" } }, [])).toThrow(
+    expect(() => schemaAfterRStep(expected, { ...step, params: { ...step.params, newColumn: "second" } })).toThrow(
       "identity already exists"
     );
   });
   it("routes static schema changes and owns row/key transitions", () => {
-    const renamed = schemaAfterRStep(
-      schema,
-      { id: "rename", kind: "renameColumn", params: { column: reference(0), newName: "category" } },
-      []
-    );
+    const renamed = schemaAfterRStep(schema, {
+      id: "rename",
+      kind: "renameColumn",
+      params: { column: reference(0), newName: "category" }
+    });
     expect(renamed).toEqual([{ ...schema[0], name: "category" }, schema[1]]);
     expect(renamed).not.toBe(schema);
 
@@ -264,11 +264,11 @@ describe("R kernel mutation schema", () => {
       { id: "b", name: "count", position: 1, rawType: "double", type: "float", nullable: true }
     ];
     expect(
-      schemaAfterRStep(
-        castInput,
-        { id: "cast", kind: "castColumn", params: { column: { id: "b", name: "count" }, dtype: "integer" } },
-        []
-      )
+      schemaAfterRStep(castInput, {
+        id: "cast",
+        kind: "castColumn",
+        params: { column: { id: "b", name: "count" }, dtype: "integer" }
+      })
     ).toEqual([
       { id: "a", name: "group", position: 0, rawType: "character", type: "string", nullable: true },
       { id: "b", name: "count", position: 1, rawType: "integer", type: "integer", nullable: true }
@@ -287,6 +287,37 @@ describe("R kernel mutation schema", () => {
     expect(() => rowCountAfterRStep(filterStep, 5, { ...rowDiff(2), addedRows: 1 })).toThrow("invalid row counts");
     expect(rowIdentityDomainAfterRStep(groupStep, 5, 2)).toBe(7);
     expect(rowIdentityDomainAfterRStep(cloneStep, 5, 2)).toBe(5);
+  });
+
+  it("keeps the data.table key columns before the first column a step replaces in place", () => {
+    const lower = { id: "lower", kind: "lowerText", params: { column: reference(0) } } as const;
+    const replace: ReplaceMatchesTransformStep = {
+      id: "replace",
+      kind: "replaceMatches",
+      params: {
+        columns: [reference(1)],
+        find: "1",
+        replacement: "2",
+        matchCase: false,
+        wholeCell: false,
+        spelling: "portable"
+      }
+    };
+    const fill = {
+      id: "fill",
+      kind: "fillMissingValues",
+      params: { column: reference(0), replacement: { kind: "string", value: "none" } }
+    } as const;
+    const cast = { id: "cast", kind: "castColumn", params: { column: reference(1), dtype: "float" } } as const;
+    const lowered = schemaAfterRStep(schema, { ...lower, params: { ...lower.params, newColumn: "group_lower" } });
+
+    expect(keyColumnsAfterRStep(["a", "b"], schema, cast)).toEqual(["a"]);
+    expect(keyColumnsAfterRStep(["a", "b"], schema, replace)).toEqual(["a"]);
+    expect(keyColumnsAfterRStep(["a", "b"], schema, fill)).toEqual([]);
+    expect(keyColumnsAfterRStep(["a", "b"], schema, lower)).toEqual([]);
+    expect(
+      keyColumnsAfterRStep(["a", "b"], lowered, { ...lower, params: { ...lower.params, newColumn: "group_lower" } })
+    ).toEqual(["a", "b"]);
   });
 
   it.each([
