@@ -1861,8 +1861,10 @@ class PandasEngine(DataFrameEngine):
         if search and not search_counted_labels:
             _pandas_require_nested_timestamp_boxing(series)
             labelled = series
-            if _pandas_counts_index_values(series.dtype):
-                # Each distinct value is spelled once rather than once per row.
+            if _pandas_counts_index_values(series.dtype) or (
+                pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(series, skipna=True) == "string"
+            ):
+                # Each distinct value is spelled once rather than once per row; equal text objects spell alike.
                 value_counts = _pandas_value_counts(series, sort=False, duration=duration)
                 labelled = pd.Series(value_counts.index, copy=False)
             temporal_values = _pandas_arrow_temporal_array(labelled)
@@ -8994,11 +8996,12 @@ def _pandas_find_mask(series: Any, query: FindQuery) -> Any:
         return None
     values = _pandas_scalar_values(series)
     dtype = values.dtype
-    # Object columns can mix Python types, so only native storage has uniform spelling.
+    # Object columns can mix Python types, so only native storage and text objects have uniform spelling.
     objects = isinstance(dtype, np.dtype) and dtype.kind == "O"
-    native = not objects and not isinstance(dtype, pd.CategoricalDtype)
+    text = objects and pd.api.types.infer_dtype(values, skipna=True) == "string"
+    native = (not objects and not isinstance(dtype, pd.CategoricalDtype)) or text
     try:
-        if objects:
+        if objects and not text:
             # Equal objects of different types, such as 1, 1.0 and True, are spelled differently.
             keys = pd.Series([(type(value), value) for value in values.array], dtype=object)
             codes = pd.factorize(keys)[0]

@@ -516,7 +516,8 @@ and unused categories never count as top values. Value choices break equal count
 Profile and choice labels are the grid's cell text in every engine: datetimes use Python ISO text, single-precision
 floats show their shortest round-trip digits, infinities read `Infinity`, and signed zeros share the label `0.0`.
 Search matches those labels with ASCII case folding and accepts a space for the date-time `T`. Engines spell each
-distinct value once when that is cheaper than spelling rows, grouping before the search in DuckDB and Polars.
+distinct value once when that is cheaper than spelling rows, grouping before the search in DuckDB and Polars, and in
+Pandas for native columns and object columns that hold only text, where equal values always spell alike.
 
 Python CSV/TSV readers own whitespace, empty fields and record parsing. Pandas maps only its native `EmptyDataError`
 to an empty dataframe; Polars disables the native empty-input exception. DuckDB validates the file and options in its

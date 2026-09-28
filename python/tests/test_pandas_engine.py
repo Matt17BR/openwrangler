@@ -1612,6 +1612,15 @@ def test_pandas_missing_classification_preserves_subclass_overrides() -> None:
     pd.testing.assert_frame_equal(source, before)
 
 
+def test_pandas_object_text_value_choices_match_string_columns() -> None:
+    texts = ["v1", np.str_("V1"), None, "v10", np.nan, "v1", "\u0130", pd.NA, "i", "v2", "v2", ""]
+    objects = pd.DataFrame({"text": pd.Series(texts, dtype=object)})
+    strings = objects.astype("string")
+    engine = PandasEngine()
+    for search in (None, "v1", "V", "i", "2"):
+        assert engine.column_values(objects, "text", search, 3) == engine.column_values(strings, "text", search, 3)
+
+
 def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_display_values():
     frame = pd.DataFrame(
         {
