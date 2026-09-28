@@ -455,7 +455,7 @@ def test_timestamp_struct_boxing_guard_skips_unrelated_large_list(monkeypatch: p
     assert pa.array(series) == array
 
 
-@pytest.mark.parametrize("kind", ["castColumn", "textLength", "byExample", "dropDuplicates", "duration-sibling"])
+@pytest.mark.parametrize("kind", ["textLength", "byExample", "dropDuplicates", "duration-sibling"])
 def test_pandas_timestamp_struct_string_and_key_consumers_refuse_minimum_in_generated_code(kind: str) -> None:
     import pyarrow as pa
 
@@ -465,7 +465,7 @@ def test_pandas_timestamp_struct_string_and_key_consumers_refuse_minimum_in_gene
             [{"when": -1, "elapsed": -(2**63)}, {"when": 1, "elapsed": None}],
             type=pa.struct([("when", pa.timestamp("ns")), ("elapsed", pa.duration("ns"))]),
         )
-        kind = "castColumn"
+        kind = "dropDuplicates"
     frame = pd.DataFrame(
         {"record": pd.arrays.ArrowExtensionArray(array), "ordinary": [1, 2]}, index=pd.Index([7, 7], name="rows")
     )
@@ -476,9 +476,7 @@ def test_pandas_timestamp_struct_string_and_key_consumers_refuse_minimum_in_gene
     schema = engine.schema(admitted)
     lineage = source_lineage(schema)
     params: dict[str, Any] = {"column": lineage[0]}
-    if kind == "castColumn":
-        params["dtype"] = "string"
-    elif kind == "textLength":
+    if kind == "textLength":
         params["newColumn"] = "result"
     elif kind == "byExample":
         params = {

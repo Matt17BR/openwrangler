@@ -11,6 +11,7 @@ assert_identical <- function(actual, expected, message) {
 }
 
 source("r/tests/warning_contract_assertions.R", local = FALSE)
+source("r/tests/convert_type_contract.R", local = FALSE)
 
 assert_error <- function(expression, pattern) {
   error <- tryCatch(
@@ -5892,18 +5893,18 @@ cast_cases <- list(
   ),
   list(
     dtype = "integer",
-    input = c("1.9", "-2.9", "2147483648", "bad"),
-    expected = c(1L, -2L, NA_integer_, NA_integer_)
+    input = c("1", " -2 ", "2147483648", "1.9", "bad"),
+    expected = c(1L, -2L, NA_integer_, NA_integer_, NA_integer_)
   ),
   list(
     dtype = "float",
     input = c("1.5", "Inf", "NaN", "bad"),
-    expected = c(1.5, Inf, NaN, NA_real_)
+    expected = c(1.5, NA_real_, NA_real_, NA_real_)
   ),
   list(
     dtype = "boolean",
     input = factor(c("TRUE", "false", "T", "not-a-bool")),
-    expected = c(TRUE, FALSE, TRUE, NA)
+    expected = c(TRUE, FALSE, NA, NA)
   ),
   list(
     dtype = "date",
@@ -6190,18 +6191,34 @@ assert_identical(
   c("9223372036854775806", "-9223372036854775807", NA_character_),
   "integer64 cast to string lost precision"
 )
-for (dtype in c("float", "boolean", "date", "datetime")) {
+assert_identical(
+  openwrangler_r_frame_contract$cast_column_at(cast_wide, 1L, "wide", "float")$wide,
+  c(9223372036854775806, -9223372036854775807, NA_real_),
+  "integer64 cast to float changed values"
+)
+assert_identical(
+  openwrangler_r_frame_contract$cast_column_at(cast_wide, 1L, "wide", "boolean")$wide,
+  c(TRUE, TRUE, NA),
+  "integer64 cast to boolean changed values"
+)
+for (dtype in c("date", "datetime")) {
   assert_error(
-    openwrangler_r_frame_contract$cast_column_at(
-      cast_wide,
-      1L,
-      "wide",
-      dtype
-    ),
-    "castColumn cannot convert"
+    openwrangler_r_frame_contract$cast_column_at(cast_wide, 1L, "wide", dtype),
+    "Convert type cannot turn Integer values into"
   )
 }
-assert_identical(cast_wide, cast_wide_before, "failed integer64 casts mutated their source")
+assert_identical(cast_wide, cast_wide_before, "integer64 casts mutated their source")
+
+for (case in convert_type_r_cases) {
+  expected <- convert_type_values(case$expected, case$target)
+  for (input in convert_type_r_inputs(case)) {
+    assert_identical(
+      openwrangler_r_frame_contract$cast_column_at(data.frame(value = input), 1L, "value", case$target)$value,
+      expected,
+      sprintf("%s %s to %s broke the shared Convert Type contract", class(input)[[1L]], case$source, case$target)
+    )
+  }
+}
 
 cast_matrix_sources <- list(
   logical = c(TRUE, FALSE, NA),
@@ -6214,15 +6231,11 @@ cast_matrix_sources <- list(
   difftime = as.difftime(c(1, 0, NA), units = "hours"),
   integer64 = bit64::as.integer64(c("1", "0", NA))
 )
-cast_source_matrix <- list(
-  string = names(cast_matrix_sources),
-  integer = c("logical", "integer", "double", "character", "factor", "integer64"),
-  float = c("logical", "integer", "double", "character", "factor"),
-  boolean = c("logical", "integer", "double", "character", "factor"),
-  date = c("character", "factor", "date", "datetime"),
-  datetime = c("character", "factor", "date", "datetime")
+cast_matrix_types <- c(
+  logical = "boolean", integer = "integer", double = "float", character = "string", factor = "string",
+  date = "date", datetime = "datetime", difftime = "duration", integer64 = "integer"
 )
-for (dtype in names(cast_source_matrix)) {
+for (dtype in names(convert_type_contract$targets)) {
   for (source_kind in names(cast_matrix_sources)) {
     source <- data.frame(value = cast_matrix_sources[[source_kind]], check.names = FALSE)
     expression <- quote(openwrangler_r_frame_contract$cast_column_at(
@@ -6231,16 +6244,16 @@ for (dtype in names(cast_source_matrix)) {
       "value",
       dtype
     ))
-    if (source_kind %in% cast_source_matrix[[dtype]]) {
+    if (cast_matrix_types[[source_kind]] %in% unlist(convert_type_contract$targets[[dtype]])) {
       result <- eval(expression)
       assert_true(is.data.frame(result), sprintf("%s to %s cast did not return a dataframe", source_kind, dtype))
     } else {
-      assert_error(eval(expression), "castColumn cannot convert")
+      assert_error(eval(expression), "Convert type cannot turn")
     }
   }
 }
 
-cast_tibble <- tibble::tibble(id = 1:3, value = factor(c("1.9", "bad", NA)))
+cast_tibble <- tibble::tibble(id = 1:3, value = factor(c("7", "bad", NA)))
 cast_tibble_before <- unserialize(serialize(cast_tibble, NULL, version = 3L))
 cast_tibble_result <- openwrangler_r_frame_contract$cast_column_at(
   cast_tibble,
@@ -6249,12 +6262,12 @@ cast_tibble_result <- openwrangler_r_frame_contract$cast_column_at(
   "integer"
 )
 assert_identical(class(cast_tibble_result), c("tbl_df", "tbl", "data.frame"), "castColumn changed tibble class")
-assert_identical(cast_tibble_result$value, c(1L, NA_integer_, NA_integer_), "tibble cast used factor codes")
+assert_identical(cast_tibble_result$value, c(7L, NA_integer_, NA_integer_), "tibble cast used factor codes")
 assert_identical(cast_tibble, cast_tibble_before, "castColumn mutated its source tibble")
 
 cast_table <- data.table::data.table(
   primary_key = c(2L, 1L),
-  value = c("2.9", "bad"),
+  value = c("2", "bad"),
   row_marker = c("row-b", "row-a")
 )
 data.table::setkey(cast_table, primary_key)

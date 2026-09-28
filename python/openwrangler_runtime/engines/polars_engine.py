@@ -271,6 +271,45 @@ def _polars_temporal_cast_expression(
     return expression.cast(target_dtype, strict=False)
 
 
+def _polars_scalar_cast_expression(expression: Any, input_dtype: Any, target: str) -> Any:
+    import polars as pl
+
+    name = expression.meta.output_name()
+    native = {"integer": pl.Int64, "float": pl.Float64, "boolean": pl.Boolean}[target]
+    base = input_dtype.base_type()
+    if base in {pl.String, pl.Categorical, pl.Enum}:
+        text = expression.cast(pl.String).str.strip_chars(" \t\r\n")
+        if target == "boolean":
+            result = (
+                pl.when(text.str.contains("^[Tt][Rr][Uu][Ee]$"))
+                .then(pl.lit(True))
+                .when(text.str.contains("^[Ff][Aa][Ll][Ss][Ee]$"))
+                .then(pl.lit(False))
+                .otherwise(pl.lit(None, dtype=pl.Boolean))
+            )
+        elif target == "float":
+            number = r"^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+            parsed = pl.when(text.str.contains(number)).then(text).cast(pl.Float64, strict=False)
+            result = pl.when(parsed.is_finite()).then(parsed)
+        else:
+            digits = text.str.strip_chars_start("+")
+            result = pl.when(text.str.contains("^[+-]?[0-9]+$")).then(digits).cast(pl.Int64, strict=False)
+        return result.alias(name)
+    if base == pl.Boolean:
+        return expression.cast(native)
+    if base == pl.Decimal and target == "integer":
+        whole = expression.cast(pl.String).str.extract("^(-?[0-9]+)", 1)
+        return whole.cast(pl.Int64, strict=False).alias(name)
+    if input_dtype.is_numeric():
+        if target != "boolean":
+            return expression.cast(native, strict=False)
+        nonzero = expression != 0
+        return (
+            pl.when(expression.is_nan()).then(None).otherwise(nonzero) if input_dtype.is_float() else nonzero
+        ).alias(name)
+    raise ValueError("Convert type cannot turn values of this column type into the selected type.")
+
+
 def _polars_explode_list(df: Any, column: str) -> Any:
     import polars as pl
 
@@ -2246,8 +2285,14 @@ class PolarsEngine(DataFrameEngine):
                 expression = _polars_temporal_cast_expression(
                     expression, schema[column], getattr(pl, dtype_attribute), params.get("inputFormat")
                 )
+            elif params["dtype"] == "string":
+                expression = expression.cast(pl.String, strict=strict)
             else:
-                expression = expression.cast(getattr(pl, dtype_attribute), strict=strict)
+                schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+                try:
+                    expression = _polars_scalar_cast_expression(expression, schema[column], params["dtype"])
+                except ValueError as error:
+                    raise EngineError(str(error)) from error
             return df.with_columns(expression)
         if kind == "formula":
             left_column = bound_column_name(params["leftColumn"], kind)
@@ -2670,6 +2715,10 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(["from typing import Any", getsource(_ow_polars_check_formula), ""])
         if any(step["kind"] == "castColumn" and step["params"]["dtype"] in {"date", "datetime"} for step in plan):
             lines.extend(["from typing import Any", getsource(_polars_temporal_cast_expression), ""])
+        if any(
+            step["kind"] == "castColumn" and step["params"]["dtype"] in {"integer", "float", "boolean"} for step in plan
+        ):
+            lines.extend(["from typing import Any", getsource(_polars_scalar_cast_expression), ""])
         if any(step["kind"] == "explodeList" for step in plan):
             lines.extend(
                 [
@@ -3302,13 +3351,17 @@ class PolarsEngine(DataFrameEngine):
         if kind == "castColumn":
             column = bound_column_name(params["column"], kind)
             dtype_attribute, strict = _polars_cast_target(params["dtype"])
-            if params["dtype"] in {"date", "datetime"}:
+            if params["dtype"] in {"date", "datetime", "integer", "float", "boolean"}:
                 schema = f"_cast_schema_{index}"
-                input_format = f", {params['inputFormat']!r}" if "inputFormat" in params else ""
+                source = f"{_compile_polars_column(column)}, {schema}[{column!r}]"
+                if params["dtype"] in {"date", "datetime"}:
+                    input_format = f", {params['inputFormat']!r}" if "inputFormat" in params else ""
+                    cast = f"_polars_temporal_cast_expression({source}, pl.{dtype_attribute}{input_format})"
+                else:
+                    cast = f"_polars_scalar_cast_expression({source}, {params['dtype']!r})"
                 return [
                     f"{prefix}{schema} = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema",
-                    f"{prefix}df = df.with_columns(_polars_temporal_cast_expression("
-                    f"{_compile_polars_column(column)}, {schema}[{column!r}], pl.{dtype_attribute}{input_format}))",
+                    f"{prefix}df = df.with_columns({cast})",
                 ]
             return [
                 (

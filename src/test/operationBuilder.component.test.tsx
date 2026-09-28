@@ -211,10 +211,14 @@ describe("OperationBuilder", () => {
     fireEvent.change(layout, { target: { value: "DD/MM/YYYY" } });
     expect(layout).toHaveAccessibleDescription(/Invalid or out-of-range dates become missing/);
     fireEvent.change(screen.getByRole("combobox", { name: "Column" }), { target: { value: "c:1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview).not.toHaveBeenCalled();
-    expect(screen.getByText(/An input date format requires a Text column/)).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "Input date format" })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("combobox", { name: "Target type" }))
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual(["Text", "Integer", "Float", "Boolean"]);
     fireEvent.change(screen.getByRole("combobox", { name: "Column" }), { target: { value: "c:0" } });
+    expect(screen.getByRole("combobox", { name: "Input date format" })).toHaveValue("DD/MM/YYYY");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenLastCalledWith(
       {

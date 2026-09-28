@@ -1,0 +1,118 @@
+{
+  "targets": {
+    "string": ["string", "integer", "float", "decimal", "boolean", "date", "datetime"],
+    "integer": ["string", "integer", "float", "decimal", "boolean"],
+    "float": ["string", "integer", "float", "decimal", "boolean"],
+    "boolean": ["string", "integer", "float", "decimal", "boolean"],
+    "date": ["string", "date", "datetime"],
+    "datetime": ["string", "date", "datetime"]
+  },
+  "cases": [
+    {
+      "source": "string",
+      "target": "integer",
+      "values": [
+        "7",
+        " 7 ",
+        "\t-12\n",
+        "+5",
+        "007",
+        "-0",
+        "1.5",
+        "1e3",
+        "0x1A",
+        "",
+        "abc",
+        "1 2",
+        "\u00a07",
+        "99999999999999999999",
+        null
+      ],
+      "expected": [7, 7, -12, 5, 7, 0, null, null, null, null, null, null, null, null, null]
+    },
+    {
+      "source": "string",
+      "target": "float",
+      "values": [
+        "1.5",
+        " 2 ",
+        "-3e2",
+        ".5",
+        "5.",
+        "+2.5",
+        "1E3",
+        "1e400",
+        "NaN",
+        "inf",
+        "Infinity",
+        "abc",
+        "",
+        "0x1A",
+        "1_000",
+        "1,5",
+        null
+      ],
+      "expected": [1.5, 2.0, -300.0, 0.5, 5.0, 2.5, 1000.0, null, null, null, null, null, null, null, null, null, null]
+    },
+    {
+      "source": "string",
+      "target": "boolean",
+      "values": ["true", " FALSE ", "True", "tRuE", "false\n", "T", "yes", "1", "0", "", "truee", null],
+      "expected": [true, false, true, true, false, null, null, null, null, null, null, null]
+    },
+    {
+      "source": "integer",
+      "target": "float",
+      "values": [1, 0, -3, 20000, null],
+      "expected": [1.0, 0.0, -3.0, 20000.0, null]
+    },
+    {
+      "source": "integer",
+      "target": "boolean",
+      "values": [1, 0, -3, 20000, null],
+      "expected": [true, false, true, true, null]
+    },
+    {
+      "source": "float",
+      "target": "integer",
+      "values": [1.9, -1.9, 0.5, -0.5, 20000.0, "NaN", "Infinity", "-Infinity", 1e30, null],
+      "expected": [1, -1, 0, 0, 20000, null, null, null, null, null]
+    },
+    {
+      "source": "float",
+      "target": "boolean",
+      "values": [1.5, 0.0, "-0", "NaN", -3.0, "Infinity", null],
+      "expected": [true, false, false, null, true, true, null]
+    },
+    {
+      "source": "decimal",
+      "target": "integer",
+      "values": ["1.50", "-3.70", "0.00", "-0.50", null],
+      "expected": [1, -3, 0, 0, null]
+    },
+    {
+      "source": "decimal",
+      "target": "float",
+      "values": ["1.50", "-3.70", null],
+      "expected": [1.5, -3.7, null]
+    },
+    {
+      "source": "decimal",
+      "target": "boolean",
+      "values": ["1.50", "0.00", "-0.50", null],
+      "expected": [true, false, true, null]
+    },
+    {
+      "source": "boolean",
+      "target": "integer",
+      "values": [true, false, null],
+      "expected": [1, 0, null]
+    },
+    {
+      "source": "boolean",
+      "target": "float",
+      "values": [true, false, null],
+      "expected": [1.0, 0.0, null]
+    }
+  ]
+}

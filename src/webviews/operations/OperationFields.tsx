@@ -1,5 +1,6 @@
 import { formatFormulaLiteral, isFormulaLiteral } from "../../shared/formulaLiteral";
 import { MAX_FIND_QUERY_CODE_POINTS } from "../../shared/find";
+import { CONVERT_TYPE_LABELS, CONVERTIBLE_COLUMN_TYPES, convertTypeTargets } from "../../shared/convertType";
 import { useId, useRef, useState } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
@@ -1112,7 +1113,12 @@ function CastColumnFields({
   columns: ColumnSchema[];
   initial?: Extract<TransformStep, { kind: "castColumn" }>["params"];
 }) {
-  const [dtype, setDtype] = useState<string>(initial?.dtype ?? "string");
+  const convertible = compatibleColumns(columns, CONVERTIBLE_COLUMN_TYPES);
+  const [columnId, setColumnId] = useState(columnReferenceId(initial?.column));
+  const selected = convertible.find((column) => column.id === columnId) ?? convertible[0];
+  const targets = selected ? convertTypeTargets(selected.type) : [];
+  const [requestedDtype, setDtype] = useState<string>(initial?.dtype ?? "string");
+  const dtype = targets.find((target) => target === requestedDtype) ?? targets[0] ?? "string";
   const [inputFormat, setInputFormat] = useState<string>(initial?.inputFormat ?? "");
   const helpId = useId();
   return (
@@ -1120,20 +1126,22 @@ function CastColumnFields({
       <ColumnReferenceSelect
         name="column"
         label="Column"
-        columns={columns}
-        defaultValue={columnReferenceId(initial?.column) ?? columns[0]?.id}
+        columns={convertible}
+        value={selected?.id}
+        onChange={setColumnId}
+        emptyMessage="No text, number, Boolean, date or datetime columns are available."
       />
       <label className="formField">
         <span>Target type</span>
         <select name="dtype" value={dtype} onChange={(event) => setDtype(event.target.value)}>
-          {["string", "integer", "float", "boolean", "date", "datetime"].map((value) => (
-            <option key={value} value={value}>
-              {value}
+          {targets.map((target) => (
+            <option key={target} value={target}>
+              {CONVERT_TYPE_LABELS.get(target)}
             </option>
           ))}
         </select>
       </label>
-      {dtype === "datetime" && (
+      {dtype === "datetime" && selected?.type === "string" && (
         <label className="formField">
           <span>Input date format</span>
           <select

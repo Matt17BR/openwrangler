@@ -903,50 +903,6 @@ def test_column_and_type_operations_match_generated_code(engine_and_frame):
 
 
 @pytest.mark.parametrize(
-    ("target", "values", "expected_dtype", "expected_values"),
-    [
-        ("string", [1, None], "string", ["1", pd.NA]),
-        ("integer", ["7", None], "Int64", [7, pd.NA]),
-        ("float", ["1.5", None], "Float64", [1.5, pd.NA]),
-        ("boolean", [1, 0, None], "boolean", [True, False, pd.NA]),
-        (
-            "date",
-            [0, 2**63, None],
-            "object",
-            [date(1970, 1, 1), pd.NaT, pd.NaT],
-        ),
-        (
-            "datetime",
-            [0, 1_000_000, 2**63, None],
-            "datetime64[ns]",
-            [datetime(1970, 1, 1), datetime(1970, 1, 1, 0, 0, 0, 1_000), pd.NaT, pd.NaT],
-        ),
-    ],
-)
-def test_pandas_cast_targets_match_generated_dtype_and_coercion(
-    target: str,
-    values: list[Any],
-    expected_dtype: str,
-    expected_values: list[Any],
-) -> None:
-    engine = PandasEngine()
-    frame = pd.DataFrame({"value": pd.Series(values, dtype=object)})
-    operation = bound_step(
-        f"cast-{target}",
-        "castColumn",
-        column=bound_ref("c:source:0", "value", 0),
-        dtype=target,
-    )
-
-    live = engine.apply_transform(frame, operation)
-    generated = execute_generated(engine, frame, [operation])
-    expected = pd.Series(expected_values, dtype=expected_dtype, name="value")
-
-    pd.testing.assert_series_equal(live["value"], expected)
-    pd.testing.assert_series_equal(generated["value"], expected)
-
-
-@pytest.mark.parametrize(
     ("layout", "text", "day"),
     [
         ("DD/MM/YYYY", "02/03/2024", datetime(2024, 3, 2)),
@@ -1098,46 +1054,6 @@ def test_fixed_datetime_input_layout_validation_preserves_explicit_option(layout
 def test_fixed_datetime_input_layout_validation_rejects_invalid_options(dtype, layout) -> None:
     with pytest.raises(OperationError, match="inputFormat"):
         step("layout", "castColumn", column=public_ref("c:source:0", "value"), dtype=dtype, inputFormat=layout)
-
-
-@pytest.mark.parametrize(
-    ("target", "values", "expected_dtype", "expected_values"),
-    [
-        ("string", [1, None], pl.String, ["1", None]),
-        ("integer", ["7", "bad", None], pl.Int64, [7, None, None]),
-        ("float", ["1.5", "bad", None], pl.Float64, [1.5, None, None]),
-        ("boolean", [1, 0, None], pl.Boolean, [True, False, None]),
-        ("date", [0, 2**31, None], pl.Date, [date(1970, 1, 1), None, None]),
-        (
-            "datetime",
-            [0.0, 1_000_000.0, float("nan"), None],
-            pl.Datetime,
-            [datetime(1970, 1, 1), datetime(1970, 1, 1, 0, 0, 1), None, None],
-        ),
-    ],
-)
-def test_polars_cast_targets_match_generated_dtype_and_coercion(
-    target: str,
-    values: list[Any],
-    expected_dtype: Any,
-    expected_values: list[Any],
-) -> None:
-    engine = PolarsEngine()
-    frame = pl.DataFrame({"value": values})
-    operation = bound_step(
-        f"cast-{target}",
-        "castColumn",
-        column=bound_ref("c:source:0", "value", 0),
-        dtype=target,
-    )
-
-    live = engine.apply_transform(frame, operation)
-    generated = execute_generated(engine, frame, [operation])
-
-    assert live.get_column("value").dtype == expected_dtype
-    assert generated.get_column("value").dtype == expected_dtype
-    assert live.get_column("value").to_list() == expected_values
-    assert_semantically_equal(live, generated)
 
 
 @pytest.mark.parametrize(
@@ -1801,34 +1717,12 @@ def assert_semantically_equal(left, right):
 
 
 @pytest.mark.parametrize(
-    "dtype,value",
-    [
-        ("UInt64", 2**63),
-        ("UInt64", 2**64 - 1),
-        ("Float32", float(2**63)),
-        ("Float64", float(2**63)),
-        ("Float64", float("inf")),
-        ("Float64", float("-inf")),
-    ],
-)
-def test_pandas_integer_cast_refuses_nullable_overflow(dtype: str, value: Any) -> None:
-    engine = PandasEngine()
-    source = pd.DataFrame({"value": pd.Series([value, None], dtype=dtype), "kept": [1, 2]})
-    before = source.copy(deep=True)
-    schema = engine.schema(source)
-    lineage = source_lineage(schema)
-    operation = bind_step(step("cast", "castColumn", column=lineage[0], dtype="integer"), schema, lineage)
-    with pytest.raises((EngineError, ValueError), match="signed 64-bit integer"):
-        engine.apply_transform(source, operation)
-    with pytest.raises(ValueError, match="signed 64-bit integer"):
-        execute_generated(engine, source, [operation])
-    pd.testing.assert_frame_equal(source, before)
-
-
-@pytest.mark.parametrize(
     "dtype,values,expected",
     [
         ("UInt64", [0, 2**63 - 1, None], [0, 2**63 - 1, pd.NA]),
+        ("UInt64", [2**63, 2**64 - 1, 1], [pd.NA, pd.NA, 1]),
+        ("Float32", [float(2**63), 1.0], [pd.NA, 1]),
+        ("Float64", [float(2**63), float("inf"), float("-inf"), 2.0], [pd.NA, pd.NA, pd.NA, 2]),
         ("uint64[pyarrow]", [0, 2**63 - 1, None], [0, 2**63 - 1, pd.NA]),
         ("float16", [0.0, 1.0], [0, 1]),
         ("Float64", [-float(2**63), float(2**63 - 1024), 1.25, None], [-(2**63), 2**63 - 1024, 1, pd.NA]),
@@ -2012,26 +1906,16 @@ def test_pandas_dictionary_casts_use_logical_values_and_native_output_types(
     _assert_dictionary_operation(source, logical, operation)
 
 
-def test_pandas_dictionary_unsigned_cast_retains_signed_range_guard() -> None:
-    source, _logical = _dictionary_operation_frames("unsigned")
-    before = source.copy(deep=True)
+def test_pandas_dictionary_unsigned_cast_turns_values_beyond_int64_into_missing() -> None:
+    source, logical = _dictionary_operation_frames("unsigned")
     engine = PandasEngine()
     schema = engine.schema(source)
     lineage = source_lineage(schema)
     operation = bind_step(
         step("dictionary-cast-range", "castColumn", column=lineage[0], dtype="integer"), schema, lineage
     )
-    for execute in [
-        lambda: engine.apply_transform(source, operation),
-        lambda: execute_generated(engine, source, [operation]),
-    ]:
-        with pytest.raises((EngineError, ValueError), match="signed 64-bit integer"):
-            execute()
-    for column in ["value", "untouched"]:
-        source_array: Any = source[column].array
-        before_array: Any = before[column].array
-        assert source_array.__arrow_array__().equals(before_array.__arrow_array__())
-    pd.testing.assert_series_equal(source["row"], before["row"])
+    _assert_dictionary_operation(source, logical, operation)
+    assert engine.apply_transform(source, operation)["value"].tolist()[:4] == [pd.NA, pd.NA, 1, pd.NA]
 
 
 @pytest.mark.parametrize("direction", [None, True, [], {}, "ASC", "sideways"])

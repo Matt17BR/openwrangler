@@ -1,4 +1,5 @@
 source("r/tests/kernel_agent_support.R", local = FALSE)
+source("r/tests/convert_type_contract.R", local = FALSE)
 kernel_agent_cases <- c(
   "numeric-portability",
   "csv-import",
@@ -5519,9 +5520,9 @@ fill_table_closed <- dispatch("closeSession", list(sessionId = fill_table_sessio
 assert_identical(fill_table_closed$kind, "closed", "the R data.table fill session did not close")
 
 source_environment$cast_frame <- data.frame(
-  integer_text = c(" 1.9", "bad", NA_character_),
+  integer_text = c(" 7", "1.9", NA_character_),
   float_factor = factor(c(" 2.5", "NaN", "bad"), levels = c(" 2.5", "NaN", "bad")),
-  boolean_text = c("true", "F", "no"),
+  boolean_text = c("true", " FALSE ", "F"),
   date_text = c("2024-02-29", "2024-2-29", NA_character_),
   datetime_text = c("2024-02-29T12:34:56.123456Z", "2024-02-29", "bad"),
   number = c(pi, NaN, Inf),
@@ -5572,6 +5573,13 @@ cast_bad_layout_target <- dispatch("previewStep", list(
   step = cast_step("bad-layout-target", 8L, "dmy", "date", "DD/MM/YYYY"), page = page_window()
 ))
 assert_identical(cast_bad_layout_target$code, "invalid_request", "R Cast accepted an input layout for Date")
+cast_duration <- dispatch("previewStep", list(
+  sessionId = cast_session_id, revision = 0L,
+  step = cast_step("cast-duration", 7L, "duration", "string"), page = page_window()
+))
+assert_identical(cast_duration$kind, "error", "R Cast converted a Duration column")
+assert_identical(cast_duration$message, "Convert type cannot turn Duration values into Text.",
+  "R Cast changed the shared refusal message")
 
 cast_cases <- list(
   list(id = "cast-integer", position = 1L, name = "integer_text", dtype = "integer"),
@@ -5579,7 +5587,6 @@ cast_cases <- list(
   list(id = "cast-boolean", position = 3L, name = "boolean_text", dtype = "boolean"),
   list(id = "cast-date", position = 4L, name = "date_text", dtype = "date"),
   list(id = "cast-datetime", position = 5L, name = "datetime_text", dtype = "datetime"),
-  list(id = "cast-duration", position = 7L, name = "duration", dtype = "string"),
   list(id = "cast-dmy", position = 8L, name = "dmy", dtype = "datetime", inputFormat = "DD/MM/YYYY"),
   list(id = "cast-mdy", position = 9L, name = "mdy", dtype = "datetime", inputFormat = "MM/DD/YYYY"),
   list(id = "cast-iso", position = 10L, name = "iso", dtype = "datetime", inputFormat = "YYYY-MM-DD"),
@@ -5621,12 +5628,12 @@ for (case in cast_cases) {
     assert_identical(length(cast_preview$diff$cells), 2L, "R Cast lost its bounded integer cell diffs")
     assert_identical(
       cast_preview$diff$cells[[1L]]$before$raw,
-      " 1.9",
+      " 7",
       "R Cast lost the integer diff's source value"
     )
     assert_identical(
       cast_preview$diff$cells[[1L]]$after$raw,
-      "1",
+      "7",
       "R Cast lost the integer diff's result value"
     )
   }
@@ -5645,8 +5652,8 @@ if (!grepl(".ow_cast_values", cast_apply$code, fixed = TRUE)) {
 assign("cast_frame", source_environment$cast_frame, envir = .GlobalEnv)
 eval(parse(text = cast_apply$code), envir = .GlobalEnv)
 cast_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
-assert_identical(cast_generated$integer_text, c(1L, NA_integer_, NA_integer_), "generated R integer Cast changed values")
-assert_identical(cast_generated$float_factor, c(2.5, NaN, NA_real_), "generated R float Cast changed factor labels")
+assert_identical(cast_generated$integer_text, c(7L, NA_integer_, NA_integer_), "generated R integer Cast changed values")
+assert_identical(cast_generated$float_factor, c(2.5, NA_real_, NA_real_), "generated R float Cast changed factor labels")
 assert_identical(cast_generated$boolean_text, c(TRUE, FALSE, NA), "generated R boolean Cast changed values")
 assert_identical(
   cast_generated$date_text,
@@ -5663,7 +5670,6 @@ assert_identical(
   c("3.1415926535897931", "NaN", "Inf"),
   "generated R string Cast changed exact numeric formatting"
 )
-assert_identical(cast_generated$duration, c("-1.5 mins", NA_character_, "2 mins"), "generated duration Cast changed signs, units or missing values")
 assert_identical(as.double(cast_generated$dmy), c(1709164800, 1798675200, NA_real_), "generated DMY Cast changed native midnights")
 assert_identical(as.double(cast_generated$mdy), c(1709164800, 1770076800, NA_real_), "generated MDY Cast changed date order or accepted an impossible date")
 assert_identical(as.double(cast_generated$iso), c(1709164800, 1798675200, NA_real_), "generated ISO Cast accepted a trailing suffix")
@@ -5682,8 +5688,6 @@ for (empty in c(TRUE, FALSE)) {
   changed <- if (empty) cast_source_before[FALSE, , drop = FALSE] else cast_source_before
   expected <- if (empty) cast_generated[FALSE, , drop = FALSE] else cast_generated
   if (!empty) {
-    changed$duration <- as.difftime(rep(NA_real_, nrow(changed)), units = "mins")
-    expected$duration <- rep(NA_character_, nrow(expected))
     changed$dmy <- rep(NA_character_, nrow(changed))
     expected$dmy <- as.POSIXct(rep(NA_real_, nrow(expected)), origin = "1970-01-01", tz = "UTC")
   }
@@ -5691,9 +5695,8 @@ for (empty in c(TRUE, FALSE)) {
   evaluation_environment <- new.env(parent = baseenv())
   evaluation_environment$cast_frame <- changed
   eval(parse(text = cast_apply$code), envir = evaluation_environment)
-  assert_identical(typeof(evaluation_environment$open_wrangler_result$duration), "character", "generated empty or missing duration Cast lost its string type")
-  assert_identical(evaluation_environment$open_wrangler_result, expected, "generated duration Cast changed the complete typed frame")
-  assert_identical(serialize(evaluation_environment$cast_frame, NULL, version = 3L), source_bytes, "generated duration Cast changed source storage or metadata")
+  assert_identical(evaluation_environment$open_wrangler_result, expected, "generated Cast changed the complete typed frame")
+  assert_identical(serialize(evaluation_environment$cast_frame, NULL, version = 3L), source_bytes, "generated Cast changed source storage or metadata")
 }
 
 for (empty in c(TRUE, FALSE)) {
@@ -5738,6 +5741,47 @@ assert_identical(cast_undo$page$schema[[6L]]$rawType, "double", "R Cast undo did
 assert_identical(source_environment$cast_frame, cast_source_before, "the R Cast lifecycle mutated its source")
 cast_closed <- dispatch("closeSession", list(sessionId = cast_session_id))
 assert_identical(cast_closed$kind, "closed", "the R Cast session did not close")
+
+local({
+  inputs <- list()
+  targets <- character()
+  expected <- list()
+  for (case in convert_type_r_cases) {
+    for (input in convert_type_r_inputs(case)) {
+      inputs[[length(inputs) + 1L]] <- input
+      targets <- c(targets, case$target)
+      expected[[length(expected) + 1L]] <- convert_type_values(case$expected, case$target)
+    }
+  }
+  rows <- max(lengths(expected))
+  pad <- function(values) c(values, rep(values[NA_integer_], rows - length(values)))
+  names(inputs) <- sprintf("case_%d", seq_along(inputs))
+  source_environment$convert_frame <- as.data.frame(lapply(inputs, function(input) {
+    if (inherits(input, "integer64")) bit64::as.integer64(pad(as.integer(input))) else pad(input)
+  }), stringsAsFactors = FALSE)
+  opened <- dispatch("openSession", list(sessionId = cast_session_id, variableName = "convert_frame", page = page_window()))
+  assert_identical(opened$kind, "page", "the shared Convert Type session did not open")
+  revision <- 0L
+  for (position in seq_along(inputs)) {
+    preview <- dispatch("previewStep", list(sessionId = cast_session_id, revision = revision,
+      step = cast_step(sprintf("convert-%d", position), position, names(inputs)[[position]], targets[[position]]),
+      page = page_window()))
+    assert_identical(preview$kind, "stepPreview", sprintf("shared Convert Type case %d did not preview", position))
+    applied <- dispatch("applyDraft", list(sessionId = cast_session_id, revision = preview$revision, page = page_window()))
+    assert_identical(applied$kind, "planUpdated", sprintf("shared Convert Type case %d did not apply", position))
+    revision <- applied$revision
+  }
+  replay <- new.env(parent = baseenv())
+  replay$convert_frame <- source_environment$convert_frame
+  eval(parse(text = applied$code), replay)
+  for (position in seq_along(inputs)) {
+    assert_identical(replay$open_wrangler_result[[position]], pad(expected[[position]]),
+      sprintf("generated %s case %d broke the shared Convert Type contract", class(inputs[[position]])[[1L]], position))
+  }
+  assert_identical(dispatch("closeSession", list(sessionId = cast_session_id))$kind, "closed",
+    "the shared Convert Type session did not close")
+  rm("convert_frame", envir = source_environment)
+})
 
 local({
   source_environment$rounded_datetime <- data.frame(instant = structure(
@@ -5809,7 +5853,7 @@ cast_table_closed <- dispatch("closeSession", list(sessionId = cast_table_sessio
 assert_identical(cast_table_closed$kind, "closed", "the R data.table Cast session did not close")
 
 source_environment$cast_off_page <- data.frame(
-  elapsed = as.difftime(c(rep(1, 100L), NaN), units = "hours"),
+  number = c(rep(1.5, 100L), NaN),
   date_text = c(rep("2024-02-29", 100L), "0000-01-01"),
   check.names = FALSE
 )
@@ -5819,21 +5863,21 @@ cast_off_page_open <- dispatch(
   list(sessionId = cast_off_page_session_id, variableName = "cast_off_page", page = page_window())
 )
 assert_identical(cast_off_page_open$kind, "page", "the off-page R Cast session did not open")
-cast_off_page_duration_preview <- dispatch(
+cast_off_page_number_preview <- dispatch(
   "previewStep",
   list(
     sessionId = cast_off_page_session_id,
     revision = 0L,
-    step = cast_step("cast-off-page-duration", 1L, "elapsed", "string"),
+    step = cast_step("cast-off-page-number", 1L, "number", "integer"),
     page = page_window(column_offset = 0L, column_limit = 1L)
   )
 )
-assert_identical(cast_off_page_duration_preview$kind, "stepPreview", "the off-page duration Cast did not preview")
-cast_off_page_duration_apply <- dispatch(
+assert_identical(cast_off_page_number_preview$kind, "stepPreview", "the off-page number Cast did not preview")
+cast_off_page_number_apply <- dispatch(
   "applyDraft",
   list(sessionId = cast_off_page_session_id, revision = 1L, page = page_window())
 )
-assert_identical(cast_off_page_duration_apply$action, "apply", "the off-page duration Cast did not apply")
+assert_identical(cast_off_page_number_apply$action, "apply", "the off-page number Cast did not apply")
 cast_off_page_date_preview <- dispatch(
   "previewStep",
   list(
@@ -5862,9 +5906,9 @@ assign("cast_off_page", source_environment$cast_off_page, envir = .GlobalEnv)
 eval(parse(text = cast_off_page_apply$code), envir = .GlobalEnv)
 cast_off_page_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(
-  is.na(cast_off_page_generated$elapsed[[101L]]),
+  is.na(cast_off_page_generated$number[[101L]]),
   TRUE,
-  "generated R duration Cast disagreed with the live off-page NaN result"
+  "generated R integer Cast disagreed with the live off-page NaN result"
 )
 assert_identical(
   is.na(cast_off_page_generated$date_text[[101L]]),

@@ -802,6 +802,11 @@ including missing-value distinctions. Original values, order and identities rema
 Boolean type while preserving the engine's conservative schema nullability policy. An empty input retains its
 schema and gains an empty Boolean column. Live and generated code apply the same rules and output-name checks.
 
+Convert Type's source and target pairs are a shared matrix in `fixtures/convert-type-contract.json`. The webview
+offers only those targets for the selected column, Python binding refuses any other pair with the same message, such
+as "Convert type cannot turn Duration values into Text.", and native R applies the matrix in live and generated code.
+The fixture's value cases fix text parsing, truncation, range and Boolean rules for every editing engine.
+
 Convert Type accepts an optional `inputFormat` for a Datetime target: `DD/MM/YYYY`, `MM/DD/YYYY` or `YYYY-MM-DD`.
 Across the editing engines, the option requires native text input and exact ten-character ASCII dates with positive
 four-digit years. Invalid dates, extra text and values beyond native capacity become missing. Valid dates become
@@ -1092,8 +1097,8 @@ negative scale. TypeError admission is limited to this rescaling and the exact D
 other operand errors retain their previous paths.
 Other powers and Decimal capacity refusals retain their existing native behavior and the explicit repairs above.
 
-Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range and
-present infinities are rejected before conversion; failed previews or applies preserve the confirmed session state.
+Convert Type's integer target is nullable signed 64-bit storage. Unsigned or floating values outside that range, NaN
+and infinities become missing, as in Polars and DuckDB.
 Fill reads selected dictionary targets, donors and keys as logical values. Filled targets use native logical storage;
 targets with no filled cells and unrelated encoded columns retain their dictionary representation. Decimal capacity
 and timezone checks still apply to replacement literals when the target has no missing cells.
@@ -2125,8 +2130,6 @@ Generated One-hot code normalizes text before choosing categories and comparing 
 execution across text encodings. It validates the complete input before formatting distinct category labels.
 Multi-label encoding retains its per-row text preparation.
 
-Convert Type to text retains a character output column for empty duration input in both live and generated execution.
-
 Integer64 One-hot Encode retains all native primitive validations but includes arithmetic code only when a Formula
 operand in the same plan needs it. Drop Duplicates retains its separate character-comparison binding.
 
@@ -2163,8 +2166,9 @@ Text operations accept character/factor input and preserve `NA`; transformed fac
 counts Unicode characters and appends integer output. Split uses a literal delimiter and yields `NA` for an absent
 part. Strip uses whitespace or a literal character set. In-place text changes to a data-table key are refused; a new
 output column preserves the key and row order. Convert Type retains column identity, supports native character,
-integer, double, logical, Date and UTC POSIXct targets, and converts factors through labels. Failed parses become `NA`;
-unit or integer64 precision loss is refused. Integer64-to-integer retains integer64 storage; a keyed column must be cloned.
+integer, double, logical, Date and UTC POSIXct targets, and converts factors through labels. Failed parses become `NA`.
+Integer64-to-integer retains integer64 storage, and integer64 to Float rounds to the nearest double as the Python engines
+do. Other integer targets are 32-bit, so values beyond that range become `NA`. A keyed column must be cloned.
 
 Standalone generated plans run in a fresh `baseenv()`-parented implementation environment and validate the source
 before copying. Formula, Format Datetime and categorical helpers avoid caller-defined operator or S3 dispatch.
