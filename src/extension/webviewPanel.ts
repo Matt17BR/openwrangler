@@ -5,6 +5,7 @@ import type {
   DataBackend,
   CancelledResponse,
   ErrorResponse,
+  LookupFile,
   OpenWranglerRequest,
   OpenWranglerResponse,
   OperationKind,
@@ -29,6 +30,13 @@ import type { ViewFilterRemovalTarget } from "../shared/filterModel";
 import { encodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { operationByKind, stepReplaysOnEngine, type FileEngine } from "../shared/operations";
+import {
+  isLookupFilePath,
+  LOOKUP_FILE_EXTENSIONS,
+  lookupFileFormat,
+  MAX_LOOKUP_FAILURE_MESSAGE_CHARACTERS,
+  type LookupFileState
+} from "../shared/lookupColumns";
 import type {
   BridgeRequestOptions,
   FileReconfigurationOptions,
@@ -834,6 +842,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "lookupFile") {
+      await this.describeLookupFile(decoded.requestId, decoded.file);
+      return;
+    }
+
     if (decoded.kind === "exportData") {
       const sessionId = this.sessionId;
       const revision = this.sessionRevision;
@@ -882,6 +895,80 @@ export class OpenWranglerPanel {
           ? undefined
           : { priority: decoded.priority };
     await this.forward(request, decoded.viewContextId, requestOptions);
+  }
+
+  private async describeLookupFile(requestId: string, requested: LookupFile | undefined): Promise<void> {
+    const reply = (state: LookupFileState) =>
+      this.postRendererMessage({ kind: "lookupFileState", requestId, ...state });
+    const fail = (message: string) =>
+      reply({
+        status: "failed",
+        message: Array.from(message).slice(0, MAX_LOOKUP_FAILURE_MESSAGE_CHARACTERS).join("")
+      });
+    if (!vscode.workspace.isTrusted) {
+      await fail("Trust this workspace before looking up columns from another file.");
+      return;
+    }
+    let file = requested;
+    if (!file) {
+      const sourceUri = fileSourceUri(this.source);
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        title: "Choose a Lookup File",
+        openLabel: "Use Lookup File",
+        filters: {
+          "Lookup files": Object.values(LOOKUP_FILE_EXTENSIONS).flatMap((extensions) =>
+            extensions.map((extension) => extension.slice(1))
+          )
+        },
+        ...(sourceUri ? { defaultUri: vscode.Uri.joinPath(sourceUri, "..") } : {})
+      });
+      if (this.disposed) return;
+      const uri = picked?.[0];
+      if (!uri) {
+        await reply({ status: "cancelled" });
+        return;
+      }
+      const format = lookupFileFormat(uri.fsPath);
+      if (
+        (uri.scheme !== "file" && uri.scheme !== "vscode-remote") ||
+        !format ||
+        !isLookupFilePath(uri.fsPath, format)
+      ) {
+        await fail("Choose a saved CSV, TSV, Parquet or JSON Lines file.");
+        return;
+      }
+      file = { path: uri.fsPath, format };
+    }
+    const sessionId = this.sessionId;
+    if (!sessionId) {
+      await fail("Wait for the data to open before choosing a lookup file.");
+      return;
+    }
+    let response: OpenWranglerResponse;
+    try {
+      response = await this.bridge.request({
+        kind: "describeLookupFile",
+        sessionId,
+        revision: this.sessionRevision,
+        file
+      });
+    } catch (error) {
+      if (!this.disposed) await fail(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (this.disposed) return;
+    if (response.kind === "lookupFileDescribed") {
+      await reply({ status: "described", file, columns: response.columns, rowCount: response.rowCount });
+    } else {
+      await fail(
+        response.kind === "error"
+          ? response.message
+          : "Open Wrangler stopped reading the lookup file before it finished."
+      );
+    }
   }
 
   private switchSessionMode(mode: SessionMode, viewState: GridViewState): Promise<void> {

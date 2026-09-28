@@ -314,6 +314,23 @@ Python runtime and the R kernel agent read the same cases from `fixtures/replace
 all over every column includes only columns whose display can contain the text, using the character sets that Find
 uses to skip columns. Replace applies the find bar's own previous draft before previewing another cell; any other
 draft disables Replace until it is applied or discarded.
+Look Up Columns (`lookupColumns`) appends 1 to 64 columns from one saved CSV, TSV, Parquet or JSON Lines file, matched
+by 1 to 8 key pairs. The step records the file's absolute path and format, each key's stable input reference with its
+lookup column name, and each copied column with its new name. The webview never chooses a path: its `lookupFile`
+message either asks the host for the Open dialog or, when a saved step is edited, names that step's file again. In a
+trusted workspace the host accepts only `file` and `vscode-remote` URIs, then sends `describeLookupFile` at the
+session's confirmed revision. That idempotent read may run beside background profiles. It returns the file's column
+names, raw and portable types and row count as the session's engine reads them, refuses files with more than 2,048
+columns, and reaches the webview as a `lookupFileState` reply correlated by request ID. Every input row keeps its place.
+Key pairs must share one text, integer, Boolean or date type; text matches exactly, integers match by value across
+widths, and a missing key never matches. Unmatched rows get missing values, and a key repeated in the lookup file
+stops the step and names that key. Copied columns may be text, integer, float, decimal, Boolean, date, datetime or
+duration. New names may not match an existing column or each other ignoring ASCII case, with `ß` equal to `ss`. Each
+session keeps at most two lookup files and reads a file again when its size or timestamps change; Python sessions
+also read a replaced file again.
+Generated code reads the same absolute path. Output IDs are `c:step:<stepId>:<ordinal>`; the R bridge takes the output
+schema from the kernel result and accepts it only when the input columns are unchanged and each appended column has its
+step ID, new name, position and a copyable type.
 Clipboard pages share the foreground queue with ordinary viewing requests. Before dispatch or recovery, and again
 after awaited recovery or detached-execution settlement, the coordinator rejects cancelled clipboard pages and
 those whose logical context is no longer current. This prevents a queued read for an older view from changing
@@ -1788,7 +1805,7 @@ columns are copied through R serialization. A managed file frame exists only ins
 first draft shares the loaded vectors. Captured frames are never modified in place. An operation result built from
 captured or new vectors is captured without a second copy; Custom Code results, captures that restore element names,
 and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Rename, Clone,
-Drop, Select and row selections share their input's column vectors. A data.table input, or a
+Drop, Select, Look Up Columns and row selections share their input's column vectors. A data.table input, or a
 `data.table` library run over columns with element names, still copies first because data.table changes its container
 and strips element names by reference. A derived capture skips rescanning clock, factor and nested columns identical to
 its already validated source column, and a row-preserving result inherits the source's validated row identities.

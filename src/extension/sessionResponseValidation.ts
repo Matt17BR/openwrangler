@@ -87,6 +87,11 @@ export function responseMismatch(
         request.columnIds,
         request.includePosition === true
       );
+    case "describeLookupFile":
+      if (response.kind !== "lookupFileDescribed") return `runtime returned ${response.kind}`;
+      return response.revision === request.revision
+        ? undefined
+        : `lookup-file revision ${response.revision} did not match ${request.revision}`;
     case "previewStep":
       if (response.kind !== "stepPreview") return `runtime returned ${response.kind}`;
       if (response.revision !== request.revision + 1) {

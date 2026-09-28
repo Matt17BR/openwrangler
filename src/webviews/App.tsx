@@ -57,6 +57,7 @@ import {
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
 import type { ProfileValueMode } from "./profileValueMode";
 import { OperationBuilder } from "./operations/OperationBuilder";
+import { publishLookupFileState } from "./operations/lookupFileChannel";
 import { ColumnSearch } from "./ColumnSearch";
 import { draftDiffLabels, fillMissingResultLabel } from "./draftResultPresentation";
 import { StepInspectionPanel } from "./StepInspectionPanel";
@@ -1016,6 +1017,10 @@ export function App() {
       }
       if (response.kind === "runtimeDependencyInstallState") {
         setRuntimeDependencyInstallPending(response.busy);
+        return;
+      }
+      if (response.kind === "lookupFileState") {
+        publishLookupFileState(response.requestId, response.state);
         return;
       }
       if (response.kind === "sessionModeChangeState") {

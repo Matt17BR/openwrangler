@@ -9,6 +9,8 @@ import type {
   FilterModel,
   GridPage,
   LiveGridPage,
+  LookupFile,
+  LookupFileColumn,
   OpenWranglerRequest,
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
@@ -50,6 +52,13 @@ import { portableRegexContract, validatePortableRegexOutputName } from "./portab
 import { isDuckDBTableSource, isRLibrary, PROTOCOL_VERSION } from "./protocol";
 import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 import { isFindQuery, isFindReplacement } from "./find";
+import {
+  isLookupFilePath,
+  LOOKUP_FILE_FORMATS,
+  MAX_LOOKUP_DESCRIBED_COLUMNS,
+  MAX_LOOKUP_KEYS,
+  MAX_LOOKUP_OUTPUTS
+} from "./lookupColumns";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -215,6 +224,8 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         optional(candidate, "includeFrom", isBoolean) &&
         optional(candidate, "includePosition", isBoolean)
       );
+    case "describeLookupFile":
+      return isSessionRequest(candidate) && isLookupFile(candidate.file);
     case "previewStep":
       return (
         isSessionRequest(candidate) &&
@@ -339,6 +350,8 @@ export function isOpenWranglerResponse(value: unknown): value is OpenWranglerRes
       return isValuesResponse(candidate);
     case "cellsFound":
       return isFindResponse(candidate);
+    case "lookupFileDescribed":
+      return isLookupFileDescribedResponse(candidate);
     case "stepPreview":
       return isStepPreviewResponse(candidate);
     case "stepInspection":
@@ -427,6 +440,30 @@ function isFindResponse(candidate: UnknownRecord): boolean {
     match.ordinal >= 1 &&
     match.ordinal <= candidate.matchCount &&
     optional(match, "position", isNonNegativeSafeInteger)
+  );
+}
+
+function isLookupFileDescribedResponse(candidate: UnknownRecord): boolean {
+  return (
+    isNonNegativeInteger(candidate.revision) &&
+    isLookupFileColumns(candidate.columns) &&
+    isNonNegativeSafeInteger(candidate.rowCount)
+  );
+}
+
+export function isLookupFileColumns(value: unknown): value is LookupFileColumn[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_LOOKUP_DESCRIBED_COLUMNS &&
+    value.every((entry) => {
+      const column = exactRecord(entry, ["name", "rawType", "type"]);
+      return (
+        column !== undefined &&
+        isString(column.name) &&
+        isString(column.rawType) &&
+        isEnumMember(column.type, COLUMN_TYPES)
+      );
+    })
   );
 }
 
@@ -1341,6 +1378,8 @@ export function isTransformStep(value: unknown): value is TransformStep {
       }
       return new Set(keyValues).size === keyValues.length && new Set(outputKeys).size === outputKeys.length;
     }
+    case "lookupColumns":
+      return isLookupColumnsParams(params);
     case "groupBy": {
       if (!isUniqueColumnReferenceArray(params.keys, false) || !Array.isArray(params.aggregations)) {
         return false;
@@ -1363,6 +1402,58 @@ export function isTransformStep(value: unknown): value is TransformStep {
     default:
       return false;
   }
+}
+
+export function isLookupFile(value: unknown): value is LookupFile {
+  const file = exactRecord(value, ["path", "format"]);
+  return (
+    file !== undefined &&
+    isOneOf(file.format, LOOKUP_FILE_FORMATS) &&
+    isString(file.path) &&
+    isLookupFilePath(file.path, file.format as (typeof LOOKUP_FILE_FORMATS)[number])
+  );
+}
+
+function isLookupColumnsParams(params: UnknownRecord): boolean {
+  const { keys, columns } = params;
+  if (
+    !isLookupFile(params.file) ||
+    !Array.isArray(keys) ||
+    keys.length < 1 ||
+    keys.length > MAX_LOOKUP_KEYS ||
+    !Array.isArray(columns) ||
+    columns.length < 1 ||
+    columns.length > MAX_LOOKUP_OUTPUTS
+  ) {
+    return false;
+  }
+  const keyIds = new Set<string>();
+  const keyNames = new Set<string>();
+  const lookupNames = new Set<string>();
+  const newNames = new Set<string>();
+  try {
+    for (const [index, value] of keys.entries()) {
+      const key = exactRecord(value, ["column", "lookupColumn"]);
+      if (key === undefined || !isColumnReference(key.column) || !isString(key.lookupColumn)) return false;
+      validatePivotLongerOutputName(key.lookupColumn, `Lookup key ${index + 1} lookup column`);
+      if (keyIds.has(key.column.id) || keyNames.has(key.lookupColumn)) return false;
+      keyIds.add(key.column.id);
+      keyNames.add(key.lookupColumn);
+    }
+    for (const [index, value] of columns.entries()) {
+      const column = exactRecord(value, ["lookupColumn", "newColumn"]);
+      if (column === undefined || !isString(column.lookupColumn) || !isString(column.newColumn)) return false;
+      validatePivotLongerOutputName(column.lookupColumn, `Looked-up column ${index + 1}`);
+      validatePivotLongerOutputName(column.newColumn, `Looked-up column ${index + 1} new name`);
+      const newName = portablePivotLongerNameKey(column.newColumn);
+      if (lookupNames.has(column.lookupColumn) || newNames.has(newName)) return false;
+      lookupNames.add(column.lookupColumn);
+      newNames.add(newName);
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 export function isExtractStructFieldName(value: unknown): value is string {

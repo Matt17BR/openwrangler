@@ -6,6 +6,7 @@ import type {
   DataDiff,
   ExtractStructFieldsTransformStep,
   GroupByTransformStep,
+  LookupColumnsTransformStep,
   OneHotEncodeTransformStep,
   SortRowsTransformStep
 } from "../shared/protocol";
@@ -17,6 +18,7 @@ import {
   customRowIdentityConstraintAfterRStep,
   dynamicCategoricalSchema,
   dynamicCustomCodeSchema,
+  dynamicLookupSchema,
   keyColumnsAfterRStep,
   rowCountAfterRStep,
   rowIdentityDomainAfterRStep,
@@ -458,6 +460,45 @@ describe("R kernel mutation schema", () => {
         frameContract([{ ...customSchema[0]!, id: "c:step:custom:0" }, customSchema[1]!])
       )
     ).toThrow("invalid custom-code column lineage");
+  });
+
+  it("accepts only appended lookup columns with step lineage and copyable types", () => {
+    const inputRSchema = frameContract(schema).schema;
+    const step: LookupColumnsTransformStep = {
+      id: "lookup",
+      kind: "lookupColumns",
+      params: {
+        file: { path: "/data/groups.csv", format: "csv" },
+        keys: [{ column: reference(0), lookupColumn: "code" }],
+        columns: [{ lookupColumn: "label", newColumn: "label" }]
+      }
+    };
+    const added = {
+      id: "c:step:lookup:0",
+      name: "label",
+      position: 2,
+      rawType: "character",
+      type: "string" as const,
+      nullable: true
+    };
+    expect(dynamicLookupSchema(schema, inputRSchema, step, frameContract([...schema, added]))).toEqual([
+      ...schema,
+      added
+    ]);
+    expect(() => dynamicLookupSchema(schema, inputRSchema, step, frameContract(schema))).toThrow(
+      "exactly one column per looked-up column"
+    );
+    expect(() =>
+      dynamicLookupSchema(schema, inputRSchema, step, frameContract([schema[0]!, { ...schema[1]!, name: "n" }, added]))
+    ).toThrow("changed an input column");
+    for (const wrong of [
+      { ...added, id: "c:step:lookup:1" },
+      { ...added, name: "other" }
+    ]) {
+      expect(() => dynamicLookupSchema(schema, inputRSchema, step, frameContract([...schema, wrong]))).toThrow(
+        "does not match the step"
+      );
+    }
   });
 
   it("creates fresh custom-row constraints and enforces exact or ascending order", () => {

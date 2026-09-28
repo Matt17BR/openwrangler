@@ -7,6 +7,7 @@ import {
 } from "../../shared/transformStepReferences";
 import { createPredicate } from "../../shared/filterModel";
 import { isTransformStep } from "../../shared/protocolValidation";
+import { LOOKUP_KEY_TYPES } from "../../shared/lookupColumns";
 import {
   directionalOrderColumnsForTarget,
   explicitFillValueKind,
@@ -263,6 +264,13 @@ function savedOperationTypeError(
         columnsById,
         operationColumnTypes(step.kind),
         "by-example sources must be portable scalar columns"
+      );
+    case "lookupColumns":
+      return incompatibleReferenceType(
+        step.params.keys.map((key, index) => ({ label: `lookup key ${index + 1}`, reference: key.column })),
+        columnsById,
+        LOOKUP_KEY_TYPES,
+        "lookup keys must be text, integer, Boolean or date columns"
       );
     case "fillMissingValues":
       return fillCompatibilityError(step, inputSchema, columnsById);

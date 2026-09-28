@@ -14,6 +14,7 @@ export type OpenWranglerRequest =
   | DatasetStatsRequest
   | ValuesRequest
   | FindRequest
+  | DescribeLookupFileRequest
   | PreviewStepRequest
   | InspectStepRequest
   | ApplyDraftRequest
@@ -97,6 +98,7 @@ export type TransformStep =
   | FormatDatetimeTransformStep
   | PivotLongerTransformStep
   | PivotWiderTransformStep
+  | LookupColumnsTransformStep
   | GroupByTransformStep
   | ByExampleTransformStep
   | CustomCodeTransformStep;
@@ -141,6 +143,7 @@ export type OperationKind =
   | "formatDatetime"
   | "pivotLonger"
   | "pivotWider"
+  | "lookupColumns"
   | "groupBy"
   | "byExample"
   | "customCode";
@@ -432,6 +435,15 @@ export type TypedCellKind =
   | "list"
   | "struct"
   | "unknown";
+export type LookupColumnsTransformStep = TransformStepTemplate & {
+  kind: "lookupColumns";
+  params: LookupColumnsParams;
+  [k: string]: unknown;
+};
+/**
+ * An exact column name of at most 1024 UTF-8 bytes, without NUL, CR or LF.
+ */
+export type LookupColumnName = string;
 export type GroupByTransformStep = TransformStepTemplate & {
   kind: "groupBy";
   params: GroupByParams;
@@ -522,6 +534,7 @@ export type OpenWranglerResponse =
   | DatasetStatsResponse
   | ValuesResponse
   | FindResponse
+  | LookupFileDescribedResponse
   | StepPreviewResponse
   | StepInspectionResponse
   | PlanUpdatedResponse
@@ -715,6 +728,22 @@ export interface FindRequest {
 export interface GridCell {
   row: number;
   columnId: string;
+}
+export interface DescribeLookupFileRequest {
+  kind: "describeLookupFile";
+  sessionId: string;
+  revision: number;
+  file: LookupFile;
+}
+export interface LookupFile {
+  /**
+   * The absolute path of the lookup file as the session's runtime sees it.
+   */
+  path: string;
+  /**
+   * Read as UTF-8 with a header row for CSV and TSV, using each engine's usual reader for the format.
+   */
+  format: "csv" | "tsv" | "parquet" | "jsonl";
 }
 export interface PreviewStepRequest {
   kind: "previewStep";
@@ -979,6 +1008,49 @@ export interface CellValue {
   isNull: boolean;
   isNaN: boolean;
   sign?: -1 | 1;
+}
+export interface LookupColumnsParams {
+  file: LookupFile;
+  /**
+   * Every pair must match. A missing value in any key never matches, and each complete key may appear at most once in the lookup file.
+   *
+   * @minItems 1
+   * @maxItems 8
+   */
+  keys:
+    | [LookupKey]
+    | [LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey, LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey]
+    | [LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey, LookupKey];
+  /**
+   * Ordered lookup columns appended under new names. Rows without a match get missing values.
+   *
+   * @minItems 1
+   * @maxItems 64
+   */
+  columns: [LookupOutput, ...LookupOutput[]];
+}
+export interface LookupKey {
+  column: ColumnReference3;
+  /**
+   * The lookup-file column of the same type whose values must equal this column's.
+   */
+  lookupColumn: string;
+}
+/**
+ * A text, integer, Boolean or date column of the current data.
+ */
+export interface ColumnReference3 {
+  id: string;
+  name: string;
+}
+export interface LookupOutput {
+  lookupColumn: LookupColumnName;
+  newColumn: LookupColumnName;
 }
 export interface GroupByParams {
   keys: NonEmptyColumnReferenceArray;
@@ -1592,6 +1664,22 @@ export interface FoundCell {
   ordinal: number;
   position?: number;
 }
+export interface LookupFileDescribedResponse {
+  kind: "lookupFileDescribed";
+  revision: number;
+  /**
+   * The lookup file's columns and types as this session's engine reads them.
+   *
+   * @maxItems 2048
+   */
+  columns: LookupFileColumn[];
+  rowCount: number;
+}
+export interface LookupFileColumn {
+  name: string;
+  rawType: string;
+  type: ColumnType;
+}
 export interface StepPreviewResponse {
   kind: "stepPreview";
   revision: number;
@@ -1767,6 +1855,11 @@ export const openWranglerRequestShapes = Object.freeze([
     optional: Object.freeze(["columnIds", "from", "includeFrom", "includePosition"])
   }),
   Object.freeze({
+    kind: "describeLookupFile",
+    required: Object.freeze(["kind", "sessionId", "revision", "file"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "previewStep",
     required: Object.freeze([
       "kind",
@@ -1881,6 +1974,11 @@ export const openWranglerResponseShapes = Object.freeze([
     kind: "cellsFound",
     required: Object.freeze(["kind", "revision", "viewRequestId", "matchCount"]),
     optional: Object.freeze(["match"])
+  }),
+  Object.freeze({
+    kind: "lookupFileDescribed",
+    required: Object.freeze(["kind", "revision", "columns", "rowCount"]),
+    optional: Object.freeze([])
   }),
   Object.freeze({
     kind: "stepPreview",

@@ -6,6 +6,7 @@ import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterMod
 import type { ColumnSchema, OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
 import { ConditionalColumnFields } from "./ConditionalColumnFields";
 import { FillMissingFields } from "./FillMissingFields";
+import { LookupColumnsFields } from "./LookupColumnsFields";
 import {
   aggregationOperations,
   aggregationColumnTypes,
@@ -1004,6 +1005,11 @@ export function OperationFields({ kind, metadata, columns, filterModel, initialS
           <code>result</code>. Custom code runs only in a trusted workspace.
         </small>
       </label>
+    );
+  }
+  if (kind === "lookupColumns") {
+    return (
+      <LookupColumnsFields columns={columns} initial={initialStep?.kind === kind ? initialStep.params : undefined} />
     );
   }
   return unsupportedOperationKind(kind);

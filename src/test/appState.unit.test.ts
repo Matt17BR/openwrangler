@@ -103,6 +103,37 @@ describe("App view-state model", () => {
     expect(decodeAppHostMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" })).toBeUndefined();
   });
 
+  it("decodes every lookup-file state and refuses malformed descriptions", () => {
+    const base = { kind: "lookupFileState", requestId: "lookup-file-1" } as const;
+    const described = {
+      ...base,
+      status: "described",
+      file: { path: "/data/regions.csv", format: "csv" },
+      columns: [{ name: "code", rawType: "Utf8", type: "string" }],
+      rowCount: 2
+    } as const;
+    expect(decodeAppHostMessage({ ...base, status: "cancelled" })).toEqual({ ...base, state: { status: "cancelled" } });
+    expect(decodeAppHostMessage({ ...base, status: "failed", message: "Unreadable." })).toEqual({
+      ...base,
+      state: { status: "failed", message: "Unreadable." }
+    });
+    expect(decodeAppHostMessage(described)).toEqual({
+      ...base,
+      state: { status: "described", file: described.file, columns: described.columns, rowCount: 2 }
+    });
+    for (const invalid of [
+      { ...base, status: "failed", message: "" },
+      { ...base, status: "failed", message: "x".repeat(2049) },
+      { ...described, requestId: "" },
+      { ...described, rowCount: -1 },
+      { ...described, file: { path: "regions.csv", format: "csv" } },
+      { ...described, columns: [{ name: "code", rawType: "Utf8", type: "text" }] },
+      { ...base, status: "pending" }
+    ]) {
+      expect(decodeAppHostMessage(invalid)).toBeUndefined();
+    }
+  });
+
   it("decodes the Redo editor action with checked session and revision fields", () => {
     const action = { kind: "editorAction", action: "redoStep", expectedSessionId: "session", expectedRevision: 3 };
     expect(decodeAppHostMessage(action)).toEqual(action);

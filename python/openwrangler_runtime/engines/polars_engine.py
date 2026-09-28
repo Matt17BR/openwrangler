@@ -24,6 +24,7 @@ from ..custom_code_scope import (
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
 from ..live_page_payload import LIVE_PAGE_TEXT_CHARACTER_LIMIT
+from ..lookup import check_lookup_columns, lookup_duplicate_message
 from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -463,6 +464,99 @@ def _polars_display_text(expression: Any, dtype: Any) -> Any:
     return text
 
 
+def _polars_read_lookup(path, file_format):
+    """Read a lookup file with Polars' own readers."""
+    import polars as pl
+
+    try:
+        if file_format in ("csv", "tsv"):
+            return pl.scan_csv(
+                path,
+                glob=False,
+                raise_if_empty=False,
+                separator="\t" if file_format == "tsv" else ",",
+                encoding="utf8",
+                quote_char='"',
+                has_header=True,
+            ).collect()
+        if file_format == "parquet":
+            return pl.scan_parquet(path, glob=False).collect()
+        with open(path, "rb") as source:
+            return pl.read_ndjson(source)
+    except (OSError, pl.exceptions.PolarsError) as error:
+        raise ValueError(f"Couldn't read the lookup file {path!r}: {error}") from error
+
+
+def _polars_lookup_columns(df, lookup, keys, outputs):
+    """Append looked-up columns to ``df``, keeping every row and its order.
+
+    ``keys`` lists (column, lookup column) pairs and ``outputs`` (lookup column, new column) pairs. A key with a
+    missing part never matches, and a complete key may appear in at most one lookup row.
+    """
+    import polars as pl
+
+    schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
+    needed = {name for _, name in keys} | {name for name, _ in outputs}
+    check_lookup_columns(
+        [(name, infer_semantic_type(str(dtype))) for name, dtype in lookup.schema.items() if name in needed],
+        [(column, infer_semantic_type(str(schema[column])), name) for column, name in keys],
+        outputs,
+        list(schema.names()),
+    )
+    taken = set(schema.names())
+
+    def private(stem):
+        name = stem
+        while name in taken:
+            name += "_"
+        taken.add(name)
+        return name
+
+    def common_type(left, right):
+        if infer_semantic_type(str(left)) == "string":
+            return pl.String
+        if left == right or not (left.is_integer() and right.is_integer()):
+            return None
+        uint128 = getattr(pl, "UInt128", None)
+        types = {left, right}
+        if not (left.is_signed_integer() or right.is_signed_integer()):
+            return uint128 if uint128 in types else pl.UInt64
+        return pl.Int128 if types & {pl.UInt64, pl.Int128, uint128} else pl.Int64
+
+    left_names, right_names, left_keys, right_keys = [], [], [], []
+    for index, (column, name) in enumerate(keys):
+        target = common_type(schema[column], lookup.schema[name])
+        left_value = _ow_polars_col(schema, column)
+        right_value = _ow_polars_col(lookup.schema, name)
+        left_names.append(private(f"__ow_lookup_key_{index}"))
+        right_names.append(private(f"__ow_lookup_match_{index}"))
+        left_keys.append((left_value if target is None else left_value.cast(target)).alias(left_names[-1]))
+        right_keys.append((right_value if target is None else right_value.cast(target)).alias(right_names[-1]))
+    value_names = [private(f"__ow_lookup_value_{index}") for index in range(len(outputs))]
+    right = lookup.select(
+        right_keys
+        + [
+            _ow_polars_col(lookup.schema, name).alias(value)
+            for (name, _), value in zip(outputs, value_names, strict=True)
+        ]
+    ).filter(pl.all_horizontal([pl.col(name).is_not_null() for name in right_names]))
+    repeated = right.select(pl.struct(right_names).is_duplicated()).to_series()
+    if repeated.any():
+        row = right.row(repeated.arg_true()[0])
+        raise ValueError(lookup_duplicate_message([name for _, name in keys], list(row[: len(keys)])))
+    joined = df.with_columns(left_keys).join(
+        right.lazy() if isinstance(df, pl.LazyFrame) else right,
+        left_on=left_names,
+        right_on=right_names,
+        how="left",
+        maintain_order="left",
+        coalesce=True,
+    )
+    return joined.drop(left_names).rename(
+        {value: new_column for value, (_, new_column) in zip(value_names, outputs, strict=True)}
+    )
+
+
 def _polars_replace_matches(frame, column, pattern, replacement, whole_cell, row=None):
     """Replace the text Find matches in one column's cells, then convert each new text back to the column's type.
 
@@ -824,6 +918,21 @@ class PolarsEngine(DataFrameEngine):
         except ImportError:
             return False
         return isinstance(value, (pl.DataFrame, pl.LazyFrame, pl.Series))
+
+    def _lookup_frame(self, path: str, file_format: str) -> Any:
+        try:
+            return self._lookup_file_cache().get(
+                path, (path, file_format), lambda: _polars_read_lookup(path, file_format)
+            )
+        except ValueError as error:
+            raise EngineError(str(error)) from error
+
+    def describe_lookup_file(self, path: str, file_format: str) -> tuple[list[dict[str, Any]], int]:
+        frame = self._lookup_frame(path, file_format)
+        return [
+            {"name": name, "rawType": str(dtype), "type": infer_semantic_type(str(dtype))}
+            for name, dtype in frame.schema.items()
+        ], frame.height
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         import polars as pl
@@ -2338,6 +2447,14 @@ class PolarsEngine(DataFrameEngine):
             if bool(oversized):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             return df.with_columns(source.str.extract(params["pattern"], params["group"]).alias(params["newColumn"]))
+        if kind == "lookupColumns":
+            lookup = self._lookup_frame(params["file"]["path"], params["file"]["format"])
+            keys = [(bound_column_name(key["column"], kind), key["lookupColumn"]) for key in params["keys"]]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            try:
+                return _polars_lookup_columns(df, lookup, keys, outputs)
+            except ValueError as error:
+                raise EngineError(str(error)) from error
         if kind == "replaceMatches":
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             for reference in params["columns"]:
@@ -2575,6 +2692,20 @@ class PolarsEngine(DataFrameEngine):
             lines.extend([getsource(_polars_round_helpers), ""])
         if any(step["kind"] == "minMaxScale" for step in plan):
             lines.extend([getsource(_polars_min_max_helpers), ""])
+        if any(step["kind"] == "lookupColumns" for step in plan):
+            lines.extend(
+                [
+                    "import re",
+                    "from builtins import len, type",
+                    "ColumnType = str",
+                    getsource(infer_semantic_type),
+                    getsource(check_lookup_columns),
+                    getsource(lookup_duplicate_message),
+                    getsource(_polars_read_lookup),
+                    getsource(_polars_lookup_columns),
+                    "",
+                ]
+            )
         if any(step["kind"] == "replaceMatches" for step in plan):
             lines.extend(
                 [
@@ -3505,6 +3636,14 @@ class PolarsEngine(DataFrameEngine):
                     f"{prefix}df = df.with_columns({_compile_polars_column(column)}.cast(pl.String)"
                     f".str.extract({params['pattern']!r}, {params['group']}).alias({output!r}))"
                 ),
+            ]
+        if kind == "lookupColumns":
+            keys = [(bound_column_name(key["column"], kind), key["lookupColumn"]) for key in params["keys"]]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            file = params["file"]
+            return [
+                f"{prefix}df = _polars_lookup_columns(",
+                f"{prefix}    df, _polars_read_lookup({file['path']!r}, {file['format']!r}), {keys!r}, {outputs!r})",
             ]
         if kind == "replaceMatches":
             lines = []

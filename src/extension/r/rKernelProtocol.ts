@@ -23,6 +23,8 @@ import type {
   ExportOptions,
   FillMissingReplacement,
   FormulaLiteral,
+  LookupFile,
+  LookupFileColumn,
   PredicateFilter,
   RLibrary,
   TypedSelectionToken,
@@ -32,10 +34,13 @@ import { portableRegexContract, validatePortableRegexOutputName } from "../../sh
 import { isFindQuery } from "../../shared/find";
 import {
   isExportOptions,
+  isLookupFile,
+  isLookupFileColumns,
   isOpenWranglerResponse,
   isRetainedTransformStep,
   isTransformStep
 } from "../../shared/protocolValidation";
+import { MAX_LOOKUP_KEYS, MAX_LOOKUP_OUTPUTS } from "../../shared/lookupColumns";
 
 export const R_KERNEL_TRANSPORT_VERSION = 18 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
@@ -129,6 +134,10 @@ export type RKernelFoundCell = Readonly<{
 }>;
 export type RKernelFindQuery = Omit<Extract<RKernelRequest, { kind: "findCells" }>["payload"], "sessionId">;
 export type RKernelFindResult = Readonly<{ matchCount: number; match?: RKernelFoundCell }>;
+export type RKernelLookupFileDescription = Readonly<{
+  columns: readonly Readonly<LookupFileColumn>[];
+  rowCount: number;
+}>;
 
 export interface RKernelColumnReference {
   readonly id: string;
@@ -300,6 +309,16 @@ export interface RKernelPivotWiderStep {
     namesFrom: RKernelColumnReference;
     valuesFrom: RKernelColumnReference;
     outputs: readonly Readonly<{ key: TypedSelectionToken; name: string }>[];
+  }>;
+}
+
+export interface RKernelLookupColumnsStep {
+  readonly id: string;
+  readonly kind: "lookupColumns";
+  readonly params: Readonly<{
+    file: Readonly<LookupFile>;
+    keys: readonly Readonly<{ column: RKernelColumnReference; lookupColumn: string }>[];
+    columns: readonly Readonly<{ lookupColumn: string; newColumn: string }>[];
   }>;
 }
 
@@ -622,6 +641,7 @@ export type RKernelTransformStep =
   | RKernelSplitTextColumnsStep
   | RKernelPivotLongerStep
   | RKernelPivotWiderStep
+  | RKernelLookupColumnsStep
   | RKernelExtractRegexGroupStep
   | RKernelFindReplaceStep
   | RKernelReplaceMatchesStep
@@ -773,6 +793,12 @@ export type RKernelRequest =
         search: string | null;
         limit: number;
       }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "describeLookupFile";
+      payload: Readonly<{ sessionId: string; file: Readonly<LookupFile> }>;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -981,6 +1007,14 @@ export type RKernelResponse =
       column: string;
       values: readonly ValueCount[];
       hasMore: boolean;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "lookupFileDescribed";
+      sessionId: string;
+      columns: readonly Readonly<LookupFileColumn>[];
+      rowCount: number;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -1323,6 +1357,19 @@ export function decodeRKernelResponseJson(
       column: boundedText(record.column, "response.column", maximumVariableNameBytes, true),
       values: Object.freeze(candidate.values),
       hasMore: candidate.hasMore
+    });
+  }
+  if (kind === "lookupFileDescribed") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "columns", "rowCount"]);
+    validateEnvelope(record, expected);
+    if (!isLookupFileColumns(record.columns)) fail("R kernel lookup-file description is invalid.");
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "lookupFileDescribed" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      columns: Object.freeze(record.columns.map((column) => Object.freeze({ ...column }))),
+      rowCount: boundedInteger(record.rowCount, "response.rowCount", R_FRAME_CONTRACT_LIMITS.rows)
     });
   }
   if (kind === "cellsFound") {
@@ -1712,6 +1759,13 @@ function validateRequest(request: RKernelRequest): void {
     if (boundedInteger(payload.limit, "request.payload.limit", 10_000) < 1) {
       fail("request.payload.limit must be positive.");
     }
+    return;
+  }
+  if (record.kind === "describeLookupFile") {
+    const payload = exactRecord(record.payload, ["sessionId", "file"], "R kernel lookup-file payload");
+    identifier(payload.sessionId, "request.payload.sessionId");
+    if (!isLookupFile(payload.file))
+      fail("request.payload.file must be an absolute CSV, TSV, Parquet or JSON Lines path.");
     return;
   }
   if (record.kind === "findCells") {
@@ -2213,6 +2267,42 @@ function validateTransformStep(value: unknown): void {
       const output = exactRecord(value, ["key", "name"], `request.payload.step.params.outputs[${index}]`);
       validatePivotWiderKey(output.key, `request.payload.step.params.outputs[${index}].key`);
       boundedText(output.name, `request.payload.step.params.outputs[${index}].name`, maximumVariableNameBytes, false);
+    });
+    return;
+  }
+  if (step.kind === "lookupColumns") {
+    const params = exactRecord(step.params, ["file", "keys", "columns"], "R kernel lookup parameters");
+    if (!isLookupFile(params.file)) fail("request.payload.step.params.file must be an absolute lookup file path.");
+    if (!Array.isArray(params.keys) || params.keys.length < 1 || params.keys.length > MAX_LOOKUP_KEYS) {
+      fail(`R kernel lookup parameters require 1 to ${MAX_LOOKUP_KEYS} keys.`);
+    }
+    params.keys.forEach((value, index) => {
+      const key = exactRecord(value, ["column", "lookupColumn"], `request.payload.step.params.keys[${index}]`);
+      validateColumnReference(key.column, `request.payload.step.params.keys[${index}].column`);
+      boundedText(
+        key.lookupColumn,
+        `request.payload.step.params.keys[${index}].lookupColumn`,
+        maximumVariableNameBytes,
+        false
+      );
+    });
+    if (!Array.isArray(params.columns) || params.columns.length < 1 || params.columns.length > MAX_LOOKUP_OUTPUTS) {
+      fail(`R kernel lookup parameters require 1 to ${MAX_LOOKUP_OUTPUTS} columns.`);
+    }
+    params.columns.forEach((value, index) => {
+      const column = exactRecord(value, ["lookupColumn", "newColumn"], `request.payload.step.params.columns[${index}]`);
+      boundedText(
+        column.lookupColumn,
+        `request.payload.step.params.columns[${index}].lookupColumn`,
+        maximumVariableNameBytes,
+        false
+      );
+      boundedText(
+        column.newColumn,
+        `request.payload.step.params.columns[${index}].newColumn`,
+        maximumVariableNameBytes,
+        false
+      );
     });
     return;
   }

@@ -489,8 +489,15 @@ export function assertMutationDiff(
     step.kind === "fillMissingValues" ||
     step.kind === "castColumn" ||
     step.kind === "replaceMatches";
-  const expectedAdded =
-    step.kind === "cloneColumn"
+  const appendedNames =
+    step.kind === "splitTextColumns"
+      ? step.params.newColumns
+      : step.kind === "lookupColumns"
+        ? step.params.columns.map((column) => column.newColumn)
+        : undefined;
+  const expectedAdded = appendedNames
+    ? [...appendedNames]
+    : step.kind === "cloneColumn"
       ? [step.params.newName]
       : step.kind === "formula" ||
           step.kind === "conditionalColumn" ||
@@ -510,8 +517,12 @@ export function assertMutationDiff(
                   : step.kind === "formatDatetime" && !formatDatetimeInPlace
                     ? [step.params.newColumn as string]
                     : [];
-  const stepMatches =
-    step.kind === "selectColumns"
+  const stepMatches = appendedNames
+    ? isDeepStrictEqual(outputIds, [
+        ...inputIds,
+        ...appendedNames.map((_name, ordinal) => `c:step:${step.id}:${ordinal}`)
+      ]) && expectedRemoved.length === 0
+    : step.kind === "selectColumns"
       ? isDeepStrictEqual(
           outputIds,
           step.params.columns.map((column) => column.id)

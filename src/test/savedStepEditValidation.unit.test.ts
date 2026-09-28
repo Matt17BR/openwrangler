@@ -143,6 +143,14 @@ const validSteps = {
     keys: [text],
     aggregations: [{ column: value, operation: "sum", alias: "total" }]
   }),
+  lookupColumns: step("lookupColumns", {
+    file: { path: "/data/lookup.parquet", format: "parquet" },
+    keys: [
+      { column: text, lookupColumn: "text" },
+      { column: date, lookupColumn: "day" }
+    ],
+    columns: [{ lookupColumn: "region", newColumn: "region" }]
+  }),
   byExample: step("byExample", {
     sourceColumns: [text],
     newColumn: "example",
@@ -170,6 +178,16 @@ describe("savedStepEditError", () => {
     );
     expect(savedStepEditError(saved, changed)).toContain("field extraction requires a Struct column");
     expect(savedStepEditError(saved, schema)).toBeUndefined();
+  });
+  it("requires text, integer, Boolean or date lookup keys in the recorded schema", () => {
+    const saved = validSteps.lookupColumns;
+    expect(savedStepEditError(saved, schema)).toBeUndefined();
+    const changed = schema.map((column) =>
+      column.id === date.id ? { ...column, type: "datetime" as const, rawType: "Datetime" } : column
+    );
+    const error = savedStepEditError(saved, changed);
+    expect(error).toContain("saved lookup key 2 uses a recorded datetime column");
+    expect(error).toContain("lookup keys must be text, integer, Boolean or date columns");
   });
   it("requires the recorded Text input for a saved date layout", () => {
     const saved = step("castColumn", { column: text, dtype: "datetime", inputFormat: "DD/MM/YYYY" });

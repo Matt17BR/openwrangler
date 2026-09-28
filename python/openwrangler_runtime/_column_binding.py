@@ -12,6 +12,7 @@ from .engines.base import (
     is_internal_row_id_label,
     replace_matches_is_portable,
 )
+from .lookup import LOOKUP_KEY_TYPES
 from .pivot_longer import PIVOT_LONGER_SCALAR_TYPES, portable_pivot_longer_name_key
 from .pivot_wider import PIVOT_WIDER_VALUE_TYPES, checked_pivot_wider_column_count
 
@@ -194,6 +195,14 @@ class _BindingContext:
         ):
             raise ColumnBindingError(
                 f"Python and R show {column.name!r} differently where this Replace matches, so it can't be portable."
+            )
+
+    def require_lookup_key(self, reference: Mapping[str, Any], label: str) -> None:
+        column = self._column_for(reference, label)
+        if column.semantic_type not in LOOKUP_KEY_TYPES:
+            raise ColumnBindingError(
+                f"Look up columns can match text, integer, Boolean or date keys, not {column.semantic_type} "
+                f"column {column.name!r}."
             )
 
     def require_group_key(self, reference: Mapping[str, Any], label: str) -> None:
@@ -533,6 +542,9 @@ def step_output_collision_checks(
     elif kind == "extractStructFields":
         for index, field in enumerate(params["fields"]):
             yield field["newColumn"], f"extractStructFields.fields[{index}].newColumn", None
+    elif kind == "lookupColumns":
+        for index, column in enumerate(params["columns"]):
+            yield column["newColumn"], f"lookupColumns.columns[{index}].newColumn", None
     elif (
         kind
         in {
@@ -556,7 +568,7 @@ def step_output_collision_checks(
 
 def compile_output_collision_guards(step: Mapping[str, Any], columns: str, index: int) -> tuple[list[str], str | None]:
     """Share one scalar destination literal between its guard and native operation."""
-    if step["kind"] in {"splitTextColumns", "extractStructFields", "extractRegexGroup"}:
+    if step["kind"] in {"splitTextColumns", "extractStructFields", "extractRegexGroup", "lookupColumns"}:
         # These compilers already validate bounded destinations before native work.
         return [], None
     checks = list(step_output_collision_checks(step))
@@ -625,6 +637,7 @@ def bind_step(
         "pivotLonger",
         "pivotWider",
         "replaceMatches",
+        "lookupColumns",
     }:
         return bound
 
@@ -688,6 +701,18 @@ def bind_step(
         params["columns"] = context.bind_many(params.get("columns"), "replaceMatches.columns")
         for index, reference in enumerate(params["columns"]):
             context.require_replace_matches_column(reference, params, f"replaceMatches.columns[{index}]")
+        return bound
+
+    if kind == "lookupColumns":
+        keys = params.get("keys")
+        if not isinstance(keys, list):
+            raise ColumnBindingError("lookupColumns.keys must be an array.")
+        references = context.bind_many(_member_references(keys, "lookupColumns.keys"), "lookupColumns.keys")
+        for index, reference in enumerate(references):
+            context.require_lookup_key(reference, f"lookupColumns.keys[{index}].column")
+        params["keys"] = [{**key, "column": reference} for key, reference in zip(keys, references, strict=True)]
+        for output_name, label, replacing in step_output_collision_checks(bound):
+            context.reject_output_collision(output_name, label, replacing=replacing)
         return bound
 
     if kind == "pivotLonger":

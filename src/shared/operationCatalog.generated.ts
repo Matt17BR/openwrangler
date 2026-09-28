@@ -363,6 +363,16 @@ export const operationCatalog: readonly OperationCatalogItem[] = Object.freeze([
     optional: Object.freeze([])
   }),
   Object.freeze({
+    kind: "lookupColumns",
+    title: "Look up columns",
+    description:
+      "Add columns from a CSV, TSV, Parquet or JSON Lines file by matching key columns, keeping every row and its order.",
+    group: "Reshape",
+    icon: "link",
+    required: Object.freeze(["file", "keys", "columns"]),
+    optional: Object.freeze([])
+  }),
+  Object.freeze({
     kind: "groupBy",
     title: "Group and aggregate",
     description: "Group by keys and calculate named aggregations.",

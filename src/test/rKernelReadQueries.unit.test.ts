@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   DatasetStatsRequest,
+  DescribeLookupFileRequest,
   FilterModel,
   FindRequest,
   PageRequest,
@@ -9,7 +10,9 @@ import type {
 } from "../shared/protocol";
 import type { RFramePageContract } from "../extension/r/rFrameContract";
 import { sessionFromContract, type RBridgeSession } from "../extension/r/rKernelBridgeContract";
+import { R_KERNEL_TRANSPORT_VERSION } from "../extension/r/rKernelProtocol";
 import { RKernelReadQueries, type RKernelReadTransport } from "../extension/r/rKernelReadQueries";
+import { RKernelDiagnosticError } from "../extension/r/rKernelTransport";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
@@ -275,6 +278,54 @@ describe("R kernel read queries", () => {
     });
     expect(transport.findCells).not.toHaveBeenCalled();
   });
+
+  it("describes a lookup file at the current revision and maps kernel diagnostics", async () => {
+    const contract = frameContract();
+    const transport = fakeTransport(contract);
+    const queries = new RKernelReadQueries(transport, new Map([[sessionId, createSession(contract)]]));
+    const request: DescribeLookupFileRequest = {
+      kind: "describeLookupFile",
+      sessionId,
+      revision: 0,
+      file: { path: "/data/regions.csv", format: "csv" }
+    };
+    const columns = [{ name: "code", rawType: "character", type: "string" as const }];
+    transport.describeLookupFile.mockResolvedValueOnce({ columns, rowCount: 12 });
+
+    await expect(queries.describeLookupFile(request, { timeoutMs: 55 })).resolves.toEqual({
+      kind: "lookupFileDescribed",
+      revision: 0,
+      columns,
+      rowCount: 12
+    });
+    expect(transport.describeLookupFile).toHaveBeenCalledWith(sessionId, request.file, {
+      cancellation: undefined,
+      timeoutMs: 55
+    });
+
+    transport.describeLookupFile.mockRejectedValueOnce(
+      new RKernelDiagnosticError({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: "describe",
+        kind: "error",
+        code: "runtime_error",
+        message: "The lookup file has 3,000 columns; Look up columns reads files with at most 2,048.",
+        recoverable: true
+      })
+    );
+    await expect(queries.describeLookupFile(request, {})).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_error",
+      message: "The lookup file has 3,000 columns; Look up columns reads files with at most 2,048."
+    });
+
+    transport.describeLookupFile.mockClear();
+    await expect(queries.describeLookupFile({ ...request, revision: 4 }, {})).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_revision"
+    });
+    expect(transport.describeLookupFile).not.toHaveBeenCalled();
+  });
 });
 
 const valueColumn = { id: "r:c:0", name: "value" };
@@ -416,7 +467,8 @@ function fakeTransport(contract: RFramePageContract): {
     getSummary: vi.fn(async () => summaryResult),
     getDatasetStats: vi.fn(async () => datasetResult),
     getColumnValues: vi.fn(async () => columnValuesResult),
-    findCells: vi.fn(async () => ({ matchCount: 0 }))
+    findCells: vi.fn(async () => ({ matchCount: 0 })),
+    describeLookupFile: vi.fn(async () => ({ columns: [], rowCount: 0 }))
   };
 }
 

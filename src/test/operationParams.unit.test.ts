@@ -376,6 +376,32 @@ const validCases: ParamsCases = {
     ],
     expected: { column: when, format: "%Y-%m-%d", newColumn: "day" }
   },
+  lookupColumns: {
+    kind: "lookupColumns",
+    fields: [
+      ["lookupFilePath", "/data/city regions.csv"],
+      ["lookupFileFormat", "csv"],
+      ["lookupKeyColumn", "c:city"],
+      ["lookupKeyLookupColumn", "City"],
+      ["lookupKeyColumn", "c:units"],
+      ["lookupKeyLookupColumn", "units"],
+      ["lookupOutputColumn", "region"],
+      ["lookupOutputName", "region"],
+      ["lookupOutputColumn", "sales"],
+      ["lookupOutputName", "sales_lookup"]
+    ],
+    expected: {
+      file: { path: "/data/city regions.csv", format: "csv" },
+      keys: [
+        { column: city, lookupColumn: "City" },
+        { column: units, lookupColumn: "units" }
+      ],
+      columns: [
+        { lookupColumn: "region", newColumn: "region" },
+        { lookupColumn: "sales", newColumn: "sales_lookup" }
+      ]
+    }
+  },
   groupBy: {
     kind: "groupBy",
     fields: [
@@ -755,6 +781,39 @@ describe("buildParams", () => {
         schema
       )
     ).toThrow("Group by requires at least one complete compatible aggregation.");
+  });
+
+  it("refuses an unchosen file, incomplete keys and new names already in the data", () => {
+    const lookup = (fields: FieldEntries) => () =>
+      buildParams(
+        "lookupColumns",
+        form([["lookupFilePath", "/data/regions.parquet"], ["lookupFileFormat", "parquet"], ...fields]),
+        emptyFilterModel,
+        schema
+      );
+    const key: FieldEntries = [
+      ["lookupKeyColumn", "c:city"],
+      ["lookupKeyLookupColumn", "city"]
+    ];
+    const output: FieldEntries = [
+      ["lookupOutputColumn", "region"],
+      ["lookupOutputName", "region"]
+    ];
+    expect(() => buildParams("lookupColumns", form([...key, ...output]), emptyFilterModel, schema)).toThrow(
+      "Choose a lookup file first."
+    );
+    expect(lookup([["lookupKeyColumn", "c:city"], ...output])).toThrow("Match 1 to 8 key columns");
+    expect(lookup([...key, ["lookupKeyColumn", "c:city"], ["lookupKeyLookupColumn", "other"], ...output])).toThrow(
+      "Match each key column only once."
+    );
+    expect(lookup(key)).toThrow("Add 1 to 64 lookup columns.");
+    expect(lookup([...key, ...output, ...output])).toThrow("Add each lookup column only once.");
+    expect(lookup([...key, ["lookupOutputColumn", "region"], ["lookupOutputName", "SALES"]])).toThrow(
+      "The data already has a column named sales. Rename new column 1."
+    );
+    expect(lookup([...key, ...output, ["lookupOutputColumn", "zone"], ["lookupOutputName", "Region"]])).toThrow(
+      "Give each new column a different name."
+    );
   });
 
   it("preserves optional-field omission and finite Formula scalar values", () => {

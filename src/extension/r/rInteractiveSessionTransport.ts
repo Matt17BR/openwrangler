@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
-import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, LookupFile, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import { KernelRequestCancelledError, withKernelTimeout } from "../notebooks/kernelLifecycle";
@@ -23,6 +23,7 @@ import {
   type RKernelDatasetStatsResult,
   type RKernelFindQuery,
   type RKernelFindResult,
+  type RKernelLookupFileDescription,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -418,6 +419,19 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       matchCount: response.matchCount,
       ...(response.match === undefined ? {} : { match: response.match })
     });
+  }
+
+  async describeLookupFile(
+    sessionId: string,
+    file: LookupFile,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelLookupFileDescription> {
+    const response = await this.executeMapped(this.request("describeLookupFile", { sessionId, file }), options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "lookupFileDescribed" || response.sessionId !== sessionId) {
+      throw new Error("The interactive R session returned a mismatched lookup-file description.");
+    }
+    return Object.freeze({ columns: response.columns, rowCount: response.rowCount });
   }
 
   previewStep(

@@ -301,6 +301,7 @@ function canRunAlongsideBackground(
     request.kind === "getPage" ||
     request.kind === "getColumnValues" ||
     request.kind === "findCells" ||
+    request.kind === "describeLookupFile" ||
     (request.kind === "getSummary" && options?.priority === "interactive")
   );
 }

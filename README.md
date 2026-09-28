@@ -46,6 +46,8 @@ To install a downloaded VSIX, use **Views and More Actions > Install from VSIX..
 - **Calculate values:** write formulas, rank with ties, scale and round numbers, and format dates.
 - **Create labels and flags:** build Text or Boolean results with **Conditional column**.
 - **Reshape and summarize:** pivot between long and wide tables, or group rows and aggregate values.
+- **Combine files:** add columns from another CSV, TSV, Parquet or JSON Lines file by matching keys with **Look up
+  columns**.
 
 **Transform by Example** learns a rule from your input and output examples and previews it on other rows. **Custom
 Code** runs your own code in the dataframe's engine. Operations and fill methods vary by engine and column type; see

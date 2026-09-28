@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { ColumnSummary, ExportOptions, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, LookupFile, ValueCount } from "../../shared/protocol";
 import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import type {
   RKernelColumnReference,
@@ -7,6 +7,7 @@ import type {
   RKernelDatasetStatsResult,
   RKernelFindQuery,
   RKernelFindResult,
+  RKernelLookupFileDescription,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
   RKernelStepInspectionResult,
@@ -41,6 +42,11 @@ export interface RKernelBridgeTransport {
     options?: RKernelRequestOptions
   ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
   findCells(sessionId: string, find: RKernelFindQuery, options?: RKernelRequestOptions): Promise<RKernelFindResult>;
+  describeLookupFile(
+    sessionId: string,
+    file: LookupFile,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelLookupFileDescription>;
   previewStep(
     sessionId: string,
     revision: number,

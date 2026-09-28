@@ -822,6 +822,137 @@ describe.skipIf(!enabled)("plain R process transport", () => {
     }
   });
 
+  it("looks up columns from another file and splits text into appended columns through the public R bridge", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-lookup-test-"));
+    const dataParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-lookup-data-"));
+    const lookupPath = resolve(dataParent, "regions.csv");
+    await writeFile(lookupPath, "code,region_name,population\neu-west,Europe West,10\nus-east,US East,20\n");
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: 'frame <- data.frame(market = c("eu-west", "us-east", NA, "eu-west"), n = 1:4)'
+    });
+    const context = {
+      extension: { packageJSON: { version: "2.6.0" } },
+      subscriptions: []
+    } as unknown as vscode.ExtensionContext;
+    const bridge = new RKernelBridge(context, transport, randomUUID, () => undefined);
+    const sessionId = randomUUID();
+    const window = { offset: 0, limit: 10, columnOffset: 0, columnLimit: 10 };
+    const market = { id: "r:c:0", name: "market" };
+    const file = { path: lookupPath, format: "csv" } as const;
+    const display = (page: { rows: { values: ({ display: string } | undefined)[] }[] }, column: number) =>
+      page.rows.map((row) => row.values[column]?.display);
+    try {
+      const opened = await bridge.request({
+        kind: "openSession",
+        source: {
+          kind: "documentVariable",
+          uri: vscode.Uri.file(resolve(temporaryParent, "lookup.R")).toString(),
+          variableName: "frame",
+          label: "frame"
+        },
+        backend: "r",
+        mode: "editing",
+        requestedSessionId: sessionId,
+        pageSize: 10,
+        columnOffset: 0,
+        columnLimit: 10
+      });
+      expect(opened.kind).toBe("sessionOpened");
+      if (opened.kind !== "sessionOpened") throw new Error(JSON.stringify(opened));
+
+      const described = await bridge.request({ kind: "describeLookupFile", sessionId, revision: 0, file });
+      expect(described).toMatchObject({
+        kind: "lookupFileDescribed",
+        revision: 0,
+        rowCount: 2,
+        columns: [
+          { name: "code", type: "string" },
+          { name: "region_name", type: "string" },
+          { name: "population", type: "integer" }
+        ]
+      });
+
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "lookup",
+          kind: "lookupColumns",
+          params: {
+            file,
+            keys: [{ column: market, lookupColumn: "code" }],
+            columns: [
+              { lookupColumn: "region_name", newColumn: "region" },
+              { lookupColumn: "population", newColumn: "population" }
+            ]
+          }
+        },
+        ...window
+      });
+      expect(preview.kind, JSON.stringify(preview)).toBe("stepPreview");
+      if (preview.kind !== "stepPreview") throw new Error(JSON.stringify(preview));
+      expect(preview.metadata.schema.map(({ id, name, type }) => [id, name, type])).toEqual([
+        ["r:c:0", "market", "string"],
+        ["r:c:1", "n", "integer"],
+        ["c:step:lookup:0", "region", "string"],
+        ["c:step:lookup:1", "population", "integer"]
+      ]);
+      expect(preview.diff).toMatchObject({ addedColumns: ["region", "population"], removedColumns: [] });
+      expect(display(preview.page, 2)).toEqual(["Europe West", "US East", "NA", "Europe West"]);
+      expect(display(preview.page, 3)).toEqual(["10", "20", "NA", "10"]);
+      const applied = await bridge.request({ kind: "applyDraft", sessionId, revision: 1, ...window });
+      expect(applied.kind, JSON.stringify(applied)).toBe("planUpdated");
+
+      const inspected = await bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "lookup",
+        ...window
+      });
+      expect(inspected.kind, JSON.stringify(inspected)).toBe("stepInspection");
+      if (inspected.kind !== "stepInspection") throw new Error(JSON.stringify(inspected));
+      expect(inspected.diff).toMatchObject({ addedColumns: ["region", "population"], removedColumns: [] });
+
+      const split = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        step: {
+          id: "split",
+          kind: "splitTextColumns",
+          params: { column: market, delimiter: "-", newColumns: ["area", "zone"] }
+        },
+        ...window
+      });
+      expect(split.kind, JSON.stringify(split)).toBe("stepPreview");
+      if (split.kind !== "stepPreview") throw new Error(JSON.stringify(split));
+      expect(split.diff).toMatchObject({ addedColumns: ["area", "zone"], removedColumns: [] });
+      expect(display(split.page, 4)).toEqual(["eu", "us", "NA", "eu"]);
+      expect(display(split.page, 5)).toEqual(["west", "east", "NA", "west"]);
+      expect((await bridge.request({ kind: "applyDraft", sessionId, revision: 3, ...window })).kind).toBe(
+        "planUpdated"
+      );
+
+      for (const revision of [4, 5]) {
+        const undone = await bridge.request({ kind: "undoStep", sessionId, revision, ...window });
+        expect(undone.kind, JSON.stringify(undone)).toBe("planUpdated");
+        if (undone.kind !== "planUpdated") throw new Error(JSON.stringify(undone));
+        if (revision === 5) expect(undone.page).toEqual(opened.page);
+      }
+    } finally {
+      await bridge.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+      await rm(dataParent, { recursive: true, force: true });
+    }
+  });
+
   it("contains stdin error events while rejecting the write and retaining exact process cleanup", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-stdin-error-test-"));
     const transport = new RProcessSessionTransport({

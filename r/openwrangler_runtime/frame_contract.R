@@ -4342,6 +4342,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
     replace_positions = NULL,
+    lookup_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL,
     preserve_data_table_element_names = FALSE,
@@ -4385,6 +4386,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
             !is.null(replace_positions) ||
+            !is.null(lookup_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
         )
@@ -4441,6 +4443,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(replace_positions) && is.null(source_positions)) {
       abort("internal-error", "R Replace outputs require explicit source mappings")
+    }
+    if (!is.null(lookup_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R lookup outputs require explicit source mappings and identities")
     }
     if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
       abort("internal-error", "R cast outputs require positions and target dtypes together")
@@ -4839,6 +4844,22 @@ openwrangler_r_frame_contract <- local({
         }
         replace_positions <- as.integer(replace_positions)
       }
+      if (is.null(lookup_positions)) {
+        lookup_positions <- integer()
+      } else {
+        if (
+          !is.numeric(lookup_positions) ||
+            anyNA(lookup_positions) ||
+            any(!is.finite(lookup_positions)) ||
+            any(lookup_positions != floor(lookup_positions)) ||
+            any(lookup_positions < 1L) ||
+            any(lookup_positions > length(output_schema)) ||
+            anyDuplicated(lookup_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid lookup output positions")
+        }
+        lookup_positions <- as.integer(lookup_positions)
+      }
       transformed_positions <- c(
         categorical_positions,
         by_example_positions,
@@ -4854,6 +4875,7 @@ openwrangler_r_frame_contract <- local({
         fill_missing_positions,
         fallback_fill_positions,
         replace_positions,
+        lookup_positions,
         cast_positions
       )
       if (anyDuplicated(transformed_positions)) {
@@ -5102,6 +5124,11 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
           }
+        } else if (index %in% lookup_positions) {
+          # A looked-up column takes its type from the lookup file, so only its new identity is checked.
+          if (identical(output_ids[[index]], mapped_source_ids[[index]]) || nested_kind(output_column$semantics)) {
+            abort("internal-error", "a derived R frame has an invalid lookup output")
+          }
         } else if (index %in% c(fill_missing_positions, fallback_fill_positions, replace_positions)) {
           source_semantics <- source_column$semantics
           output_semantics <- output_column$semantics
@@ -5161,6 +5188,8 @@ openwrangler_r_frame_contract <- local({
           column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% replace_positions) {
           isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
+        } else if (index %in% lookup_positions) {
+          column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% text_transform_positions) {
@@ -12846,6 +12875,207 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  # Look up columns appends columns of one lookup file to every row whose typed key matches one of the file's rows,
+  # keeping every row and its order. The checks and messages match Python's lookup.py. Generated R deparses these
+  # helpers, so they use only base R, abort, replace_matches_quote and library_assign.
+  lookup_columns_type <- function(column) {
+    if (base::inherits(column, "clock_time_point") || base::inherits(column, "POSIXct")) return("datetime")
+    if (base::inherits(column, "integer64")) return("integer")
+    if (base::inherits(column, "Date")) return("date")
+    if (base::inherits(column, "difftime")) return("duration")
+    if (base::is.factor(column) || base::is.character(column)) return("string")
+    if (base::is.list(column)) return("list")
+    if (base::is.logical(column)) return("boolean")
+    if (base::is.integer(column)) return("integer")
+    if (base::is.double(column)) return("float")
+    "unknown"
+  }
+
+  lookup_columns_raw_type <- function(column) {
+    if (base::is.object(column)) base::class(column)[[1L]] else base::typeof(column)
+  }
+
+  # A reader's first warning usually says why it then failed, as when the file is missing.
+  lookup_columns_read <- function(path, read) {
+    warned <- NULL
+    base::tryCatch(
+      base::withCallingHandlers(read(), warning = function(warning) {
+        if (base::is.null(warned)) warned <<- base::conditionMessage(warning)
+        base::invokeRestart("muffleWarning")
+      }),
+      error = function(error) {
+        abort("invalid-view-query", base::sprintf(
+          "Couldn't read the lookup file %s: %s", replace_matches_quote(path),
+          if (base::is.null(warned)) base::conditionMessage(error) else warned
+        ))
+      }
+    )
+  }
+
+  # Returns the new columns in output order. A key with a missing part never matches, and lookup rows with a
+  # missing key part are ignored.
+  lookup_columns_values <- function(frame, key_positions, lookup, lookup_keys, lookup_outputs, new_names) {
+    fold <- function(name) {
+      points <- base::utf8ToInt(base::enc2utf8(name))
+      base::paste0(base::vapply(points, function(point) {
+        if (point >= 65L && point <= 90L) return(base::intToUtf8(point + 32L))
+        if (point %in% c(223L, 7838L)) return("ss")
+        base::intToUtf8(point)
+      }, base::character(1L), USE.NAMES = FALSE), collapse = "")
+    }
+    label <- function(type) if (type == "string") "text" else if (type == "boolean") "Boolean" else type
+    refuse <- function(...) abort("invalid-view-query", base::sprintf(...))
+    frame_names <- base::names(frame)
+    left_types <- base::vapply(key_positions, function(position) {
+      lookup_columns_type(base::.subset2(frame, position))
+    }, base::character(1L), USE.NAMES = FALSE)
+    for (index in base::seq_along(key_positions)) {
+      if (!left_types[[index]] %in% c("string", "integer", "boolean", "date")) {
+        refuse("Look up columns can match text, integer, Boolean or date keys, not %s column %s.",
+          left_types[[index]], replace_matches_quote(frame_names[[key_positions[[index]]]]))
+      }
+    }
+    lookup_names <- base::names(lookup)
+    for (name in c(lookup_keys, lookup_outputs)) {
+      count <- base::sum(lookup_names == name)
+      if (count == 0L) refuse("The lookup file has no column named %s.", replace_matches_quote(name))
+      if (count > 1L) refuse("The lookup file has more than one column named %s.", replace_matches_quote(name))
+    }
+    lookup_column <- function(name) base::.subset2(lookup, base::match(name, lookup_names))
+    for (index in base::seq_along(lookup_keys)) {
+      right_type <- lookup_columns_type(lookup_column(lookup_keys[[index]]))
+      if (!base::identical(right_type, left_types[[index]])) {
+        refuse("Can't match %s (%s) with lookup column %s (%s). Key columns must have the same type.",
+          replace_matches_quote(frame_names[[key_positions[[index]]]]), label(left_types[[index]]),
+          replace_matches_quote(lookup_keys[[index]]), label(right_type))
+      }
+    }
+    for (name in lookup_outputs) {
+      type <- lookup_columns_type(lookup_column(name))
+      if (!type %in% c("string", "integer", "float", "decimal", "boolean", "date", "datetime", "duration")) {
+        refuse("Lookup column %s holds %s values, which can't be added.", replace_matches_quote(name), type)
+      }
+    }
+    taken_keys <- base::vapply(frame_names, fold, base::character(1L), USE.NAMES = FALSE)
+    taken_names <- frame_names
+    for (new_name in new_names) {
+      key <- fold(new_name)
+      hits <- base::which(taken_keys == key)
+      if (base::length(hits)) {
+        refuse("Look up columns would add %s, but the data already has a column named %s.",
+          replace_matches_quote(new_name), replace_matches_quote(taken_names[[hits[[base::length(hits)]]]]))
+      }
+      taken_keys <- c(taken_keys, key)
+      taken_names <- c(taken_names, new_name)
+    }
+
+    # Integer keys compare as exact decimal text when either side is integer64.
+    comparable <- function(column, type, integer_text) {
+      if (type == "string") return(base::as.character(column))
+      if (type == "date") return(base::as.double(base::unclass(column)))
+      if (type == "integer" && integer_text) return(base::as.character(column))
+      column
+    }
+    left_codes <- NULL
+    right_codes <- NULL
+    bound <- 1
+    for (index in base::seq_along(key_positions)) {
+      left <- base::.subset2(frame, key_positions[[index]])
+      right <- lookup_column(lookup_keys[[index]])
+      integer_text <- base::inherits(left, "integer64") || base::inherits(right, "integer64")
+      right <- comparable(right, left_types[[index]], integer_text)
+      distinct <- base::unique(right[!base::is.na(right)])
+      right_part <- base::match(right, distinct)
+      left_part <- if (base::is.factor(left)) {
+        base::match(base::levels(left), distinct)[base::as.integer(left)]
+      } else {
+        base::match(comparable(left, left_types[[index]], integer_text), distinct)
+      }
+      width <- base::max(base::length(distinct), 1)
+      if (base::is.null(left_codes)) {
+        left_codes <- left_part
+        right_codes <- right_part
+      } else {
+        # Codes stay exact doubles; renumbering keeps the combined code below 2^53.
+        if (bound * width > 2^53) {
+          seen <- base::unique(right_codes[!base::is.na(right_codes)])
+          right_codes <- base::match(right_codes, seen)
+          left_codes <- base::match(left_codes, seen)
+          bound <- base::max(base::length(seen), 1)
+        }
+        left_codes <- (left_codes - 1) * width + left_part
+        right_codes <- (right_codes - 1) * width + right_part
+      }
+      bound <- bound * width
+    }
+    present <- base::which(!base::is.na(right_codes))
+    codes <- right_codes[present]
+    if (base::anyDuplicated(codes)) {
+      repeated <- base::duplicated(codes) | base::duplicated(codes, fromLast = TRUE)
+      row <- present[[base::which(repeated)[[1L]]]]
+      spell <- function(value) {
+        if (base::is.logical(value)) return(if (value) "true" else "false")
+        if (base::is.factor(value) || base::is.character(value)) {
+          text <- base::gsub("\\", "\\\\", base::as.character(value), fixed = TRUE)
+          return(base::paste0("\"", base::gsub("\"", "\\\"", text, fixed = TRUE), "\""))
+        }
+        if (base::inherits(value, "Date")) return(base::format(value, "%Y-%m-%d"))
+        base::as.character(value)
+      }
+      where <- base::vapply(lookup_keys, function(name) {
+        base::paste0(name, " = ", spell(lookup_column(name)[row]))
+      }, base::character(1L), USE.NAMES = FALSE)
+      refuse("The lookup file has more than one row where %s. Each key must match at most one row.",
+        base::paste(where, collapse = " and "))
+    }
+    positions <- present[base::match(left_codes, codes)]
+    base::lapply(lookup_outputs, function(name) lookup_column(name)[positions])
+  }
+
+  lookup_columns_append <- function(result, columns, new_names, library) {
+    if (!base::identical(library, "base")) {
+      if (!base::inherits(result, "tbl_df")) {
+        columns <- base::lapply(columns, function(column) if (base::inherits(column, "clock_time_point")) column else base::unname(column))
+      }
+      positions <- base::length(result) + base::seq_along(columns)
+      return(library_assign(result, positions, columns, c(base::names(result), new_names), library))
+    }
+    if (base::inherits(result, "data.table")) {
+      for (index in base::seq_along(columns)) data.table::set(result, j = new_names[[index]], value = columns[[index]])
+      return(result)
+    }
+    frame_attributes <- base::attributes(result)
+    frame_attributes[["row.names"]] <- base::.row_names_info(result, type = 0L)
+    frame_attributes[["names"]] <- c(base::names(result), new_names)
+    values <- base::unclass(result)
+    values[base::length(values) + base::seq_along(columns)] <- columns
+    base::attributes(values) <- frame_attributes
+    values
+  }
+
+  lookup_columns_at <- function(value, key_positions, key_names, lookup, lookup_keys, lookup_outputs, new_names, library = "base") {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    schema <- inspected$descriptor$schema
+    for (index in seq_along(key_positions)) {
+      position <- key_positions[[index]]
+      if (position < 1L || position > length(schema) || !identical(schema[[position]]$name, key_names[[index]])) {
+        abort("stale-column", "the lookup key column no longer matches the R dataframe")
+      }
+    }
+    if (length(schema) + length(new_names) > maximum_columns) {
+      abort("invalid-view-query", sprintf(
+        "Look up columns would exceed the supported R column limit of %s.", format(maximum_columns, big.mark = ",")
+      ))
+    }
+    columns <- lookup_columns_values(value, key_positions, lookup, lookup_keys, lookup_outputs, new_names)
+    lookup_columns_append(structural_snapshot(value, inspected$flavor, library), columns, new_names, library)
+  }
+
   materialize_page <- function(
     capture,
     row_offset = 0L,
@@ -13134,6 +13364,16 @@ openwrangler_r_frame_contract <- local({
     materialize_column_values = materialize_column_values,
     find_cells = find_cells,
     replace_matches_at = replace_matches_at,
+    lookup_columns_at = lookup_columns_at,
+    lookup_columns_helpers = list(
+      abort = abort,
+      replace_matches_quote = replace_matches_quote,
+      lookup_columns_type = lookup_columns_type,
+      lookup_columns_raw_type = lookup_columns_raw_type,
+      lookup_columns_read = lookup_columns_read,
+      lookup_columns_values = lookup_columns_values,
+      lookup_columns_append = lookup_columns_append
+    ),
     replace_matches_helpers = list(
       abort = abort,
       storage_length = storage_length,

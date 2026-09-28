@@ -129,6 +129,7 @@
 | `formatDatetime`      | Format datetime         | Numeric / datetime | `column`, `format`                                                                                        | `newColumn`                             |
 | `pivotLonger`         | Pivot longer            | Reshape            | `columns`, `labelColumn`, `valueColumn`                                                                   | None                                    |
 | `pivotWider`          | Pivot wider             | Reshape            | `namesFrom`, `valuesFrom`, `outputs`                                                                      | None                                    |
+| `lookupColumns`       | Look up columns         | Reshape            | `file`, `keys`, `columns`                                                                                 | None                                    |
 | `groupBy`             | Group and aggregate     | Aggregation        | `keys`, `aggregations`                                                                                    | None                                    |
 | `byExample`           | Transform by example    | By example         | `sourceColumns`, `newColumn`, `examples`                                                                  | `program`, `warnings`, `candidateCount` |
 | `customCode`          | Custom code             | Custom             | `code`                                                                                                    | None                                    |
@@ -137,38 +138,40 @@
 
 Canonical schema: `protocol/openwrangler.v4.schema.json`. Protocol version: `4`.
 
-| Direction | Schema type              | Message kind      |
-| --------- | ------------------------ | ----------------- |
-| Request   | `InitializeRequest`      | `initialize`      |
-| Request   | `OpenSessionRequest`     | `openSession`     |
-| Request   | `PageRequest`            | `getPage`         |
-| Request   | `SummaryRequest`         | `getSummary`      |
-| Request   | `DatasetStatsRequest`    | `getDatasetStats` |
-| Request   | `ValuesRequest`          | `getColumnValues` |
-| Request   | `FindRequest`            | `findCells`       |
-| Request   | `PreviewStepRequest`     | `previewStep`     |
-| Request   | `InspectStepRequest`     | `inspectStep`     |
-| Request   | `ApplyDraftRequest`      | `applyDraft`      |
-| Request   | `DiscardDraftRequest`    | `discardDraft`    |
-| Request   | `UndoStepRequest`        | `undoStep`        |
-| Request   | `RedoStepRequest`        | `redoStep`        |
-| Request   | `ExportDataRequest`      | `exportData`      |
-| Request   | `CloseSessionRequest`    | `closeSession`    |
-| Request   | `CancelRequest`          | `cancelRequest`   |
-| Response  | `InitializedResponse`    | `initialized`     |
-| Response  | `SessionOpenedResponse`  | `sessionOpened`   |
-| Response  | `PageResponse`           | `page`            |
-| Response  | `SummaryResponse`        | `summary`         |
-| Response  | `DatasetStatsResponse`   | `datasetStats`    |
-| Response  | `ValuesResponse`         | `columnValues`    |
-| Response  | `FindResponse`           | `cellsFound`      |
-| Response  | `StepPreviewResponse`    | `stepPreview`     |
-| Response  | `StepInspectionResponse` | `stepInspection`  |
-| Response  | `PlanUpdatedResponse`    | `planUpdated`     |
-| Response  | `DataExportedResponse`   | `dataExported`    |
-| Response  | `SessionClosedResponse`  | `sessionClosed`   |
-| Response  | `CancelledResponse`      | `cancelled`       |
-| Response  | `ErrorResponse`          | `error`           |
+| Direction | Schema type                   | Message kind          |
+| --------- | ----------------------------- | --------------------- |
+| Request   | `InitializeRequest`           | `initialize`          |
+| Request   | `OpenSessionRequest`          | `openSession`         |
+| Request   | `PageRequest`                 | `getPage`             |
+| Request   | `SummaryRequest`              | `getSummary`          |
+| Request   | `DatasetStatsRequest`         | `getDatasetStats`     |
+| Request   | `ValuesRequest`               | `getColumnValues`     |
+| Request   | `FindRequest`                 | `findCells`           |
+| Request   | `DescribeLookupFileRequest`   | `describeLookupFile`  |
+| Request   | `PreviewStepRequest`          | `previewStep`         |
+| Request   | `InspectStepRequest`          | `inspectStep`         |
+| Request   | `ApplyDraftRequest`           | `applyDraft`          |
+| Request   | `DiscardDraftRequest`         | `discardDraft`        |
+| Request   | `UndoStepRequest`             | `undoStep`            |
+| Request   | `RedoStepRequest`             | `redoStep`            |
+| Request   | `ExportDataRequest`           | `exportData`          |
+| Request   | `CloseSessionRequest`         | `closeSession`        |
+| Request   | `CancelRequest`               | `cancelRequest`       |
+| Response  | `InitializedResponse`         | `initialized`         |
+| Response  | `SessionOpenedResponse`       | `sessionOpened`       |
+| Response  | `PageResponse`                | `page`                |
+| Response  | `SummaryResponse`             | `summary`             |
+| Response  | `DatasetStatsResponse`        | `datasetStats`        |
+| Response  | `ValuesResponse`              | `columnValues`        |
+| Response  | `FindResponse`                | `cellsFound`          |
+| Response  | `LookupFileDescribedResponse` | `lookupFileDescribed` |
+| Response  | `StepPreviewResponse`         | `stepPreview`         |
+| Response  | `StepInspectionResponse`      | `stepInspection`      |
+| Response  | `PlanUpdatedResponse`         | `planUpdated`         |
+| Response  | `DataExportedResponse`        | `dataExported`        |
+| Response  | `SessionClosedResponse`       | `sessionClosed`       |
+| Response  | `CancelledResponse`           | `cancelled`           |
+| Response  | `ErrorResponse`               | `error`               |
 
 ## Notebook MIME types
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from .custom_code_output import redact_diagnostic
 from .limits import MAX_FIND_QUERY_CHARACTERS, MAX_VIEW_VALUE_TEXT_CHARACTERS
+from .lookup import LookupContractError, validate_lookup_file
 from .operations import COLUMN_TYPES, FILTER_OPERATORS, OperationError, validate_step
 from .response_framing import MAX_RESPONSE_FRAME_BYTES, encode_response_frame
 
@@ -52,6 +53,7 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
         "wholeCell",
         "direction",
     ),
+    "describeLookupFile": ("sessionId", "revision", "file"),
     "previewStep": ("sessionId", "revision", "step", "offset", "limit", "columnOffset", "columnLimit"),
     "inspectStep": ("sessionId", "revision", "stepId", "offset", "limit", "columnOffset", "columnLimit"),
     "applyDraft": ("sessionId", "revision", "offset", "limit", "columnOffset", "columnLimit"),
@@ -113,6 +115,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "includeFrom",
         "includePosition",
     },
+    "describeLookupFile": {"kind", "sessionId", "revision", "file"},
     "previewStep": {
         "kind",
         "sessionId",
@@ -302,6 +305,11 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("search must be a string.")
     if kind == "findCells":
         _validate_find_request(request)
+    if kind == "describeLookupFile":
+        try:
+            validate_lookup_file(request["file"], "file")
+        except LookupContractError as error:
+            raise ProtocolError(str(error)) from error
     if kind in {"getSummary", "findCells"} and "columnIds" in request:
         column_ids = request["columnIds"]
         if (

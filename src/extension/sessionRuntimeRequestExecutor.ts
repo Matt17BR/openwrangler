@@ -410,6 +410,7 @@ function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
     request.kind === "getDatasetStats" ||
     request.kind === "getColumnValues" ||
     request.kind === "findCells" ||
+    request.kind === "describeLookupFile" ||
     request.kind === "inspectStep"
   );
 }

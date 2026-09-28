@@ -1818,6 +1818,7 @@ local({
   plain <- data.frame(id = 1:3, label = c("a", "b", NA), stringsAsFactors = FALSE)
   named <- data.frame(id = 1:3, label = c("a", "b", NA), stringsAsFactors = FALSE)
   data.table::setattr(.subset2(named, 2L), "names", c("first", "second", "third"))
+  lookup <- data.frame(label = c("a", "b"), rank = c(1L, 2L), stringsAsFactors = FALSE)
   for (source in list(plain, named, tibble::as_tibble(plain))) {
     before <- serialize(source, NULL, version = 3L)
     for (library in c("base", "dplyr", "data.table", "collapse")) {
@@ -1825,6 +1826,7 @@ local({
       openwrangler_r_frame_contract$clone_column_at(source, 2L, "label", "copy", library)
       openwrangler_r_frame_contract$drop_columns_at(source, 1L, "id", library)
       openwrangler_r_frame_contract$select_columns_at(source, c(2L, 1L), c("label", "id"), library)
+      openwrangler_r_frame_contract$lookup_columns_at(source, 2L, "label", lookup, "label", "rank", "rank", library)
       assert_identical(serialize(source, NULL, version = 3L), before,
         sprintf("%s structural operations changed a shared input column", library))
     }

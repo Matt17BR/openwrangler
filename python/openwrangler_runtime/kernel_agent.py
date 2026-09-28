@@ -31,6 +31,7 @@ _RECOVERABLE_RESPONSE_ENCODING_KINDS = {
     "getDatasetStats",
     "getColumnValues",
     "findCells",
+    "describeLookupFile",
     "inspectStep",
     "cancelRequest",
 }
