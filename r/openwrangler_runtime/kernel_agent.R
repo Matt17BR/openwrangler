@@ -1,5 +1,9 @@
 openwrangler_r_kernel_agent <- local({
   transport_version <- 18L
+  # Sourced runtime closures carry no bytecode, and compiling them on first use
+  # costs seconds in every new R process while vectorized work gains nothing.
+  # Requests therefore run uncompiled; user code keeps the caller's JIT level.
+  jit_state <- new.env(parent = emptyenv())
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -5343,6 +5347,11 @@ openwrangler_r_kernel_agent <- local({
     }, add = TRUE)
     sink(discard, type = "output")
     sink(discard, type = "message")
+    caller_jit <- jit_state$caller
+    if (!is.null(caller_jit)) {
+      compiler::enableJIT(caller_jit)
+      on.exit(compiler::enableJIT(0L), add = TRUE)
+    }
     tryCatch(
       withCallingHandlers(
         eval(step$parsed, envir = evaluation_environment),
@@ -5360,6 +5369,7 @@ openwrangler_r_kernel_agent <- local({
         )
       }
     )
+    if (!is.null(caller_jit)) compiler::enableJIT(0L)
     if (!exists("result", envir = evaluation_environment, inherits = FALSE) ||
       bindingIsActive("result", evaluation_environment)) {
       abort(
@@ -11041,6 +11051,10 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  # The backslash must be escaped first, before the other escapes add backslashes.
+  ascii_json_short_sources <- c("\\", "\"", "\b", "\t", "\n", "\f", "\r")
+  ascii_json_short_escapes <- c("\\\\", "\\\"", "\\b", "\\t", "\\n", "\\f", "\\r")
+
   ascii_json_scalar <- function(value, spend) {
     if (is.na(value)) {
       spend(4L)
@@ -11054,13 +11068,17 @@ openwrangler_r_kernel_agent <- local({
     if (length(converted) != 1L || is.na(converted)) {
       abort("runtime_error", "The R kernel response contains invalid text")
     }
-    bytes <- as.integer(charToRaw(converted))
-    if (
-      length(bytes) == 0L ||
-        all(bytes >= 32L & bytes <= 126L & bytes != 34L & bytes != 92L)
-    ) {
-      spend(length(bytes) + 2L)
+    if (grepl("^[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]*\\z", converted, perl = TRUE, useBytes = TRUE)) {
+      spend(nchar(converted, type = "bytes") + 2L)
       return(paste0("\"", converted, "\""))
+    }
+    if (grepl("^[\\x08\\x09\\x0A\\x0C\\x0D\\x20-\\x7E]*\\z", converted, perl = TRUE, useBytes = TRUE)) {
+      escaped <- converted
+      for (index in seq_along(ascii_json_short_sources)) {
+        escaped <- gsub(ascii_json_short_sources[[index]], ascii_json_short_escapes[[index]], escaped, fixed = TRUE)
+      }
+      spend(nchar(escaped, type = "bytes") + 2L)
+      return(paste0("\"", escaped, "\""))
     }
     codepoints <- utf8ToInt(converted)
     if (anyNA(codepoints) || any(codepoints < 0L) || any(codepoints > 1114111L)) {
@@ -12369,6 +12387,12 @@ openwrangler_r_kernel_agent <- local({
     }
 
     dispatch_json <- function(payload) {
+      caller_jit <- compiler::enableJIT(0L)
+      jit_state$caller <- caller_jit
+      on.exit({
+        jit_state$caller <- NULL
+        compiler::enableJIT(caller_jit)
+      }, add = TRUE)
       request_id <- ""
       cleanup_receipt <- new.env(parent = emptyenv())
       encoded <- FALSE

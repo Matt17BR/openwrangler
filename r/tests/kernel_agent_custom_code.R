@@ -49,6 +49,41 @@ custom_assert_true <- function(value, message) {
   if (!isTRUE(value)) stop(message, call. = FALSE)
 }
 
+# Requests run uncompiled, while Custom Code and the caller keep the caller's JIT level.
+local({
+  environment <- new.env(parent = baseenv())
+  environment$orders <- data.frame(value = 1:2)
+  environment$observed_jit <- NA_integer_
+  capture_levels <- integer()
+  contract <- openwrangler_r_frame_contract
+  contract$materialize_view_page <- function(...) {
+    capture_levels <<- c(capture_levels, compiler::enableJIT(-1L))
+    openwrangler_r_frame_contract$materialize_view_page(...)
+  }
+  agent <- openwrangler_r_kernel_agent$new_agent(contract, environment)
+  on.exit(agent$dispose(), add = TRUE)
+  caller_jit <- compiler::enableJIT(2L)
+  on.exit(compiler::enableJIT(caller_jit), add = TRUE)
+  send <- function(kind, payload) dispatch_with(agent, kind, payload)
+  assert_identical(send("openSession", list(sessionId = custom_session_id, variableName = "orders", page = page_window()))$kind,
+    "page", "the JIT fixture did not open")
+  assert_identical(unique(capture_levels), 0L, "a request compiled the runtime")
+  assert_identical(compiler::enableJIT(-1L), 2L, "a request did not restore the caller's JIT level")
+  failed <- send("previewStep", list(sessionId = custom_session_id, revision = 0L,
+    step = custom_step("jit-failure", "observed_jit <<- compiler::enableJIT(-1L); stop('jit failure')"), page = page_window()))
+  assert_identical(failed$code, "invalid_request", "failing Custom Code was accepted")
+  assert_identical(environment$observed_jit, 2L, "failing Custom Code did not run at the caller's JIT level")
+  assert_identical(compiler::enableJIT(-1L), 2L, "failing Custom Code did not restore the caller's JIT level")
+  environment$observed_jit <- NA_integer_
+  capture_levels <- integer()
+  preview <- send("previewStep", list(sessionId = custom_session_id, revision = 0L,
+    step = custom_step("jit", "observed_jit <<- compiler::enableJIT(-1L); result <- df"), page = page_window()))
+  assert_identical(preview$kind, "stepPreview", "the JIT Custom Code did not preview")
+  assert_identical(environment$observed_jit, 2L, "Custom Code did not run at the caller's JIT level")
+  assert_identical(unique(capture_levels), 0L, "Custom Code left the runtime compiling its page")
+  assert_identical(compiler::enableJIT(-1L), 2L, "Custom Code did not restore the caller's JIT level")
+})
+
 # A Custom Code result can introduce an exact timestamp into an ordinary frame.
 local({
   clock_capture <- NULL
