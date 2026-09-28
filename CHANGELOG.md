@@ -54,6 +54,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Python · DuckDB opens Duration columns in Parquet files written by Pandas, Polars, R or pyarrow as durations, as the other engines do. Previously it showed them as integers, so switching engines changed the column's type. DuckDB keeps microseconds, so nanosecond durations lose their last three digits.
+- Python · DuckDB exports durations to Parquet in the format Pandas, Polars and R read as durations. Previously it wrote Parquet intervals, which Pandas opened as binary, Polars couldn't open, and DuckDB refused to write for negative values. Plain DuckDB reads these columns as microseconds. Intervals with months still can't be exported to Parquet.
 - R files and dataframes whose text ends in a line break open and page in every R library. Previously the grid failed to load them. R filters, Fill Missing Values and whole-cell Replace also no longer ignore a trailing line break in a value, matching the Python engines.
 - Python filters now read number, date and duration values only from the digits 0 to 9, as R does. Previously Pandas, Polars and DuckDB also accepted digits from other scripts, such as Arabic-Indic or full-width digits, so the same saved filter worked in Python and failed in R.
 - Split Text into Columns previews work in R. Previously every R preview of this step failed with "The R kernel returned a mutation diff for the wrong columns or cells."

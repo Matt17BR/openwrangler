@@ -1356,6 +1356,12 @@ break ties by row ID; other sorts keep a window tie-break. Counts, profiles, sta
 filtered relation without its sort. Top-value ties use the row ID when it follows source order and a window position
 otherwise.
 
+Arrow writers, including Pandas, Polars and R, store a Duration as INT64 in its unit and record the unit only in the
+file's `ARROW:schema` metadata, which DuckDB ignores. Parquet and lookup reads decode that metadata without Arrow and
+read each top-level Duration column as INTERVAL, truncating nanoseconds toward zero because DuckDB intervals hold
+microseconds. Metadata that is malformed, larger than 8 MiB or doesn't name exactly the file's columns leaves every
+column as stored.
+
 DuckDB's sample deviation raises instead of overflowing, so the profile first omits doubles of magnitude 1e100 or more.
 When only such finite values were omitted, it rescales the column by an exact power of two and keeps the deviation
 unless its squared total overflows, matching Pandas and Polars.
@@ -2583,10 +2589,14 @@ Holding an earlier descriptor does not authorize reopening an unchecked pathname
 the writer truncates the file.
 DuckDB Parquet export projects top-level HUGEINT and UHUGEINT fields through native DECIMAL(38,0), preserving
 exact values within that type's range. Native overflow rejects the export before publication. Nested 128-bit integer
-fields are refused by their native type metadata. Interval time components must contain whole milliseconds and fit
-Parquet's unsigned 32-bit millisecond field; native checks still reject negative components. Export checks affected
-interval leaves inside containers and returns the original values, without reconstructing them or scanning the table
-separately.
+fields are refused by their native type metadata. Top-level INTERVAL columns are written as Arrow writers write
+durations: INT64 microseconds, counting a day as 24 hours, which an `ARROW:schema` value marks as Duration(us) for
+Pandas, Polars, pyarrow and R. Intervals with months are refused, because a month has no fixed length. Polars reads
+only the columns that `ARROW:schema` lists, so the value is written only when every column's type has a known Arrow
+reading of DuckDB's Parquet output; otherwise the microseconds remain plain integers. Interval leaves inside containers
+keep Parquet's interval type: their time components must contain whole milliseconds and fit Parquet's unsigned 32-bit
+millisecond field, and native checks still reject negative components. Export checks those leaves and returns the
+original values, without reconstructing them or scanning the table separately.
 On DuckDB 1.5.4, top-level TIMETZ values with nonzero offsets are converted to UTC before writing; already-UTC values
 retain the native path. Its nested nonzero-offset values require explicit conversion. Newer writers retain native
 UTC normalization for scalar and nested values. TIMETZ leaves in map keys are refused whenever that writer would

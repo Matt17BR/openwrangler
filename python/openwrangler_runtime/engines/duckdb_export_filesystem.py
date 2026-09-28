@@ -70,10 +70,11 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
     root_marker = ""
     protocol: str | tuple[str, ...] = "openwranglerexport-unregistered"
 
-    def __init__(self, writer: BinaryIO, format_name: Literal["csv", "parquet"]) -> None:
+    def __init__(self, writer: BinaryIO, format_name: Literal["csv", "parquet"], info_calls: int = 2) -> None:
         self._token = f"{uuid4().hex}.{format_name}"
         self._uri = f"{self.protocol_name}://{self._token}"
         self._writer: BinaryIO | None = writer
+        self._expected_info_calls = info_calls
         self._info_calls = 0
         self._opened = False
         self._proxy: _NonClosingBinaryWriter | None = None
@@ -88,10 +89,12 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
         return cast(str, self.protocol)
 
     @classmethod
-    def request_owned(cls, writer: BinaryIO, format_name: Literal["csv", "parquet"]) -> _OneShotDuckDBWriterFileSystem:
+    def request_owned(
+        cls, writer: BinaryIO, format_name: Literal["csv", "parquet"], info_calls: int = 2
+    ) -> _OneShotDuckDBWriterFileSystem:
         protocol = f"openwranglerexport{uuid4().hex}"
         request_type = type(f"RequestOwned{cls.__name__}", (cls,), {"protocol": protocol})
-        return request_type(writer, format_name)
+        return request_type(writer, format_name, info_calls)
 
     @classmethod
     def _strip_protocol(cls, path: str) -> str:
@@ -99,7 +102,7 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
         return path[len(prefix) :] if path.startswith(prefix) else path
 
     def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        if kwargs or path != self._uri or self._info_calls >= 2:
+        if kwargs or path != self._uri or self._info_calls >= self._expected_info_calls:
             raise DuckDBExportFileSystemError("DuckDB requested an invalid export target capability.")
         self._info_calls += 1
         return {"name": self._token, "size": 0, "type": "file"}
@@ -131,7 +134,12 @@ class _OneShotDuckDBWriterFileSystem(AbstractFileSystem):
         return self._proxy
 
     def assert_completed(self) -> None:
-        if self._info_calls != 2 or not self._opened or self._proxy is None or not self._proxy.closed:
+        if (
+            self._info_calls != self._expected_info_calls
+            or not self._opened
+            or self._proxy is None
+            or not self._proxy.closed
+        ):
             raise DuckDBExportFileSystemError("DuckDB did not complete its one-shot native export write.")
         self._proxy = None
 
@@ -275,8 +283,11 @@ def registered_duckdb_export_writer(
     connection: Any,
     writer: BinaryIO,
     format_name: Literal["csv", "parquet"],
+    *,
+    copy_statement: bool = False,
 ) -> Iterator[str]:
-    filesystem = _OneShotDuckDBWriterFileSystem.request_owned(writer, format_name)
+    # A relation writer looks up its target twice; a COPY statement looks it up once.
+    filesystem = _OneShotDuckDBWriterFileSystem.request_owned(writer, format_name, 1 if copy_statement else 2)
     registered = False
     try:
         if filesystem.protocol_name in connection.list_filesystems():
