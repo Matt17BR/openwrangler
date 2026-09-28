@@ -607,6 +607,53 @@ def test_pandas_nullable_arrow_row_keys_keep_value_order(
         pd.testing.assert_frame_equal(actual, source.iloc[expected_rows], check_exact=True)
 
 
+@pytest.mark.parametrize(
+    "text_dtype",
+    [
+        "object",
+        pytest.param(
+            "str",
+            marks=pytest.mark.skipif(pd.Series(dtype="str").dtype == object, reason='Pandas 2 stores "str" as objects'),
+        ),
+    ],
+)
+def test_pandas_multi_rule_sorts_match_generated_code_and_the_view(text_dtype: str) -> None:
+    import numpy as np
+
+    size = 200
+    generator = np.random.default_rng(7)
+    labels = ["b", None, "A", "é", "", "a", "B"]
+    source = pd.DataFrame(
+        {
+            "text": pd.Series([labels[index] for index in generator.integers(0, len(labels), size)], dtype=text_dtype),
+            "count": generator.integers(0, 3, size),
+            "value": np.where(generator.random(size) < 0.2, np.nan, generator.integers(0, 4, size) / 2),
+            "flag": generator.random(size) < 0.5,
+            "row": range(size),
+        }
+    )
+    engine = PandasEngine()
+    schema = engine.schema(source)
+    lineage = source_lineage(schema)
+    rules = [
+        {"column": lineage[0], "direction": "asc", "nulls": "first"},
+        {"column": lineage[1], "direction": "desc", "nulls": "last"},
+        {"column": lineage[2], "direction": "asc", "nulls": "last"},
+        {"column": lineage[3], "direction": "desc", "nulls": "first"},
+    ]
+    expected = source
+    for rule in reversed(rules):
+        expected = expected.sort_values(
+            rule["column"]["name"], ascending=rule["direction"] == "asc", na_position=rule["nulls"], kind="stable"
+        )
+    operation = bind_step(step("sortRows", rules=rules), schema, lineage)
+    for actual in [engine.apply_transform(source, operation), execute_generated(engine, source, operation)]:
+        pd.testing.assert_frame_equal(actual, expected)
+    view_rules = [{**rule, "column": rule["column"]["name"]} for rule in rules]
+    view = engine.apply_filter_model(source, {"filters": [], "sort": view_rules})
+    assert view["row"].tolist() == expected["row"].tolist()
+
+
 def test_pandas_duplicate_keys_preserve_object_missing_kinds() -> None:
     source = pd.DataFrame(
         {"key": pd.Series([None, float("nan"), pd.NA, "a", "a", None], dtype=object), "row": range(6)}

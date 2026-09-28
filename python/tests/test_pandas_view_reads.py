@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from openwrangler_runtime.engines import pandas_engine as pandas_engine_module
 from openwrangler_runtime.engines.pandas_engine import (
     _PANDAS_LEADING_ROW_LIMIT,
     PandasEngine,
@@ -14,6 +16,7 @@ from openwrangler_runtime.engines.pandas_engine import (
     _pandas_distinct_text_condition,
     _pandas_numeric_order,
     _pandas_sort_order,
+    _pandas_take_rows,
     _pandas_text_condition,
     _pandas_text_sort_ranks,
     _PandasNumericOrder,
@@ -198,6 +201,57 @@ def test_pandas_arrow_text_fast_paths_match_row_wise_semantics(dtype: Any) -> No
         assert contiguous.iloc[:, position].array.__arrow_array__().num_chunks == 1
         assert frame.iloc[:, position].array.__arrow_array__().num_chunks == 2
     pd.testing.assert_frame_equal(contiguous, frame)
+
+
+def test_pandas_object_text_ranks_match_the_stable_pandas_sort() -> None:
+    series = pd.Series([*TEXT, np.nan, pd.NA, "b"] * 3, dtype=object)
+    for ascending in (True, False):
+        for nulls in ("first", "last"):
+            ranks = _pandas_text_sort_ranks(series, ascending, nulls)
+            assert ranks is not None
+            np.testing.assert_array_equal(
+                np.argsort(ranks, kind="stable"), _pandas_sort_order(series, ascending, nulls)
+            )
+    for values in ([*TEXT, 1], [date(2024, 1, 2), None, date(2024, 1, 1)]):
+        assert _pandas_text_sort_ranks(pd.Series(values, dtype=object), True, "last") is None
+
+
+def test_pandas_large_reordering_takes_match_iloc(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = pd.DataFrame(
+        {
+            "text": pd.Series(["a", "b", None, "c", "b"], dtype=object),
+            "mixed": pd.Series([1, "x", 2.5, None, [1]], dtype=object),
+            "dates": pd.Series([date(2024, 1, day) for day in range(1, 6)], dtype=object),
+            "number": [3.0, np.nan, 1.5, 0.0, -1.0],
+            "count": pd.array([1, None, 3, 4, 5], dtype="Int64"),
+            "flag": [True, False, True, False, True],
+            "category": pd.Categorical(["x", "y", None, "x", "y"]),
+            "stamp": pd.date_range("2024-01-01", periods=5, tz="UTC"),
+            "arrow": pd.Series(["p", None, "q", "r", "p"], dtype=pd.ArrowDtype(pa.string())),
+        }
+    )
+    frame.index = pd.Index([10, 20, 30, 40, 50], name="key")
+    frame.attrs = {"source": "kept"}
+    labelled = frame.set_axis(["text", "mixed", "dates", "text", "count", "flag", "category", "stamp", "arrow"], axis=1)
+    unique = frame.set_flags(allows_duplicate_labels=False)
+    parallel = pandas_engine_module._pandas_take_columns_in_parallel
+    calls = []
+
+    def observe(source: Any, positions: Any) -> Any:
+        calls.append(len(positions))
+        return parallel(source, positions)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_take_columns_in_parallel", observe)
+    monkeypatch.setattr(pandas_engine_module, "_PANDAS_PARALLEL_TAKE_CELLS", 1)
+    for source in (labelled, unique):
+        for positions in (np.array([4, 0, 3, 1, 2]), np.array([0, 2, 3])):
+            actual = _pandas_take_rows(source, positions)
+            expected = source.iloc[positions]
+            pd.testing.assert_frame_equal(actual, expected)
+            assert actual.dtypes.tolist() == expected.dtypes.tolist()
+            assert actual.attrs == expected.attrs
+            assert actual.flags == expected.flags
+    assert calls == [5, 5]
 
 
 @pytest.mark.parametrize("values", [[0, 0, 1, 0, 2], [0.0, 1.5, None, 0.0]], ids=["integer", "float"])
