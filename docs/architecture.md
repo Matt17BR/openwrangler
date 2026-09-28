@@ -1495,13 +1495,15 @@ that create new row IDs: Group By, Custom Code, Pivot Longer, Pivot Wider and Ex
 remaining row's ID and relative order, so later steps can use the ID as the row's position.
 
 Directional Fill, Linear Interpolation, Drop Duplicates, Mark Duplicates and Dense Rank sort or partition every row,
-and DuckDB writes window output on one thread. In file sessions they run their windows once over only the private
-row ID and the columns the step reads, and store each kept row's ID, input position and new values in a private
-checkpoint that is owned and released like a Custom Code result. Rows in row-ID order need no numbering window, and
+and DuckDB writes window output on one thread. In file sessions they run their windows once over only the private row
+ID and the columns the step reads, and store each kept row's ID, input position and new values in a private checkpoint
+that is owned and released like a Custom Code result. They store the rows sorted by ID, because DuckDB writes sorted
+rows in large blocks about three times faster than window output. Rows in row-ID order need no numbering window, and
 their ID is their position. Later pages, profiles and steps join those values back to the input rows by ID in the
 input order, so the checkpoint also keeps the input plan's checkpoint attached. Database tables, notebook relations
 and plans without row IDs, including generated code, keep one query. The next present row for a gap limit is a
-descending running minimum, because DuckDB evaluates a frame that reaches the end of a large window far more slowly.
+descending running minimum, because DuckDB evaluates a frame that reaches the end of a large window far more slowly,
+and the gap limit counts the rows with a scalar count instead of a window over every row.
 
 A whole-column window holds every row before it streams any, so live Min-max Scale outside database tables and
 notebook relations reads the immutable plan's minimum and maximum once and inlines them as exact typed literals. Integer and decimal bounds are exact text, and DuckDB's

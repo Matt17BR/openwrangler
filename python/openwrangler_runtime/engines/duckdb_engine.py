@@ -3065,13 +3065,14 @@ class DuckDBEngine(DataFrameEngine):
         if max_gap is not None:
             eligible += f" AND ({gap_size}) <= {int(max_gap)}"
             # A descending running minimum is the following anchor; DuckDB evaluates a frame that
-            # reaches the end of a large window far more slowly.
+            # reaches the end of a large window far more slowly, and a window over every row just to
+            # count them about as slowly as all the others together.
             gap_windows = (
                 f"max(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY "
                 f"{calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
                 f"min(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY {calculation} DESC "
                 f"ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {following}, "
-                f"count(*) OVER () AS {total}, "
+                f"(SELECT count(*) FROM ow) AS {total}, "
             )
         replacement = f"CASE WHEN {eligible} THEN {candidate} ELSE {target_identifier} END"
         temporary_names = [calculation_name, candidate_name]
@@ -3131,8 +3132,10 @@ class DuckDBEngine(DataFrameEngine):
         ``original_name``. Each ``(column, expression)`` output is selected from the ``result`` CTE, replacing an
         existing column or adding one, and ``keep`` optionally selects the rows that remain. Window output reaches
         a table writer on one thread, so file sessions run the stages once over only the private row ID and
-        ``inputs`` and store each kept row's outputs in a private checkpoint. Reads join those values back to the
-        input rows by ID instead of running the windows over every column again. Other plans run ``fallback``.
+        ``inputs`` and store each kept row's outputs in a private checkpoint, sorted by ID because the writer takes
+        sorted rows in large blocks about three times faster than the window's small ones. Reads join those values
+        back to the input rows by ID instead of running the windows over every column again. Other plans run
+        ``fallback``.
         """
 
         source = self.normalize(frame)
@@ -3179,7 +3182,8 @@ class DuckDBEngine(DataFrameEngine):
                         f"WITH numbered AS (SELECT {narrow}, {numbering} AS {original} FROM ow)"
                         + (f", {stages}" if stages else "")
                         + f" SELECT {stored} FROM {result}"
-                        + ("" if keep is None else f" WHERE {keep}"),
+                        + ("" if keep is None else f" WHERE {keep}")
+                        + f" ORDER BY {identifier}",
                     )
                 )
                 connection.execute(f"DETACH {alias}")
