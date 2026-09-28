@@ -1423,14 +1423,25 @@ read their rows from the unsorted view by those IDs and fail if the count differ
 keeps one such order: a new sorted view replaces it and closing the engine deletes it. Database-table viewers keep the
 direct sorted query.
 
-Directional Fill and Linear Interpolation sort every row, and DuckDB writes window output on one thread. In file
-sessions they run their windows once over only the private row ID, the target and the order or coordinate columns,
-and store each row's ID, input position and filled value in a private checkpoint that is owned and released like a
-Custom Code result. Later pages, profiles and steps join those values back to the input rows by ID in the input
-order, so the checkpoint also keeps the input plan's checkpoint attached, and the result keeps the input's row-ID
-order. Database tables, notebook relations and plans without row IDs, including generated code, keep one sorted
-query. The next present row for a gap limit is a descending running minimum, because DuckDB evaluates a
-frame that reaches the end of a large window far more slowly.
+A plan read in ascending private row-ID order keeps that order through every step except Sort Rows and the steps
+that create new row IDs: Group By, Custom Code, Pivot Longer, Pivot Wider and Explode List. The other steps keep each
+remaining row's ID and relative order, so later steps can use the ID as the row's position.
+
+Directional Fill, Linear Interpolation, Drop Duplicates, Mark Duplicates and Dense Rank sort or partition every row,
+and DuckDB writes window output on one thread. In file sessions they run their windows once over only the private
+row ID and the columns the step reads, and store each kept row's ID, input position and new values in a private
+checkpoint that is owned and released like a Custom Code result. Rows in row-ID order need no numbering window, and
+their ID is their position. Later pages, profiles and steps join those values back to the input rows by ID in the
+input order, so the checkpoint also keeps the input plan's checkpoint attached. Database tables, notebook relations
+and plans without row IDs, including generated code, keep one query. The next present row for a gap limit is a
+descending running minimum, because DuckDB evaluates a frame that reaches the end of a large window far more slowly.
+
+A whole-column window holds every row before it streams any, so live Min-max Scale outside database tables and
+notebook relations reads the immutable plan's minimum and maximum once and inlines them as exact typed literals. Integer and decimal bounds are exact text, and DuckDB's
+shortest double text converts back to the same value. Pivot Longer over rows in row-ID order gives each output row
+the ID `input ID + selected-column index × (largest input ID + 1)`, which sorts selected columns in order and rows in
+input order within each, so the result sorts once by that ID and needs no numbering window before or after the
+pivot. Other inputs, and IDs that could overflow a 64-bit integer, number the rows as generated code does.
 
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display
 expression serves bounded pages, grouped choices and profile extrema; counts, grouping and ordering use the original

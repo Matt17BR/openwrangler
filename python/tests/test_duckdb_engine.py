@@ -5436,6 +5436,7 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         custom_plan,
         lookup_plan,
     ]
+    fresh_row_ids = {"groupBy", "customCode", "pivotLonger", "pivotWider", "explodeList"}
     covered = {operation["kind"] for plan in plans for operation in plan}
     assert covered == {item["kind"] for item in operation_catalog() if item["kind"] != "explodeList"}
     for plan in plans:
@@ -5444,6 +5445,17 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
             live = engine.apply_transform(live, operation)
         generated = execute_generated(engine, source, plan)
         assert_same_relation(live, generated)
+        identified = engine.ensure_row_ids(source, "order")
+        for operation in plan:
+            kind = operation["kind"]
+            # New row IDs follow the output order, a sort breaks the old order, and other steps keep it.
+            expected = True if kind in fresh_row_ids else False if kind == "sortRows" else identified.row_id_order
+            identified = engine.ensure_row_ids(engine.apply_transform(identified, operation), operation["id"])
+            assert identified.row_id_order is expected, kind
+            if identified.row_id_order:
+                row_ids = [row[identified.columns.index(engine._row_id_column(identified))] for row in rows(identified)]
+                assert row_ids == sorted(set(row_ids)), operation["kind"]
+        assert_same_relation(engine._visible_relation(identified), live)
         if plan is text_numeric_plan:
             output = records(live)
             assert output[0]["clean"] == "alpha-one"
@@ -5458,6 +5470,121 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         elif plan is group_plan:
             assert records(live)[0] == {"group": "a", "total": 4.0, "average": 2.5, "texts": 2, "tag_sets": 2}
     engine.close()
+
+
+def window_relation() -> Any:
+    return duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (1, 'a', 1, CAST(2.5 AS DOUBLE), [1, 2]),
+            (2, 'b', NULL, CAST('NaN' AS DOUBLE), [3]),
+            (3, 'a', 1, CAST(-0.0 AS DOUBLE), [1, 2]),
+            (4, NULL, 2, CAST(0.0 AS DOUBLE), NULL),
+            (5, 'b', NULL, CAST(NULL AS DOUBLE), [3]),
+            (6, NULL, 2, CAST(2.5 AS DOUBLE), NULL),
+            (7, 'c', 3, CAST('Infinity' AS DOUBLE), []),
+            (8, 'a', 4, CAST(-1.5 AS DOUBLE), [1, 2])
+        ) AS source("row", "key", "group", "value", "items")
+        """
+    )
+
+
+@pytest.mark.parametrize("reordered", [False, True])
+def test_duckdb_row_id_window_steps_store_values_that_match_generated_code(reordered: bool) -> None:
+    row, key, group, value, items = (
+        bound_ref(f"c:source:{position}", name, position)
+        for position, name in enumerate(["row", "key", "group", "value", "items"])
+    )
+    sort = bound_step("sortRows", rules=[{"column": row, "direction": "desc", "nulls": "last"}])
+    operations = [
+        *(bound_step("dropDuplicates", columns=[key, group], keep=keep) for keep in ("first", "last", "none")),
+        bound_step("dropDuplicates", columns=[items], keep="last"),
+        bound_step("markDuplicates", columns=[key, items], newColumn="duplicate"),
+        bound_step("markDuplicates", columns=[value], newColumn="duplicate"),
+        *(
+            bound_step("denseRank", column=column, direction=direction, newColumn="rank")
+            for column in (value, group)
+            for direction in ("asc", "desc")
+        ),
+    ]
+    engine = DuckDBEngine()
+    stored: list[Path] = []
+    try:
+        plain = window_relation()
+        source = engine.ensure_row_ids(plain, "window")
+        prefix = [sort] if reordered else []
+        for operation in prefix:
+            plain = engine.apply_transform(plain, operation)
+            source = engine.apply_transform(source, operation)
+        assert source.row_id_order is not reordered
+        row_ids = {row[0]: row[-1] for row in rows(source)}
+
+        def check(plan: list[dict[str, Any]]) -> Any:
+            live = source
+            expected = plain
+            for operation in plan:
+                live = engine.apply_transform(live, operation)
+                expected = engine.apply_transform(expected, operation)
+            assert live.checkpoint is not None
+            assert live.row_id_order is source.row_id_order
+            assert [row_ids[row[0]] for row in rows(live)] == [
+                row[live.columns.index(engine._row_id_column(live))] for row in rows(live)
+            ]
+            assert_same_relation(engine._visible_relation(live), expected)
+            assert_same_relation(expected, execute_generated(engine, window_relation(), [*prefix, *plan]))
+            stored.append(Path(live.checkpoint.temporary.name))
+            return live
+
+        for operation in operations:
+            check([operation])
+        chained = check([operations[3], operations[4], operations[6]])
+        assert chained.checkpoint.parent is not None
+        assert chained.checkpoint.parent.parent is not None
+        stored.extend(
+            Path(checkpoint.temporary.name)
+            for checkpoint in (chained.checkpoint.parent, chained.checkpoint.parent.parent)
+        )
+    finally:
+        engine.close()
+    assert stored
+    assert not any(path.exists() for path in stored)
+
+
+@pytest.mark.parametrize("prefix_kind", ["none", "filtered", "sorted", "empty"])
+def test_duckdb_row_id_pivot_longer_numbers_rows_that_match_generated_code(prefix_kind: str) -> None:
+    row, key, group = (
+        bound_ref(f"c:source:{position}", name, position) for position, name in enumerate(["row", "key", "group"])
+    )
+    prefix = {
+        "none": [],
+        "filtered": [bound_step("dropMissingRows", columns=[key], how="any")],
+        "sorted": [bound_step("sortRows", rules=[{"column": row, "direction": "desc", "nulls": "last"}])],
+        "empty": [],
+    }[prefix_kind]
+    pivot = bound_step("pivotLonger", columns=[group, row], labelColumn="measure", valueColumn="reading")
+
+    def relation() -> Any:
+        return window_relation().filter("false") if prefix_kind == "empty" else window_relation()
+
+    engine = DuckDBEngine()
+    try:
+        plain = relation()
+        source = engine.ensure_row_ids(plain, "pivot")
+        for operation in prefix:
+            plain = engine.apply_transform(plain, operation)
+            source = engine.apply_transform(source, operation)
+        pivoted = engine.apply_transform(source, pivot)
+        assert (pivoted.ordinal_sql is not None) is (prefix_kind != "sorted")
+        live = engine.ensure_row_ids(pivoted, "pivoted")
+        assert live.row_id_order
+        expected = engine.apply_transform(plain, pivot)
+        assert_same_relation(engine._visible_relation(live), expected)
+        assert_same_relation(expected, execute_generated(engine, relation(), [*prefix, pivot]))
+        row_ids = [row[-1] for row in rows(live)]
+        assert row_ids == sorted(set(row_ids))
+        assert len(row_ids) == (0 if prefix_kind == "empty" else 12 if prefix_kind == "filtered" else 16)
+    finally:
+        engine.close()
 
 
 def test_duckdb_grouping_treats_nan_as_missing_for_keys_and_aggregates() -> None:

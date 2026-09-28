@@ -78,7 +78,10 @@ def materialize(frame: Any) -> Any:
     if isinstance(frame, pl.LazyFrame):
         return frame.collect()
     if isinstance(frame, DuckDBSqlPlan):
-        return duckdb.sql(frame.sql)
+        connection = duckdb.connect()
+        if frame.checkpoint is not None:
+            frame.checkpoint.attach(connection)
+        return connection.sql(frame.sql)
     return frame
 
 
