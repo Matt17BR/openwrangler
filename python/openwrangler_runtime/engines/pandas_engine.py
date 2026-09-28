@@ -697,11 +697,12 @@ class _PandasRowView:
         return self._index
 
     def rows(self, start: int, stop: int, columns: list[int]) -> Any:
+        # Pandas 2 copies every row of the selected columns when columns are selected first.
         if self._frame is not None:
-            return self._frame.iloc[start:stop, columns]
+            return self._frame.iloc[start:stop].iloc[:, columns]
         if self._window_source is None:
             self._window_source = _pandas_contiguous_text(self.source)
-        return _pandas_take_rows(self._window_source.iloc[:, columns], self._leading_positions(stop)[start:stop])
+        return _pandas_take_rows(self._window_source, self._leading_positions(stop)[start:stop]).iloc[:, columns]
 
     def position(self, row: int) -> int:
         """The source position of one row; a leading row of a lazily sorted view needs only a partial sort."""
@@ -1521,7 +1522,7 @@ class PandasEngine(DataFrameEngine):
         row_id_position = self._row_id_position(df)
         selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
         sliced = (
-            df.iloc[offset : offset + limit, selected_positions]
+            df.iloc[offset : offset + limit].iloc[:, selected_positions]
             if view is None
             else view.rows(offset, offset + limit, selected_positions)
         )
