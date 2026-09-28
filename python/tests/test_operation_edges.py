@@ -1067,7 +1067,7 @@ def test_pandas_one_hot_preflight_names_before_current_column_comparison(case, m
         source = pd.DataFrame({"_": ["open_wrangler_internal_row_id_forged", None, ""], "keep": [1, 2, 3]})
         message = "reserved private row-identity column"
     elif case == "prior-column":
-        source = pd.DataFrame({"a": ["b_c"] * 3, "a_b": ["c"] * 3, "keep": [1, 2, 3]})
+        source = pd.DataFrame({"a": pd.Categorical(["b_c"] * 3), "a_b": ["c"] * 3, "keep": [1, 2, 3]})
         message = "duplicate column names: a_b_c"
     elif case == "numeric-label":
         source = pd.DataFrame({"": ["7"] * 3, 7: [1, 2, 3]})

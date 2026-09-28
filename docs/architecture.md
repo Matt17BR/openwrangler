@@ -629,7 +629,9 @@ dropping all original columns leaves no base columns, preserving indicator rows 
 Pandas maps visible column positions once per One-hot, Drop Missing Rows, Drop Duplicates or Mark Duplicates
 transformation and validates each selected reference against that map. One-hot validates each selected column's
 output names before constructing its indicators. A refusal can
-report the first colliding column; earlier selected columns may already have been evaluated.
+report the first colliding column; earlier selected columns may already have been evaluated. Live Pandas One-hot
+factorizes text, integer and datetime columns once and builds each indicator from the codes, because those values are
+equal exactly when their codes are; other columns compare the column with each category.
 Generated Pandas One-hot names use the live scalar formatting, so compiled plans bind to the same output columns.
 
 Live and generated Custom Code share a compiler that places parsed user statements inside a fixed function template.
