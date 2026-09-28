@@ -822,7 +822,8 @@ including empty or all-missing columns. Omitting the option retains the engine's
 Pandas executes viewing, its supported cleaning operations, profiling, generated code and exports in Pandas.
 Viewing filters and sorts compose row positions into a row view. Pages take only their rows and columns, statistics
 that ignore row order read the selected rows in source order, and other reads materialize the view once. Arrow text
-columns are combined into one chunk when a file opens. Text predicates evaluate each distinct value once, and text
+columns are combined into one chunk when a file opens, one column per thread. Text predicates evaluate each distinct
+value once, and text
 sorts rank the dictionary instead of comparing every row. A view sorted by one NumPy numeric, Boolean, datetime or
 duration column finds its first 16,384 rows with a partition, keeping every row tied with the boundary value so ties
 stay in source order. A later page or a read that needs every position sorts the column once
