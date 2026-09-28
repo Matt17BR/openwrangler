@@ -83,9 +83,13 @@ class _Column:
     position: int
     semantic_type: str
     raw_type: str
+    native_raw_type: bool
 
     def bound_reference(self) -> dict[str, str | int]:
-        return {"id": self.identifier, "name": self.name, "position": self.position}
+        reference: dict[str, str | int] = {"id": self.identifier, "name": self.name, "position": self.position}
+        if self.native_raw_type:
+            reference["rawType"] = self.raw_type
+        return reference
 
 
 class _BindingContext:
@@ -128,7 +132,7 @@ class _BindingContext:
                 )
             if identifier in self.by_id:
                 raise ColumnBindingError(f"Duplicate column identity in the input schema: {identifier}")
-            column = _Column(identifier, schema_name, position, semantic_type, raw_type)
+            column = _Column(identifier, schema_name, position, semantic_type, raw_type, "rawType" in schema_column)
             self.columns.append(column)
             self.by_id[identifier] = column
 

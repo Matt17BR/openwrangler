@@ -230,7 +230,7 @@ Cancellation after that publication does not undo the replacement.
 Every coordinator-facing request and response uses protocol v4, passes strict decoding, and carries the identifiers
 needed to correlate it to a request and session. Python bridges implement that boundary directly; `RKernelBridge`
 validates and translates between it and native R's private transport and frame contracts. Public transform parameters
-never contain private bound positions. Unknown fields, malformed unions, invalid limits, stale identities, and schema
+never contain private bound positions or native types. Unknown fields, malformed unions, invalid limits, stale identities, and schema
 inconsistencies fail before adapter dispatch or UI publication.
 Older live protocols are rejected. An already-running Python notebook kernel may retain an imported v2 or v3 runtime after
 an extension update; restart that kernel and rerun its cells before reopening the dataframe. Open Wrangler does not
@@ -525,7 +525,9 @@ native reader before a four-byte check adapts a zero-byte or single-UTF-8-BOM fi
 No shared whitespace scan discards native records. Other parse errors retain their normal refusal path.
 
 Every cleaning operation except Custom Code addresses input columns through public `{id, name}` references. The runtime
-binds public references against the exact input schema and lineage to private positions before execution. Unknown, stale, repeated where
+binds public references against the exact input schema and lineage to private positions before execution. A bound reference
+also records the column's native type when the schema reports one, so generated code can emit only what that type needs.
+Unknown, stale, repeated where
 disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
 parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
 
