@@ -1,5 +1,9 @@
 openwrangler_r_kernel_agent <- local({
   transport_version <- 18L
+  # Sourced runtime closures carry no bytecode, and compiling them on first use
+  # costs seconds in every new R process while vectorized work gains nothing.
+  # Requests therefore run uncompiled; user code keeps the caller's JIT level.
+  jit_state <- new.env(parent = emptyenv())
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -5343,6 +5347,11 @@ openwrangler_r_kernel_agent <- local({
     }, add = TRUE)
     sink(discard, type = "output")
     sink(discard, type = "message")
+    caller_jit <- jit_state$caller
+    if (!is.null(caller_jit)) {
+      compiler::enableJIT(caller_jit)
+      on.exit(compiler::enableJIT(0L), add = TRUE)
+    }
     tryCatch(
       withCallingHandlers(
         eval(step$parsed, envir = evaluation_environment),
@@ -5360,6 +5369,7 @@ openwrangler_r_kernel_agent <- local({
         )
       }
     )
+    if (!is.null(caller_jit)) compiler::enableJIT(0L)
     if (!exists("result", envir = evaluation_environment, inherits = FALSE) ||
       bindingIsActive("result", evaluation_environment)) {
       abort(
@@ -12377,6 +12387,12 @@ openwrangler_r_kernel_agent <- local({
     }
 
     dispatch_json <- function(payload) {
+      caller_jit <- compiler::enableJIT(0L)
+      jit_state$caller <- caller_jit
+      on.exit({
+        jit_state$caller <- NULL
+        compiler::enableJIT(caller_jit)
+      }, add = TRUE)
       request_id <- ""
       cleanup_receipt <- new.env(parent = emptyenv())
       encoded <- FALSE

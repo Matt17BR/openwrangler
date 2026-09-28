@@ -2184,7 +2184,9 @@ old output metadata remains valid.
 Notebook work stays in the selected IRkernel. Discovery, selection checks, runtime startup, requests and cleanup
 run in fresh environments parented by `baseenv()`. Their implementation functions do not resolve through notebook
 globals; `.GlobalEnv` remains the explicit owner of source variables and the shared runtime binding. User functions
-and source values remain unchanged.
+and source values remain unchanged. Every request turns R's byte-code JIT off and restores the caller's level when it
+returns, because the sourced runtime has no bytecode and compiling it on first use costs seconds in each new R process.
+Custom Code runs at the caller's level.
 
 An existing official R-terminal variable stays pinned to the exact terminal and process that exposed it. Discovery
 uses the focused R terminal. While another terminal has focus it uses the most recently focused R terminal, or the
