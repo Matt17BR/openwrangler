@@ -10242,14 +10242,15 @@ assert_true(
   !any(grepl("unused|NaN|NA|text_$|category_$", categorical_scalar_result$generatedNames)),
   "oneHotEncode emitted an unused, missing, NaN, or blank category"
 )
-assert_identical(categorical_scalar_result$value$flag_TRUE, c(1L, 0L, 0L, 1L, 0L), "logical one-hot values changed")
-assert_identical(categorical_scalar_result$value$number_Inf, c(0L, 0L, 0L, 1L, 0L), "infinite one-hot values changed")
-assert_identical(categorical_scalar_result$value$text_β, c(1L, 0L, 0L, 0L, 1L), "UTF-8 one-hot values changed")
-assert_identical(categorical_scalar_result$value$category_used, c(1L, 0L, 0L, 1L, 0L), "factor one-hot values changed")
+# One string of row values per generated column, in expected_scalar_generated order.
+expected_scalar_indicators <- c(
+  "00001", "10010", "10010", "01001", "10010", "00101", "01001", "10010", "10010", "01000",
+  "00001", "10000", "00010", "00010", "10001", "00010", "01000", "10001", "01001", "10010"
+)
 assert_identical(
-  categorical_scalar_result$value[["wide_-2"]],
-  c(0L, 1L, 0L, 0L, 1L),
-  "integer64 one-hot values changed"
+  lapply(expected_scalar_generated, function(name) categorical_scalar_result$value[[name]]),
+  lapply(strsplit(expected_scalar_indicators, ""), as.integer),
+  "oneHotEncode indicator values changed"
 )
 assert_identical(
   row.names(categorical_scalar_result$value),
@@ -10642,11 +10643,13 @@ forged_result <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
   drop_original = FALSE
 )
 forged_ids <- c("r:c:0", "r:c:1", "c:step:forge:0", "c:step:forge:1")
-data.table::set(forged_result$value, j = "group_a", value = c(2L, 0L))
-assert_error(
-  openwrangler_r_frame_contract$capture_categorical_result(forged_result, forged_capture, forged_ids),
-  "invalid categorical output"
-)
+for (forged_value in c(2L, -1L)) {
+  data.table::set(forged_result$value, j = "group_a", value = c(forged_value, 0L))
+  assert_error(
+    openwrangler_r_frame_contract$capture_categorical_result(forged_result, forged_capture, forged_ids),
+    "invalid categorical output"
+  )
+}
 other_source_capture <- openwrangler_r_frame_contract$capture_frame(
   data.frame(group = c("a", "b"), keep = c(1.5, 2.5))
 )

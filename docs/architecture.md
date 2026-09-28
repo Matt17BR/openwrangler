@@ -2239,7 +2239,8 @@ conversion; integer64 conversion, text-length means and variance retain their se
 
 One-hot encoding derives indicators only from present categories with nonempty labels. Empty and all-missing
 duration columns contribute no categories; if no selected column contributes an indicator, the operation refuses
-before publishing a result. Other selected columns can still supply valid categories.
+before publishing a result. Other selected columns can still supply valid categories. Live One-hot matches each row
+with its category once and builds every indicator from those matches.
 One-hot and Multi-label preserve row counts and row-name mode when replacing every original `data.table` column.
 Sort Rows, Filter Rows, Drop Missing Rows and Drop Duplicates perform native row subsetting even when all rows remain.
 Nonempty base results have explicit row names; tibble and data.table results have positional names. Empty derived

@@ -4988,7 +4988,7 @@ openwrangler_r_frame_contract <- local({
             !identical(output_column$semantics$kind, "integer") ||
               identical(output_ids[[index]], mapped_source_ids[[index]]) ||
               anyNA(output_values) ||
-              any(!output_values %in% c(0L, 1L))
+              length(output_values) != 0L && (min(output_values) < 0L || max(output_values) > 1L)
           ) {
             abort("internal-error", "a derived R frame has an invalid categorical output")
           }
@@ -6123,7 +6123,7 @@ openwrangler_r_frame_contract <- local({
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
-      validate_values = TRUE,
+      validate_values = FALSE,
       metrics = new_capture_metrics()
     )
     column_count <- inspected$descriptor$shape$columns
@@ -6163,7 +6163,9 @@ openwrangler_r_frame_contract <- local({
       storage <- integer64_as_character(column)
       attributes(storage) <- NULL
       categories <- base::unique.default(.subset(storage, which(!missing)))
-      return(list(storage = storage, missing = missing, categories = categories, labels = categories))
+      codes <- match(storage, categories, nomatch = 0L)
+      codes[missing] <- 0L
+      return(list(codes = codes, categories = categories, labels = categories))
     }
 
     if (identical(kind, "character")) {
@@ -6234,18 +6236,15 @@ openwrangler_r_frame_contract <- local({
       bounded_utf8(labels[[index]], sprintf("%s category %d", label, index))
     }, character(1L), USE.NAMES = FALSE)
     keep <- labels != ""
-    list(
-      storage = storage,
-      missing = missing,
-      categories = .subset(categories, which(keep)),
-      labels = .subset(labels, which(keep))
-    )
+    categories <- .subset(categories, which(keep))
+    # Each row's position among the kept categories, or 0, so each indicator compares integers instead of values.
+    codes <- match(storage, categories, nomatch = 0L)
+    codes[missing] <- 0L
+    list(codes = codes, categories = categories, labels = .subset(labels, which(keep)))
   }
 
-  one_hot_indicator <- function(domain, category) {
-    matches <- !domain$missing & domain$storage == category
-    matches[is.na(matches)] <- FALSE
-    as.integer(matches)
+  one_hot_indicator <- function(domain, category_index) {
+    as.integer(domain$codes == category_index)
   }
 
   categorical_text_storage <- function(column, semantics, label) {
@@ -6477,7 +6476,7 @@ openwrangler_r_frame_contract <- local({
       generated_names <- generated_names[generated_order]
     }
     generated_columns <- lapply(generated, function(item) {
-      one_hot_indicator(domains[[item$sourceIndex]], domains[[item$sourceIndex]]$categories[[item$categoryIndex]])
+      one_hot_indicator(domains[[item$sourceIndex]], item$categoryIndex)
     })
     build_categorical_result(
       value,
