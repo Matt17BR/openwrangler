@@ -52,6 +52,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 ### Fixed
 
 - R files and dataframes whose text ends in a line break open and page in every R library. Previously the grid failed to load them. R filters, Fill Missing Values and whole-cell Replace also no longer ignore a trailing line break in a value, matching the Python engines.
+- Python filters now read number, date and duration values only from the digits 0 to 9, as R does. Previously Pandas, Polars and DuckDB also accepted digits from other scripts, such as Arabic-Indic or full-width digits, so the same saved filter worked in Python and failed in R.
 - Split Text into Columns previews work in R. Previously every R preview of this step failed with "The R kernel returned a mutation diff for the wrong columns or cells."
 - R says when a CSV or TSV file has more than 2,048 columns. Previously it reported such a file as having invalid text, quoting or field counts.
 - R · base Pivot wider keeps the names of named identifier values, as R · dplyr does. Previously it dropped them.
