@@ -198,6 +198,9 @@ catalog_source <- function() {
 
 step_with <- function(id, kind, params) list(id = id, kind = kind, params = params)
 
+catalog_lookup_file <- tempfile("openwrangler-catalog-lookup-", fileext = ".csv")
+writeLines(c("group,label,rank", "a,Alpha,1", "b,Beta,2"), catalog_lookup_file)
+
 text_step <- function(frame, id, kind, new_column = NULL, ...) {
   params <- list(column = column_reference(frame, "word"), ...)
   if (!is.null(new_column)) params$newColumn <- new_column
@@ -209,7 +212,7 @@ catalog_kinds <- c(
   "selectColumns", "dropColumns", "renameColumn", "cloneColumn", "extractStructFields", "explodeList", "castColumn", "formula", "conditionalColumn",
   "textLength", "oneHotEncode", "multiLabelBinarize", "findReplace", "replaceMatches", "stripText", "splitText", "splitTextColumns",
   "extractRegexGroup", "capitalizeText", "lowerText", "upperText", "denseRank", "minMaxScale", "roundNumber", "floorNumber",
-  "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "groupBy", "byExample", "customCode"
+  "ceilNumber", "formatDatetime", "pivotLonger", "pivotWider", "lookupColumns", "groupBy", "byExample", "customCode"
 )
 
 catalog_cases <- list(
@@ -584,6 +587,18 @@ catalog_cases <- list(
           expected_values[[index]], "Pivot wider changed values or typed missing combinations")
       }
       assert_identical(.row_names_info(output, type = 1L), -nrow(output), "Pivot wider did not publish positional row names")
+    }
+  ),
+  lookupColumns = list(
+    step = function(frame, id) step_with(id, "lookupColumns", list(
+      file = list(path = catalog_lookup_file, format = "csv"),
+      keys = I(list(list(column = column_reference(frame, "group"), lookupColumn = "group"))),
+      columns = I(list(list(lookupColumn = "label", newColumn = "group label"), list(lookupColumn = "rank", newColumn = "group rank")))
+    )),
+    verify = function(output, input) {
+      assert_identical(names(output), c(names(input), "group label", "group rank"), "Look up columns didn't append its columns")
+      assert_identical(output[["group label"]], c("Beta", "Alpha", "Alpha", "Beta", NA, NA), "Look up columns matched the wrong rows")
+      assert_identical(output[["group rank"]], c(2L, 1L, 1L, 2L, NA, NA), "Look up columns changed integer values")
     }
   ),
   groupBy = list(
@@ -1103,6 +1118,151 @@ local({
     }
     assert_identical(dispatch("closeSession", list(sessionId = current))$kind, "closed", "the Replace portability session did not close")
   }
+  remove(list = "catalog_frame", envir = source_environment)
+})
+
+# Look up columns matches every key type in every lookup format and refuses what Python refuses, with the same words.
+local({
+  directory <- tempfile("openwrangler-lookup-")
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  write_text <- function(name, lines) {
+    path <- file.path(directory, name)
+    writeLines(lines, path, useBytes = TRUE)
+    path
+  }
+  lookup_step <- function(frame, id, file, keys, columns) step_with(id, "lookupColumns", list(
+    file = file,
+    keys = I(lapply(names(keys), function(name) list(column = column_reference(frame, name), lookupColumn = keys[[name]]))),
+    columns = I(lapply(names(columns), function(name) list(lookupColumn = name, newColumn = columns[[name]])))
+  ))
+  parquet <- file.path(directory, "moments.parquet")
+  arrow::write_parquet(data.frame(
+    day = as.Date(c("2026-01-02", "2026-01-05", "2026-01-03", "2026-01-06")),
+    flag = c(FALSE, FALSE, TRUE, NA),
+    wide = c(2L, 4L, 2L, 5L),
+    note = c("second", "fifth", "third", "never"),
+    amount = c(NaN, 5.5, 3.25, 6)
+  ), parquet)
+  tsv <- write_text("categories.tsv", c("category\tmeaning", "alpha\tfirst letter", "zeta\tlast letter"))
+  jsonl <- write_text("words.jsonl", c('{"text": "BETA-2", "hit": 1}', '{"text": "beta-2", "hit": 2}', '{"text": " Alpha-1", "hit": 3}'))
+  eight <- local({
+    rows <- 300L
+    multipliers <- c(1L, 7L, 11L, 13L, 17L, 19L, 23L, 29L)
+    parts <- lapply(multipliers, function(multiplier) as.integer(((seq_len(rows) - 1L) * multiplier) %% rows))
+    names(parts) <- paste0("k", 0:7)
+    frame <- as.data.frame(parts)
+    lines <- c(paste(c(names(frame), "row"), collapse = ","), vapply(seq_len(rows), function(row) {
+      paste(c(unlist(frame[row, ], use.names = FALSE), row - 1L), collapse = ",")
+    }, character(1L)))
+    list(frame = frame[rev(seq_len(rows)), , drop = FALSE], file = write_text("eight.csv", lines))
+  })
+  cases <- list(
+    composite = list(
+      step = function(frame, id) lookup_step(frame, id, list(path = parquet, format = "parquet"),
+        c(day = "day", flag = "flag", wide = "wide"), c(note = "day note", amount = "day amount")),
+      verify = function(output, input) {
+        assert_identical(output[["day note"]], c(NA, "second", "third", NA, "fifth", NA), "Look up columns matched composite keys wrongly")
+        assert_identical(output[["day amount"]], c(NA, NaN, 3.25, NA, 5.5, NA), "Look up columns lost a NaN or a missing value")
+      }
+    ),
+    factor = list(
+      step = function(frame, id) lookup_step(frame, id, list(path = tsv, format = "tsv"), c(category = "category"), c(meaning = "meaning")),
+      verify = function(output, input) assert_identical(output$meaning,
+        c("last letter", "first letter", "first letter", NA, "last letter", NA), "Look up columns matched factor labels wrongly")
+    ),
+    exactText = list(
+      step = function(frame, id) lookup_step(frame, id, list(path = jsonl, format = "jsonl"), c(text = "text"), c(hit = "hit")),
+      verify = function(output, input) assert_identical(output$hit, c(NA, 1L, NA, NA, NA, 2L), "Look up columns matched text inexactly")
+    ),
+    eightParts = list(
+      source = function() eight$frame,
+      step = function(frame, id) lookup_step(frame, id, list(path = eight$file, format = "csv"),
+        stats::setNames(paste0("k", 0:7), paste0("k", 0:7)), c(row = "row")),
+      verify = function(output, input) assert_identical(output$row, rev(seq_len(300L)) - 1L, "Look up columns mismatched an eight-part key")
+    )
+  )
+  for (library in c("base", "dplyr", "data.table", "collapse")) {
+    for (index in seq_along(cases)) {
+      tryCatch(run_catalog_case(cases[[index]], "lookupColumns", 6400L + index, library),
+        error = function(error) stop(sprintf("the %s %s lookup case failed: %s", library, names(cases)[[index]], conditionMessage(error)), call. = FALSE))
+    }
+  }
+
+  repeated <- write_text("repeated.csv", c("group,label", "a,first", "b,other", "a,second"))
+  nested <- write_text("nested.jsonl", c('{"group": "a", "tags": [1, 2]}'))
+  groups <- list(path = catalog_lookup_file, format = "csv")
+  refusals <- list(
+    list(step = function(frame) lookup_step(frame, "refuse", list(path = repeated, format = "csv"), c(group = "group"), c(label = "label")),
+      message = "The lookup file has more than one row where group = \"a\". Each key must match at most one row."),
+    list(step = function(frame) lookup_step(frame, "refuse", groups, c(group = "missing"), c(label = "label")),
+      message = "The lookup file has no column named 'missing'."),
+    list(step = function(frame) lookup_step(frame, "refuse", groups, c(whole = "group"), c(label = "label")),
+      message = "Can't match 'whole' (integer) with lookup column 'group' (text). Key columns must have the same type."),
+    list(step = function(frame) lookup_step(frame, "refuse", groups, c(number = "group"), c(label = "label")),
+      message = "Look up columns can match text, integer, Boolean or date keys, not float column 'number'."),
+    list(step = function(frame) lookup_step(frame, "refuse", groups, c(group = "group"), c(label = "TEXT")),
+      message = "Look up columns would add 'TEXT', but the data already has a column named 'text'."),
+    list(step = function(frame) lookup_step(frame, "refuse", groups, c(group = "group"), c(label = "text")),
+      message = "lookupColumns.columns[0].newColumn collides with an existing column: text"),
+    # Native R readers take only flat scalar files, so nested lookup columns never reach the step.
+    list(step = function(frame) lookup_step(frame, "refuse", list(path = nested, format = "jsonl"), c(group = "group"), c(tags = "tag list")),
+      message = sprintf("Couldn't read the lookup file '%s': JSONL line 1 contains nested values", nested)),
+    list(step = function(frame) lookup_step(frame, "refuse", list(path = file.path(directory, "gone.csv"), format = "csv"), c(group = "group"), c(label = "label")),
+      message = sprintf("Couldn't read the lookup file '%1$s': cannot open file '%1$s': No such file or directory", file.path(directory, "gone.csv")))
+  )
+  assign("catalog_frame", catalog_source(), envir = source_environment)
+  for (index in seq_along(refusals)) {
+    current <- session_id(6420L + index)
+    opened <- dispatch("openSession", list(sessionId = current, variableName = "catalog_frame", page = page_window()))
+    assert_identical(opened$kind, "page", "the lookup refusal source did not open")
+    refused <- dispatch("previewStep", list(
+      sessionId = current, revision = 0L, step = refusals[[index]]$step(catalog_source()), page = page_window()
+    ))
+    assert_identical(refused$kind, "error", sprintf("Look up columns accepted a step that must fail with %s", refusals[[index]]$message))
+    assert_true(startsWith(refused$message, refusals[[index]]$message),
+      sprintf("Look up columns failed with %s instead of %s", refused$message, refusals[[index]]$message))
+    assert_identical(dispatch("closeSession", list(sessionId = current))$kind, "closed", "the lookup refusal session did not close")
+  }
+
+  current <- session_id(6440L)
+  opened <- dispatch("openSession", list(sessionId = current, variableName = "catalog_frame", page = page_window()))
+  assert_identical(opened$kind, "page", "the lookup description source did not open")
+  described <- dispatch("describeLookupFile", list(sessionId = current, file = list(path = parquet, format = "parquet")))
+  assert_identical(described$kind, "lookupFileDescribed", "the lookup file was not described")
+  assert_identical(described$rowCount, 4L, "the lookup description miscounted rows")
+  assert_identical(
+    vapply(described$columns, function(column) paste(column$name, column$rawType, column$type), character(1L)),
+    c("day Date date", "flag logical boolean", "wide integer integer", "note character string", "amount double float"),
+    "the lookup description changed names or types"
+  )
+  malformed <- dispatch("describeLookupFile", list(sessionId = current, file = list(path = "relative.csv", format = "csv")))
+  assert_identical(malformed$message, "request.payload.file.path must be absolute.", "a relative lookup path was described")
+  wide_lookup <- write_text("wide.csv", c(paste0("c", seq_len(2049L), collapse = ","), paste(seq_len(2049L), collapse = ",")))
+  wide <- dispatch("describeLookupFile", list(sessionId = current, file = list(path = wide_lookup, format = "csv")))
+  assert_true(
+    endsWith(wide$message, "wide.csv': The file has 2,049 columns, more than the 2,048 that Open Wrangler reads in R."),
+    sprintf("a lookup file wider than the column limit failed with %s", wide$message)
+  )
+
+  # A changed lookup file is read again rather than served from the session's copy.
+  changing <- write_text("changing.csv", c("group,label", "a,before"))
+  step <- lookup_step(catalog_source(), "changing", list(path = changing, format = "csv"), c(group = "group"), c(label = "label"))
+  revision <- 0L
+  labels <- function() {
+    latest_capture <<- NULL
+    preview <- dispatch("previewStep", list(sessionId = current, revision = revision, step = step, page = page_window()))
+    assert_identical(preview$kind, "stepPreview", "the changing lookup did not preview")
+    output <- snapshot_from_latest_capture("changing lookup")
+    discarded <- dispatch("discardDraft", list(sessionId = current, revision = preview$revision, page = page_window()))
+    assert_identical(discarded$action, "discard", "the changing lookup draft did not discard")
+    revision <<- discarded$revision
+    output$label
+  }
+  assert_identical(labels()[2:3], c("before", "before"), "the first lookup read was wrong")
+  writeLines(c("group,label", "a,after the change"), changing)
+  assert_identical(labels()[2:3], c("after the change", "after the change"), "a changed lookup file was served from the old copy")
+  assert_identical(dispatch("closeSession", list(sessionId = current))$kind, "closed", "the lookup description session did not close")
   remove(list = "catalog_frame", envir = source_environment)
 })
 

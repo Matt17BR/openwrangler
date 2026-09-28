@@ -52,6 +52,7 @@ import {
   customRowIdentityConstraintAfterRStep,
   dynamicByExampleSchema,
   dynamicCategoricalSchema,
+  dynamicLookupSchema,
   dynamicCustomCodeSchema,
   keyColumnsAfterRStep,
   rowCountAfterRStep,
@@ -190,7 +191,7 @@ export class RKernelMutationLifecycle {
     let retainedStep: RTransformStep;
     try {
       targetSchema =
-        step.kind === "byExample" || step.kind === "customCode"
+        step.kind === "byExample" || step.kind === "customCode" || step.kind === "lookupColumns"
           ? Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })))
           : isRCategoricalTransformStep(step)
             ? categoricalRetainedSchema(inputSchema, step)
@@ -258,6 +259,13 @@ export class RKernelMutationLifecycle {
       if (step.kind === "extractStructFields" || step.kind === "explodeList") {
         if (!isDeepStrictEqual(result.page.schema, schemaAfterNestedStep(inputRSchema, step)))
           throw new Error("The R kernel changed exact nested output or sibling metadata.");
+      }
+      if (step.kind === "lookupColumns") {
+        targetSchema = dynamicLookupSchema(inputSchema, inputRSchema, step, result.page);
+        targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, step);
+        if (!isDeepStrictEqual(resolveViewQuery(nextFilterModel, targetSchema), view)) {
+          throw new Error("The R lookup schema changed the pre-dispatch viewing query.");
+        }
       }
       if (isRCategoricalTransformStep(step)) {
         targetSchema = dynamicCategoricalSchema(inputSchema, inputRSchema, step, result.page);

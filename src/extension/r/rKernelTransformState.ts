@@ -4,6 +4,7 @@ import type {
   ColumnSchema,
   FilterRowsTransformStep,
   GroupByTransformStep,
+  LookupColumnsTransformStep,
   OneHotEncodeTransformStep,
   PivotLongerTransformStep,
   PivotWiderTransformStep,
@@ -348,6 +349,22 @@ export function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "lookupColumns") {
+    return {
+      id: step.id,
+      kind: "lookupColumns",
+      params: {
+        file: { ...step.params.file },
+        keys: step.params.keys.map((key) => ({
+          column: { ...key.column },
+          lookupColumn: key.lookupColumn
+        })) as LookupColumnsTransformStep["params"]["keys"],
+        columns: step.params.columns.map((column) => ({
+          ...column
+        })) as LookupColumnsTransformStep["params"]["columns"]
+      }
+    };
+  }
   if (step.kind === "extractRegexGroup") {
     return {
       id: step.id,
@@ -512,6 +529,7 @@ export function copyRetainedStep(step: RetainedTransformStep): RetainedTransform
     step.kind !== "splitTextColumns" &&
     step.kind !== "pivotLonger" &&
     step.kind !== "pivotWider" &&
+    step.kind !== "lookupColumns" &&
     step.kind !== "extractRegexGroup" &&
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&

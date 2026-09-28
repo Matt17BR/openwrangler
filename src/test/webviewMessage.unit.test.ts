@@ -225,6 +225,24 @@ describe("webview message decoding", () => {
     }
   });
 
+  it("accepts a lookup-file request only with a bounded identity and an absolute readable file", () => {
+    const pick = { kind: "lookupFile", requestId: "lookup-file-1" } as const;
+    const saved = { ...pick, file: { path: "/data/regions.ndjson", format: "jsonl" } } as const;
+    expect(decodeWebviewMessage(pick, context())).toEqual(pick);
+    expect(decodeWebviewMessage(saved, context())).toEqual(saved);
+    for (const invalid of [
+      { ...pick, requestId: "" },
+      { ...pick, requestId: "x".repeat(maximumViewIdCodeUnits + 1) },
+      { ...saved, file: { path: "regions.csv", format: "csv" } },
+      { ...saved, file: { path: "/data/regions.csv", format: "parquet" } },
+      { ...saved, file: { path: "/data/regions.xlsx", format: "xlsx" } },
+      { ...saved, file: { ...saved.file, sheet: 0 } },
+      { ...pick, unexpected: true }
+    ]) {
+      expect(decodeWebviewMessage(invalid, context())).toBeUndefined();
+    }
+  });
+
   it("stamps runtime requests with host-owned identity and limits scheduling hints", () => {
     const request = {
       kind: "getSummary",

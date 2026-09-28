@@ -1,6 +1,6 @@
 import { supportsOperation } from "../shared/operations";
-import type { OpenWranglerRequest, SessionMode, SessionOpenedResponse } from "../shared/protocol";
-import { isOpenWranglerRequest } from "../shared/protocolValidation";
+import type { LookupFile, OpenWranglerRequest, SessionMode, SessionOpenedResponse } from "../shared/protocol";
+import { isLookupFile, isOpenWranglerRequest } from "../shared/protocolValidation";
 import { isRecoveryViewContextId } from "../shared/sessionRecovery";
 import { decodeGridViewState, isBoundedViewId, type GridViewState } from "../shared/viewState";
 import { isWebviewFailurePhase, type WebviewFailurePhase } from "../shared/webviewFailure";
@@ -46,6 +46,7 @@ export type WebviewRequest =
   | { kind: "changeBackend" }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
+  | { kind: "lookupFile"; requestId: string; file?: LookupFile }
   | { kind: "keepCopiedPlan" }
   | { kind: "discardCopiedPlan" }
   | { kind: "switchSessionMode"; mode: SessionMode; state: GridViewState }
@@ -186,6 +187,17 @@ export function decodeWebviewMessage(
   }
   if (message.kind === "exportData") {
     return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
+  }
+  if (message.kind === "lookupFile") {
+    return hasExactKeys(message, ["kind", "requestId"], ["file"]) &&
+      isBoundedViewId(message.requestId) &&
+      (message.file === undefined || isLookupFile(message.file))
+      ? {
+          kind: "lookupFile",
+          requestId: message.requestId,
+          ...(message.file === undefined ? {} : { file: { path: message.file.path, format: message.file.format } })
+        }
+      : undefined;
   }
   if (message.kind === "keepCopiedPlan" || message.kind === "discardCopiedPlan") {
     return hasExactKeys(message, ["kind"]) ? { kind: message.kind } : undefined;

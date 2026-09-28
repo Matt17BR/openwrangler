@@ -5119,8 +5119,10 @@ def test_duckdb_one_hot_preserves_binary_values_with_caller_from_hex_macro(gener
             engine.close()
 
 
-def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     install_conversion_guards(monkeypatch)
+    lookup = tmp_path / "groups.csv"
+    lookup.write_text("group,label\na,Alpha\nb,Beta\n", encoding="utf-8")
     engine = DuckDBEngine()
     source = source_relation()
     row_plan = [
@@ -5369,6 +5371,14 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         ),
     ]
     custom_plan = [step("customCode", code='result = df.filter("other > 2")')]
+    lookup_plan = [
+        bound_step(
+            "lookupColumns",
+            file={"path": str(lookup), "format": "csv"},
+            keys=[{"column": bound_ref("c:source:0", "group", 0), "lookupColumn": "group"}],
+            columns=[{"lookupColumn": "label", "newColumn": "group_label"}],
+        )
+    ]
 
     extraction_plan = [
         step("customCode", code="result = df.project(\"*, {'value': other} AS record\")"),
@@ -5388,6 +5398,7 @@ def test_duckdb_all_operations_and_generated_code_stay_native(monkeypatch: pytes
         group_plan,
         example_plan,
         custom_plan,
+        lookup_plan,
     ]
     covered = {operation["kind"] for plan in plans for operation in plan}
     assert covered == {item["kind"] for item in operation_catalog() if item["kind"] != "explodeList"}
@@ -7219,8 +7230,12 @@ def notebook_relation_source(monkeypatch: pytest.MonkeyPatch, relation: Any, con
     }
 
 
-def test_duckdb_notebook_session_operations_match_generated_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_duckdb_notebook_session_operations_match_generated_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     install_conversion_guards(monkeypatch)
+    lookup = tmp_path / "groups.csv"
+    lookup.write_text("group,label\na,Alpha\nb,Beta\n", encoding="utf-8")
     group, text, tags, value, other, day = (
         {"id": f"c:source:{index}", "name": name}
         for index, name in enumerate(["group", "text", "tags", "value", "other", "date"])
@@ -7338,6 +7353,14 @@ def test_duckdb_notebook_session_operations_match_generated_code(monkeypatch: py
                 sourceColumns=[group, other],
                 newColumn="label",
                 examples=[{"inputs": ["a", 2], "output": "a-2"}, {"inputs": ["b", 4], "output": "b-4"}],
+            )
+        ],
+        [
+            step(
+                "lookupColumns",
+                file={"path": str(lookup), "format": "csv"},
+                keys=[{"column": group, "lookupColumn": "group"}],
+                columns=[{"lookupColumn": "label", "newColumn": "group_label"}],
             )
         ],
     ]

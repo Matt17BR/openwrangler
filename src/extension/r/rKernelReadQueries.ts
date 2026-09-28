@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   ColumnSchema,
   DatasetStatsRequest,
+  DescribeLookupFileRequest,
   FindRequest,
   OpenWranglerResponse,
   PageRequest,
@@ -44,7 +45,7 @@ import { assertCustomDerivedRowIdentities } from "./rKernelMutationSchema";
 
 export type RKernelReadTransport = Pick<
   RKernelBridgeTransport,
-  "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues" | "findCells"
+  "getPage" | "getSummary" | "getDatasetStats" | "getColumnValues" | "findCells" | "describeLookupFile"
 >;
 
 export class RKernelReadQueries {
@@ -270,6 +271,35 @@ export class RKernelReadQueries {
       if (error instanceof RKernelDiagnosticError) {
         return diagnosticResponse(error, request.sessionId, request.viewRequestId);
       }
+      throw error;
+    }
+  }
+
+  async describeLookupFile(
+    request: DescribeLookupFileRequest,
+    options: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId);
+    if (session.invalidated) return kernelChangedError(request.sessionId);
+    const stale = staleRevisionError(session, request.revision);
+    if (stale) return stale;
+    try {
+      const described = await this.transport.describeLookupFile(
+        request.sessionId,
+        request.file,
+        transportOptions(options)
+      );
+      if (session.invalidated) return kernelChangedError(request.sessionId);
+      return {
+        kind: "lookupFileDescribed",
+        revision: session.revision,
+        columns: described.columns.map((column) => ({ ...column })),
+        rowCount: described.rowCount
+      };
+    } catch (error) {
+      if (session.invalidated) return kernelChangedError(request.sessionId);
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
       throw error;
     }
   }

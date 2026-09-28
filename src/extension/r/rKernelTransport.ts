@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
-import type { ColumnSummary, ExportOptions, RLibrary, ValueCount } from "../../shared/protocol";
+import type { ColumnSummary, ExportOptions, LookupFile, RLibrary, ValueCount } from "../../shared/protocol";
 import { DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS } from "../configuration";
 import { DetachedBridgeRequestError, type DetachedBridgeRequestReason } from "../dataBridge";
 import {
@@ -22,6 +22,7 @@ import {
   type RKernelDatasetStatsResult,
   type RKernelFindQuery,
   type RKernelFindResult,
+  type RKernelLookupFileDescription,
   type RKernelDataExportResult,
   type RKernelErrorResponse,
   type RKernelExportFormat,
@@ -361,6 +362,21 @@ export class RKernelSessionTransport {
     });
   }
 
+  async describeLookupFile(
+    sessionId: string,
+    file: LookupFile,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelLookupFileDescription> {
+    const request = this.request("describeLookupFile", { sessionId, file });
+    encodeRKernelRequest(request);
+    const response = await this.executeMappedRequest(sessionId, request, options);
+    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    if (response.kind !== "lookupFileDescribed" || response.sessionId !== sessionId) {
+      throw new Error("The R kernel returned a mismatched lookup-file description.");
+    }
+    return Object.freeze({ columns: response.columns, rowCount: response.rowCount });
+  }
+
   async exportData(
     sessionId: string,
     revision: number,
@@ -652,6 +668,7 @@ export class RKernelSessionTransport {
           | "getDatasetStats"
           | "getColumnValues"
           | "findCells"
+          | "describeLookupFile"
           | "previewStep"
           | "applyDraft"
           | "discardDraft"

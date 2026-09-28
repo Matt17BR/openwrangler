@@ -183,6 +183,12 @@ export class SessionResponseCommitter {
       }
       return { ...response, revision: session.publicRevision };
     }
+    if (response.kind === "lookupFileDescribed") {
+      if (response.revision < requestRuntimeRevision) {
+        return protocolError("stale_response", "Ignored a stale lookup-file description.", true, session.publicId);
+      }
+      return { ...response, revision: session.publicRevision };
+    }
     if (response.kind === "dataExported") {
       if (response.revision < requestRuntimeRevision) {
         return protocolError(

@@ -269,6 +269,13 @@ OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
         optional=(),
     ),
     OperationDefinition(
+        kind="lookupColumns",
+        title="Look up columns",
+        group="Reshape",
+        required=("file", "keys", "columns"),
+        optional=(),
+    ),
+    OperationDefinition(
         kind="groupBy",
         title="Group and aggregate",
         group="Aggregation",

@@ -4760,6 +4760,85 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted.find(isSessionOpenedResponse)?.metadata).toEqual({ ...initial.metadata, canRedo: false });
   });
 
+  it("answers every lookup-file request with one correlated state", async () => {
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => ({
+      kind: "lookupFileDescribed",
+      revision: 0,
+      columns: [{ name: "code", rawType: "String", type: "string" }],
+      rowCount: 2
+    }));
+    const harness = createPanelHarness({ request });
+    await harness.open();
+    request.mockClear();
+    const showOpenDialog = vi.fn(async (): Promise<vscode.Uri[] | undefined> => undefined);
+    const mockWindow = window as unknown as { showOpenDialog?: typeof showOpenDialog };
+    const trustDescriptor = Object.getOwnPropertyDescriptor(workspace, "isTrusted");
+    mockWindow.showOpenDialog = showOpenDialog;
+    const states = async (message: Record<string, unknown>) => {
+      harness.posted.length = 0;
+      await harness.receive({ kind: "lookupFile", ...message });
+      return harness.posted.filter((posted) => (posted as { kind?: string }).kind === "lookupFileState");
+    };
+    try {
+      Object.defineProperty(workspace, "isTrusted", { configurable: true, value: false });
+      expect(await states({ requestId: "untrusted" })).toEqual([
+        {
+          kind: "lookupFileState",
+          requestId: "untrusted",
+          status: "failed",
+          message: "Trust this workspace before looking up columns from another file."
+        }
+      ]);
+      expect(showOpenDialog).not.toHaveBeenCalled();
+      Object.defineProperty(workspace, "isTrusted", { configurable: true, value: true });
+
+      expect(await states({ requestId: "cancelled" })).toEqual([
+        { kind: "lookupFileState", requestId: "cancelled", status: "cancelled" }
+      ]);
+      showOpenDialog.mockResolvedValueOnce([Uri.file("/data/regions.xlsx")]);
+      expect(await states({ requestId: "excel" })).toEqual([
+        {
+          kind: "lookupFileState",
+          requestId: "excel",
+          status: "failed",
+          message: "Choose a saved CSV, TSV, Parquet or JSON Lines file."
+        }
+      ]);
+      expect(request).not.toHaveBeenCalled();
+
+      showOpenDialog.mockResolvedValueOnce([Uri.file("/data/regions.csv")]);
+      const file = { path: Uri.file("/data/regions.csv").fsPath, format: "csv" };
+      expect(await states({ requestId: "picked" })).toEqual([
+        {
+          kind: "lookupFileState",
+          requestId: "picked",
+          status: "described",
+          file,
+          columns: [{ name: "code", rawType: "String", type: "string" }],
+          rowCount: 2
+        }
+      ]);
+      expect(request).toHaveBeenCalledOnce();
+      expect((request.mock.lastCall as unknown[] | undefined)?.[0]).toEqual({
+        kind: "describeLookupFile",
+        sessionId: metadata.sessionId,
+        revision: 0,
+        file
+      });
+
+      showOpenDialog.mockClear();
+      request.mockRejectedValueOnce(new Error("The runtime stopped."));
+      expect(await states({ requestId: "saved", file: { path: "/data/regions.parquet", format: "parquet" } })).toEqual([
+        { kind: "lookupFileState", requestId: "saved", status: "failed", message: "The runtime stopped." }
+      ]);
+      expect(showOpenDialog).not.toHaveBeenCalled();
+    } finally {
+      delete mockWindow.showOpenDialog;
+      if (trustDescriptor) Object.defineProperty(workspace, "isTrusted", trustDescriptor);
+      else delete (workspace as unknown as { isTrusted?: unknown }).isTrusted;
+    }
+  });
+
   it("refuses untrusted Redo before bridge work and retains its correlated availability", async () => {
     const initial: SessionOpenedResponse = { ...openedResponse, metadata: { ...metadata, canRedo: true } };
     const request = vi.fn(async (): Promise<OpenWranglerResponse> => {

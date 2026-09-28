@@ -28,6 +28,7 @@ from ..custom_code_scope import (
     execute_custom_code,
 )
 from ..export_target import ExportWriterPath
+from ..lookup import check_lookup_columns, lookup_duplicate_message
 from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -58,6 +59,8 @@ from ._pandas_duration_helpers import _open_wrangler_duration_keys as _pandas_du
 from ._pandas_duration_helpers import _open_wrangler_duration_operand as _pandas_duration_operand
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
+from ._pandas_lookup_helpers import _open_wrangler_lookup_columns as _pandas_lookup_columns
+from ._pandas_lookup_helpers import _open_wrangler_read_lookup as _pandas_read_lookup
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
 from ._pandas_object_type_helpers import _open_wrangler_object_semantic_type as _pandas_object_semantic_type
 from ._pandas_pivot_helpers import _open_wrangler_pivot_wider_names_valid as _pandas_pivot_wider_names_valid
@@ -1265,6 +1268,25 @@ class PandasEngine(DataFrameEngine):
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         return _pandas_contiguous_text(self._read_file_frame(path, options))
 
+    def _lookup_frame(self, path: str, file_format: str) -> Any:
+        try:
+            return self._lookup_file_cache().get(
+                path, (path, file_format), lambda: _pandas_read_lookup(path, file_format)
+            )
+        except ValueError as error:
+            raise EngineError(str(error)) from error
+
+    def describe_lookup_file(self, path: str, file_format: str) -> tuple[list[dict[str, Any]], int]:
+        frame = self._lookup_frame(path, file_format)
+        return [
+            {
+                "name": str(name),
+                "rawType": str(frame.dtypes.iloc[position]),
+                "type": _pandas_semantic_type(frame.iloc[:, position]),
+            }
+            for position, name in enumerate(frame.columns)
+        ], len(frame)
+
     def _read_file_frame(self, path: str, options: Mapping[str, Any] | None) -> Any:
         import pandas as pd
 
@@ -2271,6 +2293,16 @@ class PandasEngine(DataFrameEngine):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             extracted = source.str.extract(f"({params['pattern']})", expand=True)
             return pd.concat([df, extracted.iloc[:, params["group"]].rename(params["newColumn"])], axis=1)
+        if kind == "lookupColumns":
+            lookup = self._lookup_frame(params["file"]["path"], params["file"]["format"])
+            keys = [
+                (self._bound_frame_position(df, key["column"], kind), key["lookupColumn"]) for key in params["keys"]
+            ]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            try:
+                return _pandas_lookup_columns(df, lookup, keys, outputs, _pandas_semantic_type)
+            except ValueError as error:
+                raise EngineError(str(error)) from error
         if kind == "replaceMatches":
             for reference in params["columns"]:
                 position = self._bound_frame_position(df, reference, kind)
@@ -2533,11 +2565,12 @@ class PandasEngine(DataFrameEngine):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]], *, function_name: str = "clean_data") -> str:
         plan = list(steps)
         needs_missing_helpers = any(
-            step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn", "replaceMatches"} for step in plan
+            step["kind"] in {"filterRows", "fillMissingValues", "conditionalColumn", "replaceMatches", "lookupColumns"}
+            for step in plan
         )
         needs_view_value_helpers = any(step["kind"] in {"filterRows", "conditionalColumn"} for step in plan)
         needs_semantic_type_helpers = any(
-            step["kind"] in {"conditionalColumn", "replaceMatches"}
+            step["kind"] in {"conditionalColumn", "replaceMatches", "lookupColumns"}
             or (step["kind"] == "filterRows" and bool(step["params"]["filterModel"].get("filters")))
             for step in plan
         )
@@ -2717,6 +2750,7 @@ class PandasEngine(DataFrameEngine):
                 "formula",
                 "formatDatetime",
                 "replaceMatches",
+                "lookupColumns",
             }
             for step in plan
         )
@@ -2789,6 +2823,16 @@ class PandasEngine(DataFrameEngine):
             lines.extend([getsource(_pandas_min_max_helpers), ""])
         if any(step["kind"] == "replaceMatches" for step in plan):
             lines.extend([getsource(_open_wrangler_replace_pattern), getsource(_pandas_replace_matches_helpers), ""])
+        if any(step["kind"] == "lookupColumns" for step in plan):
+            lines.extend(
+                [
+                    getsource(check_lookup_columns),
+                    getsource(lookup_duplicate_message),
+                    getsource(_pandas_read_lookup),
+                    getsource(_pandas_lookup_columns),
+                    "",
+                ]
+            )
         if any(
             step["kind"] == "groupBy"
             and any(aggregation["operation"] == "sum" for aggregation in step["params"]["aggregations"])
@@ -3658,6 +3702,15 @@ class PandasEngine(DataFrameEngine):
                     f".rename({output!r})], axis=1)"
                 ),
                 f"{prefix}del {source}",
+            ]
+        if kind == "lookupColumns":
+            keys = [(bound_column_position(key["column"], kind), key["lookupColumn"]) for key in params["keys"]]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            file = params["file"]
+            return [
+                f"{prefix}df = _open_wrangler_lookup_columns(",
+                f"{prefix}    df, _open_wrangler_read_lookup({file['path']!r}, {file['format']!r}),",
+                f"{prefix}    {keys!r}, {outputs!r}, _pandas_semantic_type)",
             ]
         if kind == "replaceMatches":
             lines = []

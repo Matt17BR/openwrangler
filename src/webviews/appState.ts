@@ -9,7 +9,14 @@ import type {
 } from "../shared/protocol";
 import { isViewFilterRemovalTarget, type FilterModel, type ViewFilterRemovalTarget } from "../shared/filterModel";
 import { operationKinds } from "../shared/operationCatalog.generated";
-import { isColumnSchemaArray, isDataDiff, isOpenWranglerResponse } from "../shared/protocolValidation";
+import { MAX_LOOKUP_FAILURE_MESSAGE_CHARACTERS, type LookupFileState } from "../shared/lookupColumns";
+import {
+  isColumnSchemaArray,
+  isDataDiff,
+  isLookupFile,
+  isLookupFileColumns,
+  isOpenWranglerResponse
+} from "../shared/protocolValidation";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { decodeGridViewState, isBoundedViewId } from "../shared/viewState";
 import {
@@ -214,6 +221,12 @@ export function decodeAppHostMessage(value: unknown) {
     }
     case "runtimeDependencyInstallState":
       return typeof value.busy === "boolean" ? { kind: value.kind, busy: value.busy } : undefined;
+    case "lookupFileState": {
+      const state = decodeLookupFileState(value);
+      return isBoundedViewId(value.requestId) && state
+        ? { kind: value.kind, requestId: value.requestId, state }
+        : undefined;
+    }
     case "sessionModeChangeState":
       return typeof value.busy === "boolean" && (value.mode === "viewing" || value.mode === "editing")
         ? { kind: value.kind, busy: value.busy, mode: value.mode as "viewing" | "editing" }
@@ -631,4 +644,22 @@ export function pageCoversColumnWindow(metadata: SessionMetadata, page: LiveGrid
     first + expectedIds.length <= page.columnIds.length &&
     expectedIds.every((columnId, index) => page.columnIds[first + index] === columnId)
   );
+}
+
+function decodeLookupFileState(value: Record<string, unknown>): LookupFileState | undefined {
+  if (value.status === "cancelled") return { status: "cancelled" };
+  if (value.status === "failed") {
+    return typeof value.message === "string" &&
+      value.message.length > 0 &&
+      Array.from(value.message).length <= MAX_LOOKUP_FAILURE_MESSAGE_CHARACTERS
+      ? { status: "failed", message: value.message }
+      : undefined;
+  }
+  return value.status === "described" &&
+    isLookupFile(value.file) &&
+    isLookupFileColumns(value.columns) &&
+    Number.isSafeInteger(value.rowCount) &&
+    Number(value.rowCount) >= 0
+    ? { status: "described", file: value.file, columns: value.columns, rowCount: Number(value.rowCount) }
+    : undefined;
 }

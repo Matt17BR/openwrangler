@@ -9,6 +9,7 @@ import type {
   FormatDatetimeTransformStep,
   FormulaTransformStep,
   GroupByTransformStep,
+  LookupColumnsTransformStep,
   MinMaxScaleTransformStep,
   PivotLongerTransformStep,
   PivotWiderTransformStep,
@@ -16,6 +17,7 @@ import type {
 } from "../../shared/protocol";
 import { isRetainedTransformStep } from "../../shared/protocolValidation";
 import { isFormulaLiteral } from "../../shared/formulaLiteral";
+import { LOOKUP_OUTPUT_TYPES } from "../../shared/lookupColumns";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
 import {
   MAX_PIVOT_WIDER_COLUMNS,
@@ -461,6 +463,9 @@ export function schemaAfterRStep(
   if (step.kind === "byExample") {
     throw new TypeError("Transform by Example requires a runtime-derived output schema.");
   }
+  if (step.kind === "lookupColumns") {
+    throw new TypeError("Look up columns requires a runtime-derived output schema.");
+  }
   if (step.kind === "customCode") {
     throw new TypeError("Custom R code requires a runtime-derived output schema.");
   }
@@ -668,6 +673,45 @@ export function dynamicByExampleSchema(
     const sourceRColumn = source === undefined ? undefined : inputRSchema[source.position];
     if (!source || !sourceRColumn || !isDeepStrictEqual(outputRColumn.semantics, sourceRColumn.semantics)) {
       throw new Error("The R kernel changed the native semantics of a direct by-example column result.");
+    }
+  }
+  return actual;
+}
+
+/** The runtime reads the lookup file, so only it knows each looked-up column's type. */
+export function dynamicLookupSchema(
+  inputSchema: readonly ColumnSchema[],
+  inputRSchema: readonly RColumnSchema[],
+  step: LookupColumnsTransformStep,
+  contract: RFramePageContract
+): readonly ColumnSchema[] {
+  const outputs = step.params.columns;
+  const actual = schemaFromContract(contract);
+  if (
+    actual.length !== inputSchema.length + outputs.length ||
+    contract.schema.length !== inputRSchema.length + outputs.length
+  ) {
+    throw new Error("The R kernel returned a lookup schema without exactly one column per looked-up column.");
+  }
+  for (const [index, expected] of inputSchema.entries()) {
+    if (
+      !isDeepStrictEqual(actual[index], expected) ||
+      !isDeepStrictEqual(contract.schema[index]?.semantics, inputRSchema[index]?.semantics)
+    ) {
+      throw new Error("The R kernel changed an input column while looking up columns.");
+    }
+  }
+  for (const [ordinal, output] of outputs.entries()) {
+    const column = actual[inputSchema.length + ordinal];
+    if (
+      !column ||
+      column.id !== `c:step:${step.id}:${ordinal}` ||
+      column.name !== output.newColumn ||
+      column.position !== inputSchema.length + ordinal ||
+      !LOOKUP_OUTPUT_TYPES.has(column.type) ||
+      column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)
+    ) {
+      throw new Error("The R kernel returned looked-up column metadata that does not match the step.");
     }
   }
   return actual;

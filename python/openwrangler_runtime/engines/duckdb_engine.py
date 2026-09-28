@@ -35,6 +35,7 @@ from ..duckdb_tables import (
 from ..export_target import ExportWriterPath
 from ..generated_helpers import select_generated_helpers
 from ..live_page_payload import LIVE_PAGE_TEXT_CHARACTER_LIMIT
+from ..lookup import check_lookup_columns, lookup_duplicate_message
 from ..operations import formula_scalar_value
 from ..pivot_longer import (
     PivotLongerContractError,
@@ -411,6 +412,7 @@ class DuckDBEngine(DataFrameEngine):
         self._database_connection: Any | None = None
         self._database_reservation: _DuckDBDatabaseReservation | None = None
         self._checkpoints: WeakSet[_DuckDBCheckpoint] = WeakSet()
+        self._lookup_copies: TemporaryDirectory[str] | None = None
 
     def detect(self, value: Any) -> bool:
         if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
@@ -568,6 +570,7 @@ class DuckDBEngine(DataFrameEngine):
                 self._notebook_relation_owners.clear()
                 checkpoints = list(self._checkpoints)
                 self._checkpoints.clear()
+                lookup_copies, self._lookup_copies = self._lookup_copies, None
             try:
                 if self._database_connection is not None:
                     self._database_connection.close()
@@ -580,6 +583,60 @@ class DuckDBEngine(DataFrameEngine):
             owner.close()
         for checkpoint in checkpoints:
             checkpoint.close()
+        if lookup_copies is not None:
+            lookup_copies.cleanup()
+
+    def _lookup_source(self, path: str, file_format: str, names: tuple[str, ...]) -> str:
+        """Copy a lookup file's needed columns once, so every later read of the step sees the same rows."""
+        reader = _duckdb_lookup_reader(path, file_format)
+        return self._lookup_file_cache().get(
+            path, (path, file_format, names), lambda: self._copy_lookup(path, reader, names)
+        )
+
+    def _copy_lookup(self, path: str, reader: str, names: tuple[str, ...]) -> str:
+        with self._lifecycle_lock:
+            if self._closed:
+                raise EngineError("The DuckDB engine is closed.")
+            if self._lookup_copies is None:
+                self._lookup_copies = TemporaryDirectory(prefix="openwrangler-lookup-")
+            stem = Path(self._lookup_copies.name) / uuid4().hex
+        try:
+            with self._tracked_connection() as connection:
+                described = connection.sql(f"SELECT * FROM {reader} AS ow_lookup LIMIT 0")
+                original = dict(zip(described.columns, map(str, described.types), strict=True))
+                selected = [name for name in names if name in original]
+                if not selected:
+                    return reader
+                projection = ", ".join(_quote_ident(name) for name in selected)
+                target = _sql_literal(f"{stem}.parquet")
+                connection.execute(
+                    f"COPY (SELECT {projection} FROM {reader} AS ow_lookup) TO {target} (FORMAT parquet)"
+                )
+                source = f"system.main.read_parquet({_sql_literal(_literal_file_path(f'{stem}.parquet'))})"
+                copied = connection.sql(f"SELECT * FROM {source} AS ow_lookup LIMIT 0")
+                if [str(item) for item in copied.types] != [original[name] for name in selected]:
+                    raise EngineError(f"DuckDB couldn't copy the lookup file {path!r} without changing its types.")
+                return source
+        except EngineError:
+            raise
+        except Exception as error:
+            raise EngineError(f"Couldn't read the lookup file {path!r}: {error}") from error
+
+    def describe_lookup_file(self, path: str, file_format: str) -> tuple[list[dict[str, Any]], int]:
+        reader = _duckdb_lookup_reader(path, file_format)
+        try:
+            with self._tracked_connection() as connection:
+                described = connection.sql(f"SELECT * FROM {reader} AS ow_lookup")
+                columns = [
+                    {"name": str(name), "rawType": str(kind), "type": _semantic_type(str(kind))}
+                    for name, kind in zip(described.columns, described.types, strict=True)
+                ]
+                count = connection.sql(f"SELECT system.main.count(*) FROM {reader} AS ow_lookup").fetchone()
+        except EngineError:
+            raise
+        except Exception as error:
+            raise EngineError(f"Couldn't read the lookup file {path!r}: {error}") from error
+        return columns, int(count[0]) if count else 0
 
     def _open_database(self, path: str, *, allow_spill: bool = True) -> None:
         import duckdb
@@ -1670,6 +1727,29 @@ class DuckDBEngine(DataFrameEngine):
                 raise EngineError(PORTABLE_REGEX_TEXT_LIMIT_MESSAGE)
             expression = _regex_extract_expression(column, params["pattern"], params["group"])
             return self._assign(frame, params["newColumn"], expression)
+        if kind == "lookupColumns":
+            keys = [(bound_column_name(key["column"], kind), key["lookupColumn"]) for key in params["keys"]]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            names = tuple(dict.fromkeys([name for _, name in keys] + [name for name, _ in outputs]))
+            lookup_sql = self._lookup_source(params["file"]["path"], params["file"]["format"], names)
+            frame = self.normalize(frame)
+            ordered = getattr(frame, "row_id_order", False)
+            try:
+                result = _duckdb_lookup_columns(
+                    frame,
+                    self._columns(frame),
+                    [str(item) for item in frame.types],
+                    params["file"]["path"],
+                    lookup_sql,
+                    keys,
+                    outputs,
+                    self._relation,
+                    self._terminal_rows,
+                    self._row_id_column(frame) if ordered else None,
+                )
+            except ValueError as error:
+                raise EngineError(str(error)) from error
+            return replace(result, row_id_order=True) if ordered and isinstance(result, DuckDBSqlPlan) else result
         if kind == "replaceMatches":
             for reference in params["columns"]:
                 try:
@@ -2183,6 +2263,13 @@ class DuckDBEngine(DataFrameEngine):
                 f"{prefix}if bool(_ow_query(df, {query!r}).fetchone()[0]):",
                 f"{prefix}    raise ValueError({PORTABLE_REGEX_TEXT_LIMIT_MESSAGE!r})",
                 f"{prefix}df = _ow_assign(df, {params['newColumn']!r}, {expression!r})",
+            ]
+        if kind == "lookupColumns":
+            keys = [(bound_column_name(key["column"], kind), key["lookupColumn"]) for key in params["keys"]]
+            outputs = [(column["lookupColumn"], column["newColumn"]) for column in params["columns"]]
+            reader = _duckdb_lookup_reader(params["file"]["path"], params["file"]["format"])
+            return [
+                f"{prefix}df = _ow_lookup_columns(df, {params['file']['path']!r}, {reader!r}, {keys!r}, {outputs!r})"
             ]
         if kind == "replaceMatches":
             return [
@@ -3983,6 +4070,109 @@ def _duckdb_replace_matches_sql(value, raw_type, column, pattern, replacement, w
     return changed, typed, problems
 
 
+def _duckdb_lookup_reader(path: str, file_format: str) -> str:
+    """The table expression reading a lookup file with the options DuckDB file sessions use."""
+    literal = _sql_literal(_literal_file_path(path))
+    if file_format in {"csv", "tsv"}:
+        delimiter = _sql_literal("\t" if file_format == "tsv" else ",")
+        return (
+            f"system.main.read_csv({literal}, delim = {delimiter}, header = true, encoding = 'utf-8', "
+            "quote = '\"', comment = '', skip = 0)"
+        )
+    if file_format == "parquet":
+        return f"system.main.read_parquet({literal})"
+    return f"system.main.read_json({literal}, format = 'newline_delimited')"
+
+
+def _duckdb_lookup_columns(frame, columns, types, path, lookup_sql, keys, outputs, relation, rows, order=None):
+    """Append looked-up columns to ``frame``, keeping every row and its order.
+
+    ``lookup_sql`` is a table expression reading the lookup data, ``keys`` lists (column, lookup column) pairs and
+    ``outputs`` (lookup column, new column) pairs. ``relation`` composes SQL over ``ow`` into a new relation and
+    ``rows`` fetches a query's rows. ``order`` names a column that already ascends in row order; without it the rows
+    are numbered first, which is slower. A key with a missing part never matches, and a complete key may appear in
+    at most one lookup row.
+    """
+
+    def ident(name):
+        return '"' + name.replace('"', '""') + '"'
+
+    try:
+        described = relation(frame, "SELECT * FROM " + lookup_sql + " AS ow_lookup LIMIT 0")
+    except Exception as error:
+        raise ValueError(f"Couldn't read the lookup file {path!r}: {error}") from error
+    lookup_columns = [(str(name), str(kind)) for name, kind in zip(described.columns, described.types, strict=True)]
+    needed = {name for _, name in keys} | {name for name, _ in outputs}
+    check_lookup_columns(
+        [(name, _semantic_type(kind)) for name, kind in lookup_columns if name in needed],
+        [(column, _semantic_type(types[columns.index(column)]), name) for column, name in keys],
+        outputs,
+        columns,
+    )
+    lookup_types = dict(lookup_columns)
+    numbered = order is None
+    if numbered:
+        folded = {name.casefold() for name in columns}
+        order = "__ow_lookup_order"
+        while order.casefold() in folded:
+            order += "_"
+    matches, conditions, present = [], [], []
+    for index, (column, name) in enumerate(keys):
+        left_type, right_type = types[columns.index(column)], lookup_types[name]
+        left, right = "ow_lookup_left." + ident(column), ident(name)
+        if _semantic_type(left_type) == "string":
+            left, right = "CAST(" + left + " AS VARCHAR)", "CAST(" + right + " AS VARCHAR)"
+        elif left_type != right_type and _semantic_type(left_type) == "integer":
+            pair = (left_type.upper(), right_type.upper())
+            target = "UHUGEINT" if "UHUGEINT" in pair and all(item.startswith("U") for item in pair) else "HUGEINT"
+            left, right = "CAST(" + left + " AS " + target + ")", "CAST(" + right + " AS " + target + ")"
+        match = ident("__ow_lookup_match_" + str(index))
+        matches.append(right + " AS " + match)
+        present.append(right + " IS NOT NULL")
+        conditions.append(left + " = ow_lookup_right." + match)
+    values = [
+        ident(name) + " AS " + ident("__ow_lookup_value_" + str(index)) for index, (name, _) in enumerate(outputs)
+    ]
+    lookup_rows = (
+        "SELECT " + ", ".join(matches + values) + " FROM " + lookup_sql + " AS ow_lookup WHERE " + " AND ".join(present)
+    )
+    match_names = ", ".join(ident("__ow_lookup_match_" + str(index)) for index in range(len(keys)))
+    repeated = rows(
+        frame,
+        "SELECT " + match_names + " FROM (SELECT *, system.main.count(*) OVER (PARTITION BY " + match_names + ") "
+        "AS ow_lookup_count FROM (SELECT *, system.main.row_number() OVER () AS ow_lookup_row FROM ("
+        + lookup_rows
+        + ") AS ow_lookup_rows) AS ow_lookup_numbered) AS ow_lookup_counted WHERE ow_lookup_count > 1 "
+        "ORDER BY ow_lookup_row LIMIT 1",
+    )
+    if repeated:
+        raise ValueError(lookup_duplicate_message([name for _, name in keys], list(repeated[0])))
+    added = ", ".join(
+        "ow_lookup_right." + ident("__ow_lookup_value_" + str(index)) + " AS " + ident(new_column)
+        for index, (_, new_column) in enumerate(outputs)
+    )
+    if numbered:
+        left = "ow_lookup_left.* EXCLUDE (" + ident(order) + ")"
+        source = "(SELECT *, system.main.row_number() OVER () AS " + ident(order) + " FROM ow)"
+    else:
+        left, source = "ow_lookup_left.*", "ow"
+    return relation(
+        frame,
+        "SELECT "
+        + left
+        + ", "
+        + added
+        + " FROM "
+        + source
+        + " AS ow_lookup_left LEFT JOIN ("
+        + lookup_rows
+        + ") AS ow_lookup_right ON "
+        + " AND ".join(conditions)
+        + " ORDER BY ow_lookup_left."
+        + ident(order),
+    )
+
+
 def _duckdb_replace_matches(
     frame, columns, types, column, find, match_case, replacement, whole_cell, row, relation, rows
 ):
@@ -5163,6 +5353,9 @@ def _generated_helper_source() -> str:
             getsource(_open_wrangler_replace_pattern),
             getsource(_duckdb_replace_matches_sql),
             getsource(_duckdb_replace_matches),
+            getsource(check_lookup_columns),
+            getsource(lookup_duplicate_message),
+            getsource(_duckdb_lookup_columns),
             *generated_view_value_helper_lines(),
         ]
     ).rstrip()
@@ -6423,6 +6616,13 @@ def _ow_replace_matches(df, column, find, match_case, replacement, whole_cell, r
     return _duckdb_replace_matches(
         df, _ow_columns(df), [str(item) for item in df.types], column, find, match_case, replacement, whole_cell,
         row, _ow_query, lambda frame, query: _ow_query(frame, query).fetchall(),
+    )
+
+
+def _ow_lookup_columns(df, path, lookup_sql, keys, outputs):
+    return _duckdb_lookup_columns(
+        df, _ow_columns(df), [str(item) for item in df.types], path, lookup_sql, keys, outputs, _ow_query,
+        lambda frame, query: _ow_query(frame, query).fetchall(),
     )
 
 

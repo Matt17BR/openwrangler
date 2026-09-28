@@ -21,6 +21,8 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+from ..lookup import LookupFileCache
+
 ColumnType = Literal[
     "string",
     "integer",
@@ -1042,6 +1044,16 @@ class DataFrameEngine(ABC):
     @abstractmethod
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         raise NotImplementedError
+
+    def _lookup_file_cache(self) -> LookupFileCache:
+        cache = vars(self).get("_lookup_files")
+        if cache is None:
+            cache = vars(self).setdefault("_lookup_files", LookupFileCache())
+        return cache
+
+    def describe_lookup_file(self, path: str, file_format: str) -> tuple[list[dict[str, Any]], int]:
+        """Return a Look up columns file's (name, rawType, type) columns and row count as this engine reads it."""
+        raise EngineError("Look up columns is unavailable for this dataframe engine.")
 
     @abstractmethod
     def shape(self, frame: Any) -> SessionDataShape:

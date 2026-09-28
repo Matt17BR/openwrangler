@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { LookupFileState } from "../shared/lookupColumns";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 import { operationCatalog } from "../shared/operations";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
+import { publishLookupFileState } from "../webviews/operations/lookupFileChannel";
+import { vscode } from "../webviews/vscodeApi";
 
 const metadata: SessionMetadata = {
   protocolVersion: 4,
@@ -2830,5 +2833,116 @@ describe("OperationBuilder", () => {
       }),
       undefined
     );
+  });
+
+  it("requests a lookup file, suggests keys and non-colliding names, and previews the chosen columns", () => {
+    const post = vi.spyOn(vscode, "postMessage").mockImplementation(() => undefined);
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialKind="lookupColumns"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+    const choose = screen.getByRole("button", { name: "Choose file" });
+    fireEvent.click(choose);
+    expect(choose).toBeDisabled();
+    expect(screen.getByText("Choose a file in the dialog.")).toBeInTheDocument();
+    const request = post.mock.lastCall?.[0] as { kind: string; requestId: string };
+    expect(request).toEqual({ kind: "lookupFile", requestId: expect.any(String) });
+
+    act(() => publishLookupFileState(request.requestId, { status: "failed", message: "The file is unreadable." }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The file is unreadable.");
+    fireEvent.click(screen.getByRole("button", { name: "Choose file" }));
+    const retry = post.mock.lastCall?.[0] as { requestId: string };
+    const file = { path: "/data/cities.csv", format: "csv" } as const;
+    act(() =>
+      publishLookupFileState(retry.requestId, {
+        status: "described",
+        file,
+        columns: [
+          { name: "City", rawType: "String", type: "string" },
+          { name: "sales", rawType: "Int64", type: "integer" },
+          { name: "region", rawType: "String", type: "string" }
+        ],
+        rowCount: 3
+      })
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("3 rows in /data/cities.csv")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Key 1" })).toHaveValue("c:0");
+    expect(screen.getByRole("combobox", { name: "Lookup key 1" })).toHaveValue("City");
+    expect(screen.getByRole("combobox", { name: "Lookup column 1" })).toHaveValue("sales");
+    expect(screen.getByRole("textbox", { name: "New column 1" })).toHaveValue("sales_lookup");
+    expect(screen.getByRole("textbox", { name: "New column 2" })).toHaveValue("region");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Lookup column 2" }), { target: { value: "City" } });
+    expect(screen.getByRole("textbox", { name: "New column 2" })).toHaveValue("City_lookup");
+    fireEvent.change(screen.getByRole("textbox", { name: "New column 1" }), { target: { value: "lookup sales" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Lookup column 1" }), { target: { value: "region" } });
+    expect(screen.getByRole("textbox", { name: "New column 1" })).toHaveValue("lookup sales");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "lookupColumns",
+        params: {
+          file,
+          keys: [{ column: { id: "c:0", name: "city" }, lookupColumn: "City" }],
+          columns: [
+            { lookupColumn: "region", newColumn: "lookup sales" },
+            { lookupColumn: "City", newColumn: "City_lookup" }
+          ]
+        }
+      }),
+      undefined
+    );
+  });
+
+  it("rereads a saved lookup step's file and restores its rows only from the matching reply", () => {
+    const post = vi.spyOn(vscode, "postMessage").mockImplementation(() => undefined);
+    const file = { path: "/data/cities.parquet", format: "parquet" } as const;
+    const initialStep: TransformStep = {
+      id: "lookup-city",
+      kind: "lookupColumns",
+      params: {
+        file,
+        keys: [{ column: { id: "c:0", name: "city" }, lookupColumn: "code" }],
+        columns: [{ lookupColumn: "region", newColumn: "area" }]
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={metadata.filterModel}
+        initialStep={initialStep}
+        editInputSchema={metadata.schema}
+        onClose={() => undefined}
+        onPreview={vi.fn()}
+      />
+    );
+    const request = post.mock.lastCall?.[0] as { requestId: string };
+    expect(request).toEqual({ kind: "lookupFile", requestId: expect.any(String), file });
+    expect(screen.getByText("Reading the lookup file's columns…")).toBeInTheDocument();
+    const described: LookupFileState = {
+      status: "described",
+      file,
+      columns: [
+        { name: "code", rawType: "large_string", type: "string" },
+        { name: "region", rawType: "large_string", type: "string" }
+      ],
+      rowCount: 1
+    };
+    act(() => publishLookupFileState("another-request", described));
+    expect(screen.queryByRole("combobox", { name: "Key 1" })).not.toBeInTheDocument();
+
+    act(() => publishLookupFileState(request.requestId, described));
+    expect(screen.getByText("1 row in /data/cities.parquet")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Lookup key 1" })).toHaveValue("code");
+    expect(screen.getByRole("combobox", { name: "Lookup column 1" })).toHaveValue("region");
+    expect(screen.getByRole("textbox", { name: "New column 1" })).toHaveValue("area");
   });
 });

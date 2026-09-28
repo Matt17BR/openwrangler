@@ -196,8 +196,7 @@ local({
   )
   rejected <- c(rejected, list(charToRaw('"unclosed,header\n1,x\n'), charToRaw('a,b\n1,"unclosed'), charToRaw('a,b\n1,"unclosed\n2,x\n')))
   rejected <- c(rejected, list(
-    charToRaw("a,b\n1,\"x\"junk\n"), charToRaw("a,b\n1,a\"b\n"),
-    charToRaw(paste0(paste(rep("column", maximum_columns + 1L), collapse = ","), "\n"))
+    charToRaw("a,b\n1,\"x\"junk\n"), charToRaw("a,b\n1,a\"b\n")
   ))
   for (invalid in list(as.raw(255L), as.raw(c(192L, 175L)), as.raw(c(237L, 160L, 128L)))) {
     rejected <- c(rejected, list(c(charToRaw("a,"), invalid, charToRaw("\n1,x\n")), c(charToRaw("a,b\n1,"), invalid, charToRaw("\n"))))
@@ -212,6 +211,19 @@ local({
     if (!inherits(error, "error")) stop(sprintf("CSV refused case %d unexpectedly accepted", index), call. = FALSE)
     assert_identical(conditionMessage(error), "CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character.", "CSV refusal exposed source text")
     assert_identical(readBin(path, "raw", length(bytes) + 1L), bytes, "Refused CSV changed source bytes")
+  }
+  wide_limit <- format(maximum_columns, big.mark = ",")
+  wide_header <- function(name, count) paste0(paste(rep(name, count), collapse = ","), "\n")
+  for (wide in list(
+    list(text = wide_header("column", maximum_columns + 1L), count = format(maximum_columns + 1L, big.mark = ",")),
+    list(text = wide_header(strrep("n", 40L), maximum_columns * 3L), count = paste("more than", wide_limit))
+  )) {
+    path <- file.path(root, "wide.csv")
+    writeLines(wide$text, path, sep = "")
+    error <- tryCatch({ load_csv(path, maximum_columns = maximum_columns); NULL }, error = identity)
+    assert_identical(conditionMessage(error),
+      sprintf("The file has %s columns, more than the %s that Open Wrangler reads in R.", wide$count, wide_limit),
+      "a CSV wider than the column limit was not refused by width")
   }
   for (encoding in c("utf-16le", "utf-16be")) {
     valid <- iconv("id,label\n1,ok\n", from = "UTF-8", to = encoding, toRaw = TRUE)[[1L]]

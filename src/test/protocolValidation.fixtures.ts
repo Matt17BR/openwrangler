@@ -136,6 +136,12 @@ const responses: OpenWranglerResponse[] = [
     match: { row: 0, columnId: "column:0", ordinal: 1 }
   },
   {
+    kind: "lookupFileDescribed",
+    revision: 3,
+    columns: [{ name: "code", rawType: "String", type: "string" }],
+    rowCount: 2
+  },
+  {
     kind: "stepPreview",
     revision: 3,
     metadata: {
@@ -262,6 +268,12 @@ const requests: OpenWranglerRequest[] = [
     columnIds: ["column:0"],
     from: { row: 0, columnId: "column:0" },
     includeFrom: true
+  },
+  {
+    kind: "describeLookupFile",
+    sessionId: "session-1",
+    revision: 3,
+    file: { path: "/data/regions.csv", format: "csv" }
   },
   {
     kind: "previewStep",

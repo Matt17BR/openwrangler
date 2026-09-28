@@ -10,6 +10,7 @@ from .by_example import SynthesisError, normalize_by_example
 from .custom_code_scope import CustomCodeScopeError, validate_custom_code_scope
 from .engines.base import EngineError, coerce_typed_view_value, is_internal_row_id_label
 from .limits import MAX_FIND_QUERY_CHARACTERS, MAX_VIEW_VALUE_TEXT_CHARACTERS
+from .lookup import LookupContractError, validate_lookup_params
 from .operation_catalog_generated import OPERATION_DEFINITIONS
 from .pivot_longer import (
     MAX_PIVOT_LONGER_COLUMNS,
@@ -191,7 +192,7 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
     for key in ("columns", "keys"):
         if key in _COLUMN_REFERENCE_LIST_FIELDS.get(kind, ()):
             continue
-        if key == "columns" and kind in {"dropMissingRows", "dropDuplicates"}:
+        if (key == "columns" and kind in {"dropMissingRows", "dropDuplicates"}) or kind == "lookupColumns":
             continue
         if key in params and not _is_string_list(params[key], allow_empty=kind == "dropMissingRows"):
             raise OperationError(f"{kind}.{key} must be an array of column names.")
@@ -339,6 +340,16 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             raise OperationError(str(error)) from error
         if portable_pivot_longer_name_key(label_column) == portable_pivot_longer_name_key(value_column):
             raise OperationError("pivotLonger label and value output names must differ case-insensitively.")
+    elif kind == "lookupColumns":
+        try:
+            normalized = validate_lookup_params(params)
+        except LookupContractError as error:
+            raise OperationError(str(error)) from error
+        for index, key in enumerate(normalized["keys"]):
+            key["column"] = _normalize_column_reference(key["column"], f"lookupColumns.keys[{index}].column")
+        if len({key["column"]["id"] for key in normalized["keys"]}) != len(normalized["keys"]):
+            raise OperationError("lookupColumns.keys must reference distinct columns.")
+        params.update(normalized)
     elif kind == "pivotWider":
         if params["namesFrom"]["id"] == params["valuesFrom"]["id"]:
             raise OperationError("pivotWider namesFrom and valuesFrom must reference distinct columns.")
@@ -848,6 +859,15 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
             )
     elif kind == "byExample":
         references.extend(("sourceColumns.name", reference.get("name")) for reference in params["sourceColumns"])
+    elif kind == "lookupColumns":
+        for key in params["keys"]:
+            references.extend(
+                (("keys.column.name", key["column"].get("name")), ("keys.lookupColumn", key["lookupColumn"]))
+            )
+        for column in params["columns"]:
+            references.extend(
+                (("columns.lookupColumn", column["lookupColumn"]), ("columns.newColumn", column["newColumn"]))
+            )
 
     for output_field in ("newName", "newColumn"):
         if output_field in params:

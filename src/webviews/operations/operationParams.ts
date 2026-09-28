@@ -20,6 +20,7 @@ import { hasAtMostViewValueTextCodePoints } from "../../shared/viewValueLimits";
 import { buildFillMissingParams } from "./fillMissingModel";
 import { portableRegexContract, validatePortableRegexOutputName } from "../../shared/portableRegex";
 import { portablePivotLongerNameKey, validatePivotLongerOutputName } from "../../shared/pivotLonger";
+import { LOOKUP_FILE_FORMATS, MAX_LOOKUP_KEYS, MAX_LOOKUP_OUTPUTS } from "../../shared/lookupColumns";
 import {
   MAX_PIVOT_WIDER_COLUMNS,
   pivotWiderKeyValue,
@@ -283,6 +284,59 @@ export function buildParams(
         throw new TypeError("Pivot-longer output names must be distinct from each other and the input schema.");
       }
       return { columns, labelColumn, valueColumn };
+    }
+    case "lookupColumns": {
+      const path = value("lookupFilePath");
+      const format = LOOKUP_FILE_FORMATS.find((candidate) => candidate === value("lookupFileFormat"));
+      if (!path || !format) throw new TypeError("Choose a lookup file first.");
+      const keyColumns = columnReferences("lookupKeyColumn");
+      const keyLookupColumns = form.getAll("lookupKeyLookupColumn").map(String);
+      if (
+        keyColumns.length < 1 ||
+        keyColumns.length > MAX_LOOKUP_KEYS ||
+        keyLookupColumns.length !== keyColumns.length ||
+        keyLookupColumns.includes("")
+      ) {
+        throw new TypeError(`Match 1 to ${MAX_LOOKUP_KEYS} key columns, each with a lookup column of the same type.`);
+      }
+      if (new Set(keyColumns.map((column) => column.id)).size !== keyColumns.length) {
+        throw new TypeError("Match each key column only once.");
+      }
+      if (new Set(keyLookupColumns).size !== keyLookupColumns.length) {
+        throw new TypeError("Match each lookup key column only once.");
+      }
+      const lookupColumns = form.getAll("lookupOutputColumn").map(String);
+      const newColumns = form.getAll("lookupOutputName").map(String);
+      if (
+        lookupColumns.length < 1 ||
+        lookupColumns.length > MAX_LOOKUP_OUTPUTS ||
+        newColumns.length !== lookupColumns.length ||
+        lookupColumns.includes("")
+      ) {
+        throw new TypeError(`Add 1 to ${MAX_LOOKUP_OUTPUTS} lookup columns.`);
+      }
+      if (new Set(lookupColumns).size !== lookupColumns.length) {
+        throw new TypeError("Add each lookup column only once.");
+      }
+      const existing = new Map(
+        availableColumns.map((column) => [portablePivotLongerNameKey(column.name), column.name])
+      );
+      const added = new Set<string>();
+      for (const [index, name] of newColumns.entries()) {
+        validatePivotLongerOutputName(name, `New column ${index + 1}`);
+        const nameKey = portablePivotLongerNameKey(name);
+        const taken = existing.get(nameKey);
+        if (taken !== undefined) {
+          throw new TypeError(`The data already has a column named ${taken}. Rename new column ${index + 1}.`);
+        }
+        if (added.has(nameKey)) throw new TypeError("Give each new column a different name.");
+        added.add(nameKey);
+      }
+      return {
+        file: { path, format },
+        keys: keyColumns.map((column, index) => ({ column, lookupColumn: keyLookupColumns[index]! })),
+        columns: lookupColumns.map((lookupColumn, index) => ({ lookupColumn, newColumn: newColumns[index]! }))
+      };
     }
     case "pivotWider": {
       const namesFrom = columnReference("namesFrom");

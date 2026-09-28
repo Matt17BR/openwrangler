@@ -3295,6 +3295,52 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = retained))
     }
+    if (identical(kind, "lookupColumns")) {
+      params <- exact_record(step$params, c("file", "keys", "columns"), "request.payload.step.params")
+      label <- "request.payload.step.params"
+      entries <- function(value, field, maximum, noun) {
+        if (!is.list(value) || is.object(value) || !is.null(names(value)) || length(value) == 0L || length(value) > maximum) {
+          abort("invalid_request", sprintf("lookupColumns.%s must contain between 1 and %d %s.", field, maximum, noun))
+        }
+        value
+      }
+      keys <- entries(params$keys, "keys", 8L, "key pairs")
+      keys <- lapply(seq_along(keys), function(index) {
+        key <- exact_record(keys[[index]], c("column", "lookupColumn"), sprintf("%s.keys[%d]", label, index - 1L))
+        list(
+          column = decode_column_reference(key$column, sprintf("%s.keys[%d].column", label, index - 1L), limits$columnIdBytes),
+          lookupColumn = validate_pivot_longer_output_name(key$lookupColumn, sprintf("lookupColumns.keys[%d].lookupColumn", index - 1L))
+        )
+      })
+      columns <- entries(params$columns, "columns", 64L, "columns")
+      columns <- lapply(seq_along(columns), function(index) {
+        column <- exact_record(columns[[index]], c("lookupColumn", "newColumn"), sprintf("%s.columns[%d]", label, index - 1L))
+        list(
+          lookupColumn = validate_pivot_longer_output_name(column$lookupColumn, sprintf("lookupColumns.columns[%d].lookupColumn", index - 1L)),
+          newColumn = validate_pivot_longer_output_name(column$newColumn, sprintf("lookupColumns.columns[%d].newColumn", index - 1L))
+        )
+      })
+      if (anyDuplicated(vapply(keys, function(key) key$column$id, character(1L), USE.NAMES = FALSE))) {
+        abort("invalid_request", "lookupColumns key columns must be distinct.")
+      }
+      if (anyDuplicated(vapply(keys, `[[`, character(1L), "lookupColumn", USE.NAMES = FALSE))) {
+        abort("invalid_request", "lookupColumns keys lookupColumn names must be unique.")
+      }
+      if (anyDuplicated(vapply(columns, `[[`, character(1L), "lookupColumn", USE.NAMES = FALSE))) {
+        abort("invalid_request", "lookupColumns columns lookupColumn names must be unique.")
+      }
+      if (anyDuplicated(vapply(columns, function(column) portable_pivot_longer_name_key(column$newColumn), character(1L), USE.NAMES = FALSE))) {
+        abort("invalid_request", "lookupColumns columns newColumn names must be unique, ignoring case.")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(file = decode_lookup_file(params$file, "lookupColumns.file"), keys = keys, columns = columns),
+        outputIds = vapply(seq_along(columns), function(index) {
+          bounded_text(paste0("c:step:", step_id, ":", index - 1L), "the looked-up column identity", limits$columnIdBytes)
+        }, character(1L))
+      ))
+    }
     if (identical(kind, "markDuplicates")) {
       params <- exact_record(step$params, c("columns", "newColumn"), "request.payload.step.params")
       if (!is.list(params$columns) || is.object(params$columns) || !is.null(names(params$columns)) ||
@@ -4305,6 +4351,46 @@ openwrangler_r_kernel_agent <- local({
     if (type %in% c("string", "integer", "date")) return(TRUE)
     if (identical(type, "float")) return(all(utf8ToInt(find) %in% utf8ToInt("0123456789.+-eE")))
     identical(type, "boolean") && isTRUE(whole_cell) && !isTRUE(match_case)
+  }
+
+  bind_lookup_columns_step <- function(frame_contract, capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    schema_names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    quote <- frame_contract$replace_matches_helpers$replace_matches_quote
+    keys <- lapply(step$params$keys, function(key) {
+      matches <- which(schema_ids == key$column$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, key$column$name)) {
+        abort("stale_column", "A lookup key column reference no longer matches the active R dataframe", TRUE)
+      }
+      type <- schema[[matches[[1L]]]]$type
+      if (!type %in% c("string", "integer", "boolean", "date")) {
+        abort("invalid_request", sprintf(
+          "Look up columns can match text, integer, Boolean or date keys, not %s column %s.", type, quote(key$column$name)
+        ), TRUE)
+      }
+      list(position = as.integer(matches[[1L]]), name = key$column$name, lookupColumn = key$lookupColumn)
+    })
+    new_names <- vapply(step$params$columns, `[[`, character(1L), "newColumn", USE.NAMES = FALSE)
+    for (index in seq_along(new_names)) {
+      label <- sprintf("lookupColumns.columns[%d].newColumn", index - 1L)
+      if (startsWith(tolower(new_names[[index]]), "__open_wrangler_internal_row_id_")) {
+        abort("invalid_request", sprintf("%s uses Open Wrangler's reserved private row-identity prefix.", label), TRUE)
+      }
+      if (new_names[[index]] %in% schema_names) {
+        abort("invalid_request", sprintf("%s collides with an existing column: %s", label, new_names[[index]]), TRUE)
+      }
+    }
+    if (any(step$outputIds %in% schema_ids)) abort("invalid_request", "A looked-up column identity already exists", TRUE)
+    list(
+      id = step$id,
+      kind = step$kind,
+      file = step$params$file,
+      keys = keys,
+      lookupOutputs = vapply(step$params$columns, `[[`, character(1L), "lookupColumn", USE.NAMES = FALSE),
+      newNames = new_names,
+      outputIds = step$outputIds
+    )
   }
 
   bind_replace_matches_step <- function(frame_contract, capture, step) {
@@ -5939,6 +6025,31 @@ openwrangler_r_kernel_agent <- local({
           source_positions = seq_along(capture$descriptor$schema),
           fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill || interpolation_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "lookupColumns")) {
+      bound <- bind_lookup_columns_step(frame_contract, capture, step)
+      result <- frame_contract$lookup_columns_at(
+        source,
+        vapply(bound$keys, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+        vapply(bound$keys, `[[`, character(1L), "name", USE.NAMES = FALSE),
+        read_lookup_file(bound$file, frame_contract),
+        vapply(bound$keys, `[[`, character(1L), "lookupColumn", USE.NAMES = FALSE),
+        bound$lookupOutputs,
+        bound$newNames,
+        library = library
+      )
+      schema_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      width <- length(schema_ids)
+      return(list(
+        capture = capture_result(
+          result,
+          nullability_source = capture,
+          source_positions = c(seq_len(width), rep.int(bound$keys[[1L]]$position, length(bound$newNames))),
+          output_ids = c(schema_ids, bound$outputIds),
+          lookup_positions = width + seq_along(bound$newNames)
         ),
         bound = bound
       ))
@@ -8115,6 +8226,7 @@ openwrangler_r_kernel_agent <- local({
       path <- normalized
     }
     fail <- function() base::stop("CSV input has invalid text, quoting or field counts, or exceeds native R limits. Check the selected encoding, delimiter and quote character.", call. = FALSE)
+    too_wide <- function(count) base::stop(base::errorCondition(base::sprintf("The file has %s columns, more than the %s that Open Wrangler reads in R.", count, base::format(maximum_columns, big.mark = ",")), class = "openwrangler_csv_too_wide"))
     input <- base::file(path, "rb")
     base::on.exit(base::close(input), add = TRUE, after = FALSE)
     hex <- function(value) base::sprintf("\\x%02x", base::as.integer(base::charToRaw(value)))
@@ -8198,7 +8310,8 @@ openwrangler_r_kernel_agent <- local({
             retained_counts <- counts[!skip]
             if (base::length(retained_counts)) {
               if (base::is.null(width)) width <- retained_counts[[1L]]
-              if (width > maximum_columns || base::any(retained_counts != width)) fail()
+              if (width > maximum_columns) too_wide(base::format(width, big.mark = ","))
+              if (base::any(retained_counts != width)) fail()
               if (base::is.null(names)) {
                 names <- if (header) complete[base::seq_len(width)] else base::paste0("V", base::seq_len(width))
                 if (!base::all(base::validUTF8(names))) fail()
@@ -8221,7 +8334,8 @@ openwrangler_r_kernel_agent <- local({
           } else {
             pending <- base::c(pending, values)
           }
-          if (base::length(pending) >= maximum_columns || (!base::is.null(width) && base::length(pending) >= width)) fail()
+          if (base::is.null(width) && base::length(pending) >= maximum_columns) too_wide(base::paste("more than", base::format(maximum_columns, big.mark = ",")))
+          if (!base::is.null(width) && base::length(pending) >= width) fail()
           trailing_delimiter <- utils::tail(separators, 1L) == delimiter
         }
         if (final) break
@@ -8233,7 +8347,7 @@ openwrangler_r_kernel_agent <- local({
         columns[[index]] <- utils::type.convert(values, as.is = TRUE, numerals = "no.loss", na.strings = base::character())
       }
       base::structure(columns, names = names, class = "data.frame", row.names = base::.set_row_names(base::length(columns[[1L]])))
-    }, warning = function(warning) fail()), error = function(error) fail())
+    }, warning = function(warning) fail()), error = function(error) if (base::inherits(error, "openwrangler_csv_too_wide")) base::stop(error) else fail())
   }
 
   load_parquet_source <- function(path, require_arrow = openwrangler_r_frame_contract$require_arrow,
@@ -8604,15 +8718,18 @@ openwrangler_r_kernel_agent <- local({
     base::structure(columns, names = base::names(cells), class = "data.frame", row.names = base::.set_row_names(base::nrow(cells)))
   }
 
+  is_absolute_local_path <- function(path) {
+    if (.Platform$OS.type == "windows") {
+      grepl("^[A-Za-z]:[/\\\\]", path, perl = TRUE) ||
+        (grepl("^[/\\\\]{2}[^/\\\\]+[/\\\\][^/\\\\]+(?:[/\\\\]|$)", path, perl = TRUE) &&
+          !grepl("^[/\\\\]{2}[?.][/\\\\]", path, perl = TRUE))
+    } else startsWith(path, "/")
+  }
+
   validate_file_source <- function(source) {
     source <- exact_record(source, c("path", "format"), "file source", c("header", "delimiter", "encoding", "quoteChar", "sheetName", "sheetIndex"))
     source$path <- bounded_text(source$path, "file source.path", 65536L)
-    absolute <- if (.Platform$OS.type == "windows") {
-      grepl("^[A-Za-z]:[/\\\\]", source$path, perl = TRUE) ||
-        (grepl("^[/\\\\]{2}[^/\\\\]+[/\\\\][^/\\\\]+(?:[/\\\\]|$)", source$path, perl = TRUE) &&
-          !grepl("^[/\\\\]{2}[?.][/\\\\]", source$path, perl = TRUE))
-    } else startsWith(source$path, "/")
-    if (!absolute || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
+    if (!is_absolute_local_path(source$path) || grepl("[\r\n]", source$path)) abort("invalid_source", "R files require an absolute local path")
     source$format <- bounded_text(source$format, "file source.format", 16L)
     if (identical(source$format, "csv")) {
       source <- exact_record(source, c("path", "format", "header", "delimiter", "encoding", "quoteChar"), "CSV file source")
@@ -8647,6 +8764,88 @@ openwrangler_r_kernel_agent <- local({
       parquet = load_parquet_source(source$path),
       jsonl = load_jsonl_source(source$path),
       excel = load_excel_source(source$path, if ("sheetName" %in% names(source)) source$sheetName else source$sheetIndex + 1)
+    )
+  }
+
+  decode_lookup_file <- function(value, label) {
+    file <- exact_record(value, c("path", "format"), label)
+    format <- bounded_text(file$format, paste0(label, ".format"), 16L)
+    extensions <- list(csv = ".csv", tsv = ".tsv", parquet = ".parquet", jsonl = c(".jsonl", ".ndjson"))
+    if (!format %in% names(extensions)) abort("invalid_request", sprintf("%s.format must be csv, tsv, parquet or jsonl.", label))
+    path <- bounded_text(file$path, paste0(label, ".path"), 16384L)
+    if (identical(path, "") || nchar(path, type = "chars") > 4096L) {
+      abort("invalid_request", sprintf("%s.path must be a non-empty path of at most 4,096 characters.", label))
+    }
+    if (!is_absolute_local_path(path)) abort("invalid_request", sprintf("%s.path must be absolute.", label))
+    if (!any(endsWith(tolower(path), extensions[[format]]))) {
+      abort("invalid_request", sprintf("%s.path must end in %s.", label, paste(extensions[[format]], collapse = " or ")))
+    }
+    list(path = path, format = format)
+  }
+
+  lookup_files <- new.env(parent = emptyenv())
+  lookup_files$entries <- list()
+
+  lookup_file_version <- function(path) {
+    info <- file.info(path, extra_cols = FALSE)
+    if (is.na(info$size) || isTRUE(info$isdir)) return(NULL)
+    c(info$size, as.double(info$mtime), as.double(info$ctime))
+  }
+
+  # Sessions reuse the two most recent lookup files while each keeps its size and timestamps.
+  read_lookup_file <- function(file, frame_contract) {
+    key <- paste0(file$format, ":", file$path)
+    before <- lookup_file_version(file$path)
+    entry <- lookup_files$entries[[key]]
+    if (!is.null(entry) && !is.null(before) && identical(entry$version, before)) return(entry$value)
+    value <- frame_contract$lookup_columns_helpers$lookup_columns_read(file$path, function() switch(file$format,
+      csv = load_csv_source(file$path, TRUE, ",", "utf-8", "\"", frame_contract$limits$columns),
+      tsv = load_csv_source(file$path, TRUE, "\t", "utf-8", "\"", frame_contract$limits$columns),
+      parquet = load_parquet_source(file$path),
+      jsonl = load_jsonl_source(file$path)
+    ))
+    if (!is.null(before) && identical(lookup_file_version(file$path), before)) {
+      entries <- lookup_files$entries[names(lookup_files$entries) != key]
+      entries[[key]] <- list(version = before, value = value)
+      lookup_files$entries <- utils::tail(entries, 2L)
+    }
+    value
+  }
+
+  lookup_code_helper_lines <- function(frame_contract, formats) {
+    helpers <- frame_contract$lookup_columns_helpers
+    lines <- "  .ow_lookup_helpers <- base::evalq({"
+    for (name in names(helpers)) {
+      lines <- c(lines, sprintf("    `%s` <-", name), paste0("    ", deparse(helpers[[name]], width.cutoff = 500L)))
+    }
+    lines <- c(lines,
+      "    base::list(read = lookup_columns_read, values = lookup_columns_values, append = lookup_columns_append)",
+      "  }, base::list2env(.ow_library_helpers, parent = base::baseenv()))",
+      paste0("  require_package <- ", paste(deparse(frame_contract$require_package, width.cutoff = 100L), collapse = "\n"))
+    )
+    if (any(formats %in% c("csv", "tsv"))) {
+      lines <- c(lines, paste0("  .ow_lookup_read_csv <- ", paste(deparse(load_csv_source, width.cutoff = 100L), collapse = "\n")))
+    }
+    if ("parquet" %in% formats) {
+      lines <- c(lines,
+        paste0("  .ow_require_arrow <- ", paste(deparse(frame_contract$require_arrow, width.cutoff = 100L), collapse = "\n")),
+        paste0("  .ow_require_nanoparquet <- ", paste(deparse(frame_contract$require_nanoparquet, width.cutoff = 100L), collapse = "\n")),
+        paste0("  .ow_lookup_read_parquet <- ", paste(deparse(load_parquet_source, width.cutoff = 100L), collapse = "\n"))
+      )
+    }
+    if ("jsonl" %in% formats) {
+      lines <- c(lines, paste0("  .ow_lookup_read_jsonl <- ", paste(deparse(load_jsonl_source, width.cutoff = 100L), collapse = "\n")))
+    }
+    lines
+  }
+
+  lookup_reader_call <- function(file, maximum_columns) {
+    path <- r_string(file$path)
+    switch(file$format,
+      csv = sprintf(".ow_lookup_read_csv(%s, header = TRUE, delimiter = \",\", encoding = \"utf-8\", quote_char = \"\\\"\", maximum_columns = %dL)", path, maximum_columns),
+      tsv = sprintf(".ow_lookup_read_csv(%s, header = TRUE, delimiter = \"\\t\", encoding = \"utf-8\", quote_char = \"\\\"\", maximum_columns = %dL)", path, maximum_columns),
+      parquet = sprintf(".ow_lookup_read_parquet(%s, require_arrow = .ow_require_arrow, require_clock = .ow_clock_helpers$clock_require, require_nanoparquet = .ow_require_nanoparquet, require_package = require_package)", path),
+      jsonl = sprintf(".ow_lookup_read_jsonl(%s, require_package = require_package)", path)
     )
   }
 
@@ -8709,8 +8908,9 @@ openwrangler_r_kernel_agent <- local({
     source_schema <- unclass(source_schema)
     attributes(source_schema) <- NULL
     clock_positions <- which(vapply(source_schema, function(column) identical(column$semantics$kind, "clock_datetime"), logical(1L)))
+    lookup_formats <- unique(unlist(lapply(bound_plan, function(step) if (identical(step$kind, "lookupColumns")) step$file$format), use.names = FALSE))
     needs_clock_helpers <- length(clock_positions) > 0L || (!is.null(file_source) && identical(file_source$format, "parquet")) ||
-      any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
+      "parquet" %in% lookup_formats || any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
     needs_nested_operations <- any(vapply(bound_plan, function(step) step$kind %in% c("extractStructFields", "explodeList"), logical(1L)))
     needs_nested_helpers <- needs_nested_operations || any(vapply(seq_along(source_schema), function(position) .subset2(source_schema, position)$semantics$kind %in% c("list", "struct"), logical(1L))) ||
       any(vapply(bound_plan, function(step) identical(step$kind, "customCode"), logical(1L)))
@@ -9050,6 +9250,7 @@ openwrangler_r_kernel_agent <- local({
       }
       lines <- c(lines, "    base::list(replace = replace_matches_values)", "  }, base::new.env(parent = base::baseenv()))")
     }
+    if (length(lookup_formats)) lines <- c(lines, lookup_code_helper_lines(frame_contract, lookup_formats))
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn") && !is.null(step$inputFormat), logical(1L)))) {
       lines <- c(lines, "  .ow_cast_fixed_date_text <-", paste0("  ", deparse(frame_contract$cast_fixed_date_text, width.cutoff = 500L)))
     }
@@ -10480,6 +10681,24 @@ openwrangler_r_kernel_agent <- local({
           if (!identical(library, "base")) "  if (!inherits(.ow_result, \"tbl_df\")) .ow_fill_result <- base::unname(.ow_fill_result)",
           if (!identical(library, "base")) "  .ow_result <- .ow_library_helpers$library_assign(.ow_result, .ow_fill_position, list(.ow_fill_result), names(.ow_result), .ow_library)" else "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
         )
+      } else if (identical(step$kind, "lookupColumns")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_lookup_positions <- c(%s)", paste(sprintf("%dL", vapply(step$keys, `[[`, integer(1L), "position", USE.NAMES = FALSE)), collapse = ", ")),
+          sprintf("  .ow_lookup_names <- %s", r_character_vector(vapply(step$keys, `[[`, character(1L), "name", USE.NAMES = FALSE))),
+          "  if (any(.ow_lookup_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_lookup_positions], .ow_lookup_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          sprintf("  if (ncol(.ow_result) + %dL > %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)", length(step$newNames), maximum_columns),
+          sprintf("  .ow_lookup <- .ow_lookup_helpers$read(%s, function() %s)", r_string(step$file$path), lookup_reader_call(step$file, maximum_columns)),
+          sprintf(
+            "  .ow_lookup_columns <- .ow_lookup_helpers$values(.ow_result, .ow_lookup_positions, .ow_lookup, %s, %s, %s)",
+            r_character_vector(vapply(step$keys, `[[`, character(1L), "lookupColumn", USE.NAMES = FALSE)),
+            r_character_vector(step$lookupOutputs),
+            r_character_vector(step$newNames)
+          ),
+          sprintf("  .ow_result <- .ow_lookup_helpers$append(.ow_result, .ow_lookup_columns, %s, .ow_library)", r_character_vector(step$newNames)),
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_character_vector(step$outputIds)),
+          "  base::rm(.ow_lookup, .ow_lookup_columns)"
+        )
       } else if (identical(step$kind, "replaceMatches")) {
         lines <- c(
           lines,
@@ -10639,7 +10858,7 @@ openwrangler_r_kernel_agent <- local({
       bound$outputNames
     } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$generatedNames
-    } else if (bound$kind %in% c("splitTextColumns", "extractStructFields")) {
+    } else if (bound$kind %in% c("splitTextColumns", "extractStructFields", "lookupColumns")) {
       bound$newNames
     } else if (
       bound$kind %in% c("cloneColumn", "conditionalColumn", "denseRank", "markDuplicates", "formula", "textLength", "byExample", "extractRegexGroup") ||
@@ -11199,6 +11418,7 @@ openwrangler_r_kernel_agent <- local({
       }
       cached <- if (is.null(session_id)) ls(find_caches, all.names = TRUE) else intersect(session_id, ls(find_caches, all.names = TRUE))
       rm(list = cached, envir = find_caches)
+      lookup_files$entries <- list()
       invisible(NULL)
     }
 
@@ -11517,6 +11737,35 @@ openwrangler_r_kernel_agent <- local({
           hasMore = result$hasMore
         )
         return(response)
+      }
+
+      if (identical(kind, "describeLookupFile")) {
+        payload <- exact_record(request$payload, c("sessionId", "file"), "request.payload")
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        lookup <- read_lookup_file(decode_lookup_file(payload$file, "request.payload.file"), frame_contract)
+        helpers <- frame_contract$lookup_columns_helpers
+        names <- names(lookup)
+        if (length(names) > frame_contract$limits$columns) {
+          abort("runtime_error", sprintf(
+            "The lookup file has %s columns; Look up columns reads files with at most %s.",
+            format(length(names), big.mark = ","), format(frame_contract$limits$columns, big.mark = ",")
+          ))
+        }
+        columns <- lapply(seq_along(names), function(index) {
+          column <- .subset2(lookup, index)
+          list(name = names[[index]], rawType = helpers$lookup_columns_raw_type(column), type = helpers$lookup_columns_type(column))
+        })
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "lookupFileDescribed",
+          sessionId = session_id,
+          columns = columns,
+          rowCount = as.double(nrow(lookup))
+        ))
       }
 
       if (identical(kind, "findCells")) {

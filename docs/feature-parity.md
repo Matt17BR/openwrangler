@@ -204,6 +204,16 @@ and may be null; empty text and false remain values. Pandas, Polars, DuckDB and 
 and input limits. See the [conditional result contract](architecture.md#engine-boundaries-and-capabilities) for missing
 inputs and output bounds.
 
+Look Up Columns adds columns from another CSV, TSV, Parquet or JSON Lines file by matching up to 8 key columns, like a
+spreadsheet lookup. For example, match `country_code` to a country file's `code` column and add its `region` and
+`population` columns. Every row keeps its place; rows without a match get missing values, and a missing key never
+matches. A key that appears more than once in the lookup file stops the step and names that key. Keys must be text,
+integer, Boolean or date columns of the same type on both sides. CSV and TSV lookup files need a header row, and the
+file may have at most 2,048 columns. Pandas, Polars, DuckDB and every R library support it with matching generated code,
+which reads the file from the same path. PySpark sessions are view-only. The runtime tests in
+`python/tests/test_lookup_columns.py`, the native R catalog contract and the R bridge journey in
+`src/test/rProcessTransport.cross.test.ts` cover these rules.
+
 Find and Replace uses the selected engine's native regex syntax. In regex replacements, `$1` inserts the first
 capture group in Polars; Pandas, DuckDB and R use `\1`. With regular expressions off, replacement text is literal.
 Extract regex group uses its separate portable pattern subset.

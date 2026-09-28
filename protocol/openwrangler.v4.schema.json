@@ -257,6 +257,13 @@
       "icon": "table"
     },
     {
+      "kind": "lookupColumns",
+      "title": "Look up columns",
+      "description": "Add columns from a CSV, TSV, Parquet or JSON Lines file by matching key columns, keeping every row and its order.",
+      "group": "Reshape",
+      "icon": "link"
+    },
+    {
       "kind": "groupBy",
       "title": "Group and aggregate",
       "description": "Group by keys and calculate named aggregations.",
@@ -1066,6 +1073,7 @@
         "formatDatetime",
         "pivotLonger",
         "pivotWider",
+        "lookupColumns",
         "groupBy",
         "byExample",
         "customCode"
@@ -1649,6 +1657,78 @@
         }
       }
     },
+    "LookupFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "format"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000]+(?![\\s\\S])",
+          "description": "The absolute path of the lookup file as the session's runtime sees it."
+        },
+        "format": {
+          "enum": ["csv", "tsv", "parquet", "jsonl"],
+          "description": "Read as UTF-8 with a header row for CSV and TSV, using each engine's usual reader for the format."
+        }
+      }
+    },
+    "LookupColumnName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "x-openwrangler-utf8MaxBytes": 1024,
+      "pattern": "^[^\\u0000\\r\\n]+(?![\\s\\S])",
+      "description": "An exact column name of at most 1024 UTF-8 bytes, without NUL, CR or LF."
+    },
+    "LookupKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "lookupColumn"],
+      "properties": {
+        "column": {
+          "$ref": "#/definitions/ColumnReference",
+          "description": "A text, integer, Boolean or date column of the current data."
+        },
+        "lookupColumn": {
+          "$ref": "#/definitions/LookupColumnName",
+          "description": "The lookup-file column of the same type whose values must equal this column's."
+        }
+      }
+    },
+    "LookupOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lookupColumn", "newColumn"],
+      "properties": {
+        "lookupColumn": { "$ref": "#/definitions/LookupColumnName" },
+        "newColumn": { "$ref": "#/definitions/LookupColumnName" }
+      }
+    },
+    "LookupColumnsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "keys", "columns"],
+      "properties": {
+        "file": { "$ref": "#/definitions/LookupFile" },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "description": "Every pair must match. A missing value in any key never matches, and each complete key may appear at most once in the lookup file.",
+          "items": { "$ref": "#/definitions/LookupKey" }
+        },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "description": "Ordered lookup columns appended under new names. Rows without a match get missing values.",
+          "items": { "$ref": "#/definitions/LookupOutput" }
+        }
+      }
+    },
     "PivotWiderParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1896,6 +1976,7 @@
         { "$ref": "#/definitions/FormatDatetimeTransformStep" },
         { "$ref": "#/definitions/PivotLongerTransformStep" },
         { "$ref": "#/definitions/PivotWiderTransformStep" },
+        { "$ref": "#/definitions/LookupColumnsTransformStep" },
         { "$ref": "#/definitions/GroupByTransformStep" },
         { "$ref": "#/definitions/ByExampleTransformStep" },
         { "$ref": "#/definitions/CustomCodeTransformStep" }
@@ -2287,6 +2368,18 @@
           "properties": {
             "kind": { "const": "pivotWider" },
             "params": { "$ref": "#/definitions/PivotWiderParams" }
+          }
+        }
+      ]
+    },
+    "LookupColumnsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "lookupColumns" },
+            "params": { "$ref": "#/definitions/LookupColumnsParams" }
           }
         }
       ]
@@ -2722,6 +2815,27 @@
         "columnId": { "type": "string", "minLength": 1 }
       }
     },
+    "DescribeLookupFileRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "file"],
+      "properties": {
+        "kind": { "const": "describeLookupFile" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "file": { "$ref": "#/definitions/LookupFile" }
+      }
+    },
+    "LookupFileColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "rawType", "type"],
+      "properties": {
+        "name": { "type": "string" },
+        "rawType": { "type": "string" },
+        "type": { "$ref": "#/definitions/ColumnType" }
+      }
+    },
     "FindRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -2967,6 +3081,7 @@
         { "$ref": "#/definitions/DatasetStatsRequest" },
         { "$ref": "#/definitions/ValuesRequest" },
         { "$ref": "#/definitions/FindRequest" },
+        { "$ref": "#/definitions/DescribeLookupFileRequest" },
         { "$ref": "#/definitions/PreviewStepRequest" },
         { "$ref": "#/definitions/InspectStepRequest" },
         { "$ref": "#/definitions/ApplyDraftRequest" },
@@ -3056,6 +3171,22 @@
         "columnId": { "type": "string", "minLength": 1 },
         "ordinal": { "type": "integer", "minimum": 1 },
         "position": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "LookupFileDescribedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "columns", "rowCount"],
+      "properties": {
+        "kind": { "const": "lookupFileDescribed" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "columns": {
+          "type": "array",
+          "maxItems": 2048,
+          "description": "The lookup file's columns and types as this session's engine reads them.",
+          "items": { "$ref": "#/definitions/LookupFileColumn" }
+        },
+        "rowCount": { "type": "integer", "minimum": 0 }
       }
     },
     "FindResponse": {
@@ -3191,6 +3322,7 @@
         { "$ref": "#/definitions/DatasetStatsResponse" },
         { "$ref": "#/definitions/ValuesResponse" },
         { "$ref": "#/definitions/FindResponse" },
+        { "$ref": "#/definitions/LookupFileDescribedResponse" },
         { "$ref": "#/definitions/StepPreviewResponse" },
         { "$ref": "#/definitions/StepInspectionResponse" },
         { "$ref": "#/definitions/PlanUpdatedResponse" },

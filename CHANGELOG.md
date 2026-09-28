@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Added
 
+- **Look up columns** adds columns from another CSV, TSV, Parquet or JSON Lines file by matching key columns, like a spreadsheet lookup. Choose the file, pair up to 8 key columns of the same type and pick up to 64 columns to add; Open Wrangler suggests matching keys and new names that don't collide with existing columns. Every row keeps its place, rows without a match get missing values, and a key that appears more than once in the lookup file stops the step and names that key. It works in Pandas, Polars, DuckDB and every R library, with matching generated code.
 - **Go to row** jumps to any row by number. Press `Ctrl+G`, choose **Go to row** beside the row count, or click the row count, then type a row such as `1,234,567`.
 - **Find** searches the current view, after filters and sorts, in every Python and R engine except PySpark. Press `Ctrl+F` (`Cmd+F` on macOS) or choose the search button beside the row count, then use `Enter`, `Shift+Enter`, `F3` or `Shift+F3` to move between matches. Find can match case or whole cells and search all columns or only the selected column. It shows the match count and scrolls to matches anywhere in the data.
 - **Replace** turns Find matches into a cleaning step, so the source stays unchanged. Press `Ctrl+H` (`Cmd+Option+F` on macOS) or open the Replace row in the find bar. **Replace** edits only the current match's cell and moves to the next match; **Replace all** edits every match in the search scope. Each column keeps its type, and a result that doesn't fit, such as text in a number column, stops the preview with a message. The step generates code for every Python and R engine except PySpark and can be undone like any other step. In Viewing mode, the Replace row offers **Switch to Editing**.
@@ -50,6 +51,8 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Fixed
 
+- Split Text into Columns previews work in R. Previously every R preview of this step failed with "The R kernel returned a mutation diff for the wrong columns or cells."
+- R says when a CSV or TSV file has more than 2,048 columns. Previously it reported such a file as having invalid text, quoting or field counts.
 - R · base Pivot wider keeps the names of named identifier values, as R · dplyr does. Previously it dropped them.
 - A data.table that has been filtered, which gives it an automatic index, now opens. Previously it failed with "the dataframe has unsupported attributes: index".
 - Histogram ranges and bin labels now show exact edges. The first and last edges match the column's Min and Max, and inner edges are no longer rounded to 5 significant digits, so a column starting at `-406,851` no longer reads as starting at `-406,850`. Bin labels use "to" instead of a hyphen, so negative ranges read clearly.

@@ -231,6 +231,8 @@ def _dispatch(
             ),
             request,
         )
+    if kind == "describeLookupFile":
+        return manager.describe_lookup_file(request["sessionId"], int(request["revision"]), request["file"])
     if kind == "previewStep":
         return manager.preview_step(
             request["sessionId"],

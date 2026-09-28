@@ -19,6 +19,7 @@ from .engines.base import (
 from .export_target import ExportTarget, ExportTargetError
 from .find_cells import FindMatches
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
+from .lookup import MAX_LOOKUP_DESCRIBED_COLUMNS, validate_lookup_file
 from .operation_catalog_generated import OPERATION_DEFINITIONS
 from .operations import OperationError, validate_step
 from .pivot_longer import PivotLongerContractError, checked_pivot_longer_row_count
@@ -790,6 +791,27 @@ class SessionManager:
                         session.display_frame, self._normalize_filter_model(filter_model), frame, cell[0]
                     )
             return response
+
+    def describe_lookup_file(self, session_id: str, revision: int, file: Mapping[str, Any]) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.access.shared():
+            self._assert_revision(session, revision)
+            supported = self._capabilities(session)["supportedOperations"]
+            if not isinstance(supported, list) or "lookupColumns" not in supported:
+                raise EngineError(f"Look up columns is unavailable for {session.backend} dataframes.")
+            lookup = validate_lookup_file(file, "file")
+            columns, row_count = session.engine.describe_lookup_file(lookup["path"], lookup["format"])
+            if len(columns) > MAX_LOOKUP_DESCRIBED_COLUMNS:
+                raise EngineError(
+                    f"The lookup file has {len(columns):,} columns; Look up columns reads files with at most "
+                    f"{MAX_LOOKUP_DESCRIBED_COLUMNS:,}."
+                )
+            return {
+                "kind": "lookupFileDescribed",
+                "revision": session.revision,
+                "columns": columns,
+                "rowCount": row_count,
+            }
 
     def get_dataset_stats(
         self,

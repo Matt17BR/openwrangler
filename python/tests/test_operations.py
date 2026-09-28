@@ -58,7 +58,7 @@ def bound_step(step_id: str, kind: str, **params):
 
 def test_operation_registry_is_complete_and_validation_is_strict():
     catalog = operation_catalog()
-    assert len(catalog) == 38
+    assert len(catalog) == 39
     assert {item["kind"] for item in catalog} >= {
         "sortRows",
         "fillMissingValues",
@@ -71,6 +71,7 @@ def test_operation_registry_is_complete_and_validation_is_strict():
         "explodeList",
         "byExample",
         "customCode",
+        "lookupColumns",
     }
     with pytest.raises(OperationError, match="Unsupported"):
         validate_step({"id": "bad", "kind": "unknown", "params": {}})

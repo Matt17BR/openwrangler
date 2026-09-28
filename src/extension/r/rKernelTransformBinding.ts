@@ -25,6 +25,7 @@ import type {
   FormulaTransformStep,
   FormatDatetimeTransformStep,
   GroupByTransformStep,
+  LookupColumnsTransformStep,
   LowerTextTransformStep,
   MinMaxScaleTransformStep,
   MultiLabelBinarizeTransformStep,
@@ -83,6 +84,7 @@ export type RTransformStepWithoutByExample =
   | SplitTextColumnsTransformStep
   | PivotLongerTransformStep
   | PivotWiderTransformStep
+  | LookupColumnsTransformStep
   | ExtractRegexGroupTransformStep
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
@@ -801,6 +803,25 @@ export function rTransformStep(
         namesFrom: Object.freeze({ ...step.params.namesFrom }),
         valuesFrom: Object.freeze({ ...step.params.valuesFrom }),
         outputs: Object.freeze(outputs)
+      })
+    });
+  }
+  if (step.kind === "lookupColumns") {
+    return Object.freeze({
+      id: step.id,
+      kind: "lookupColumns" as const,
+      params: Object.freeze({
+        file: Object.freeze({ path: step.params.file.path, format: step.params.file.format }),
+        keys: Object.freeze(
+          step.params.keys.map((key) =>
+            Object.freeze({ column: Object.freeze({ ...key.column }), lookupColumn: key.lookupColumn })
+          )
+        ),
+        columns: Object.freeze(
+          step.params.columns.map((column) =>
+            Object.freeze({ lookupColumn: column.lookupColumn, newColumn: column.newColumn })
+          )
+        )
       })
     });
   }

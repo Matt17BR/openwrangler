@@ -256,6 +256,17 @@ export function savedReferencePolicy(step: TransformStep): SavedReferencePolicy 
           rejectRepeatedIds: true
         }
       ];
+    case "lookupColumns":
+      return [
+        {
+          label: "lookup keys",
+          references: step.params.keys.map((key, index) => ({
+            label: `lookup key ${index + 1}`,
+            reference: key.column
+          })),
+          rejectRepeatedIds: true
+        }
+      ];
     case "groupBy":
       return [
         {
