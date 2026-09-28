@@ -4,6 +4,7 @@ import type { OpenWranglerRequest, OpenWranglerResponse, SessionOpenedResponse }
 import type { PythonBridge } from "./pythonBridge";
 import type { SessionCoordinator } from "./sessionCoordinator";
 import { trackSideBarViews } from "./sideBarReveal";
+import { CUSTOM_EDITOR_IDS } from "./files/customEditorIds";
 import type { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import type { NotebookCellResultTracker, NotebookCellResultTrackerDiagnostics } from "./notebooks/notebookCellResult";
 import type { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
@@ -22,7 +23,6 @@ import type {
   ViewSortDispatchStatus
 } from "./nativeViews";
 
-const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 const NOTEBOOK_PREVIEW_COMMAND = "openWrangler.chooseNotebookPreviewProvider";
 const DEFAULT_OWNER_SETTLEMENT_TIMEOUT_MS = 2_000;
 
@@ -235,7 +235,7 @@ export class LazyActivationOwners implements vscode.Disposable {
   private readonly ownerRegistrations: OnceDisposable[] = [];
   private readonly explicitlyOwnedDisposables = new Set<vscode.Disposable>();
   private readonly constructedOwners: string[] = [];
-  private customEditorRegistration: vscode.Disposable | undefined;
+  private customEditorRegistrations: vscode.Disposable[] = [];
   private nativeViewRegistrations: vscode.Disposable[] = [];
   private notebookPreview: NotebookPreviewCoordinator | undefined;
   private notebookPreviewModule: NotebookPreviewModule | undefined;
@@ -452,9 +452,15 @@ export class LazyActivationOwners implements vscode.Disposable {
         owner.createRBridge
       );
     });
-    this.customEditorRegistration = vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, {
-      supportsMultipleEditorsPerDocument: false,
-      webviewOptions: { retainContextWhenHidden: true }
+    this.customEditorRegistrations = this.registerDisposablesTransactional("custom editors", (retain) => {
+      for (const id of CUSTOM_EDITOR_IDS) {
+        retain(
+          vscode.window.registerCustomEditorProvider(id, provider, {
+            supportsMultipleEditorsPerDocument: false,
+            webviewOptions: { retainContextWhenHidden: true }
+          })
+        );
+      }
     });
   }
 
@@ -835,10 +841,7 @@ export class LazyActivationOwners implements vscode.Disposable {
       failures.push(...disposeDisposables(registrations));
     }
     this.commandRegistrations.clear();
-    if (this.customEditorRegistration) {
-      failures.push(...disposeDisposables([this.customEditorRegistration]));
-      this.customEditorRegistration = undefined;
-    }
+    failures.push(...disposeDisposables(this.customEditorRegistrations.splice(0)));
     failures.push(...disposeDisposables(this.nativeViewRegistrations.splice(0)));
   }
 

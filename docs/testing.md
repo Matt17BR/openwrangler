@@ -678,6 +678,15 @@ Windows CI also selects the two Windows-only cases in `python/tests/test_trusted
 source identity agreement and actual helper Job Object containment of a spawned pickle descendant. Qualification
 requires both cases to pass without skips.
 
+Both the daily-core and broader platform smokes finish with the [default-editor
+journey](../src/test/extensionHost/packagedDefaultEditors.ts). With no `workbench.editorAssociations` in any scope, it
+opens generated `.parquet`, `.xlsx` and `.xls` files through `vscode.open` and requires an `openWrangler.viewer` tab and
+a session for each. A `.csv` file must open in the text editor with no session, and so must the Parquet file after the
+journey sets `"*.parquet": "default"`. The file-input journey opens CSV, TSV and JSON Lines through
+`openWrangler.textDataViewer`, and the restricted journey requires a Parquet file to open in the text editor without
+activating the extension. [Manifest tests](../src/test/packageManifest.unit.test.ts) pin each pattern's editor and
+priority.
+
 The smoke catches production-bundle, VSIX-installation, public CSV action, side bar reveal, grid rendering, sort, and
 terminal cleanup failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
 

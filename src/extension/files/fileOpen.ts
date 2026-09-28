@@ -8,13 +8,14 @@ import {
   type OpenWranglerBridge
 } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
+import { escapeHtml } from "../escapeHtml";
 import { configuredRLibrary, getSetting } from "../configuration";
 import { formatQuickPickName } from "../quickPickName";
 import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
+import { CUSTOM_EDITOR_IDS } from "./customEditorIds";
 import { detectImportOptions } from "./importOptions";
 import { captureSessionSourceProtection, confirmSessionSourceProtection } from "./safeFileExport";
 
-const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 type FileDataBackend = Extract<DataBackend, "polars" | "duckdb" | "pandas" | "r">;
 export type RFileBridgeFactory = (
   source: SessionSource,
@@ -126,6 +127,12 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     token: vscode.CancellationToken
   ): Promise<void> {
     if (token.isCancellationRequested) return;
+    if (document.uri.scheme !== "untitled" && !supportedSchemes.has(document.uri.scheme)) {
+      // Diffs and Git views open the original side in the default editor too. Closing it would close the whole diff.
+      webviewPanel.webview.options = { enableScripts: false, localResourceRoots: [] };
+      webviewPanel.webview.html = unsupportedLocationHtml(document.uri);
+      return;
+    }
     const defaultLibrary = configuredRLibrary(document.uri);
     const valid = await validateFileTarget(document.uri, false, token);
     if (token.isCancellationRequested) return;
@@ -495,6 +502,15 @@ const configurableFileTypes = new Set<string>(allFileTypes);
 const supportedFileTypes = new Set<string>([...allFileTypes, "ndjson"]);
 const supportedSchemes = new Set(["file", "vscode-remote"]);
 
+const unsupportedLocationHtml = (uri: vscode.Uri): string =>
+  '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">' +
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline';\">" +
+  "<style>body{margin:0;padding:16px 20px;color:var(--vscode-foreground);font-family:var(--vscode-font-family);" +
+  "font-size:var(--vscode-font-size);line-height:1.5}</style></head><body><main><p>" +
+  "Open Wrangler opens local files and files in VS Code remote workspaces. " +
+  `This copy of ${escapeHtml(path.posix.basename(uri.path))} comes from another source, such as a version from Git, ` +
+  "so Open Wrangler can't show it.</p></main></body></html>";
+
 const getEnabledFileTypes = (): string[] => {
   const configured = getSetting<unknown>("enabledFileTypes", [...allFileTypes]);
   const enabledFileTypes: readonly string[] = Array.isArray(configured)
@@ -513,7 +529,7 @@ const resolveFileTarget = (resource: unknown): vscode.Uri | undefined => {
   const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   if (input instanceof vscode.TabInputText) return input.uri;
   if (input instanceof vscode.TabInputTextDiff) return input.modified;
-  if (input instanceof vscode.TabInputCustom && input.viewType !== CUSTOM_EDITOR_ID) return input.uri;
+  if (input instanceof vscode.TabInputCustom && !CUSTOM_EDITOR_IDS.includes(input.viewType)) return input.uri;
   return vscode.window.activeTextEditor?.document.uri;
 };
 

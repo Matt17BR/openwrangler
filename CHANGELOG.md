@@ -18,6 +18,14 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Parquet and Excel files (`.parquet`, `.xlsx` and `.xls`) open in Open Wrangler by default. CSV, TSV and JSON Lines
+  files still open in the text editor, and **Reopen Editor With...** offers Open Wrangler for every supported type. In
+  Restricted Mode these files open in VS Code's own editor, and no Python or R starts before you trust the workspace. To
+  open a type in another editor again, choose **Reopen Editor With...**, then **Configure default editor**, or add
+  `"workbench.editorAssociations": { "*.parquet": "default" }` to your settings, using `*.xlsx` or `*.xls` the same way.
+  An association that already names another editor still wins. If you set `*.csv`, `*.tsv`, `*.jsonl` or `*.ndjson` to
+  `openWrangler.viewer`, change it to `openWrangler.textDataViewer`, so **Reopen Editor With...** lists Open Wrangler
+  once.
 - Large files open faster in Python · Pandas with Pandas 3. On an 11.7-million-row Parquet file, opening takes about 1 second instead of 1.2.
 - Scrolling, previews, Find and value search in Python · Pandas are much faster on large files with Pandas 2. On an 11.7-million-row Parquet file, each page loads in under 0.1 seconds instead of 0.4, Rename Column previews in 1.5 seconds instead of 2.4, Find takes 2.7 seconds instead of 18, and searching a text column's values takes 0.7 seconds instead of 10.
 - Sort Rows, Pivot longer, Dense Rank and Mark Duplicates preview faster on large files in Python · DuckDB, because row counts, dataset statistics and the check of each step result no longer sort every row. On an 11.7-million-row Parquet file, Sort Rows previews in 0.6 seconds instead of 1.5, Pivot longer in 2.6 seconds instead of 4.8, and dataset statistics after Sort Rows take 1.3 seconds instead of 1.9.

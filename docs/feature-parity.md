@@ -12,7 +12,7 @@ The Pandas and Polars rows below are required for stable releases.
 
 | Surface                                                     | Pandas | Polars | Status | Required evidence                                                                                                                                                                              |
 | ----------------------------------------------------------- | -----: | -----: | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| File entry points; Windows Polars JSONL excludes glob paths |    Yes |    Yes | Done   | Native readers and file-launch surfaces within the path limits below; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py; record:docs/testing.md                 |
+| File entry points; Windows Polars JSONL excludes glob paths |    Yes |    Yes | Done   | Native readers, default editors and launch surfaces within the path limits below; test:python/tests/test_pandas_engine.py; test:python/tests/test_polars_engine.py; record:docs/testing.md     |
 | Notebook variable viewer and toolbar                        |    Yes |    Yes | Done   | Exact-notebook and Interactive opens; test:src/test/notebookPreviewCoordinator.unit.test.ts; record:docs/testing.md                                                                            |
 | Inline notebook renderer and full-view expansion            |    Yes |    Yes | Done   | Bounded MIME rendering and exact live-value expansion; test:src/test/notebookRenderer.unit.test.ts; record:docs/testing.md                                                                     |
 | Virtual grid, column sizing, navigation                     |    Yes |    Yes | Done   | Projected virtualization, keyboard navigation, range copy, and column copy; test:src/test/webview.component.test.tsx; record:docs/testing.md                                                   |
@@ -64,6 +64,11 @@ retries the requested engine while the original confirmed view remains available
 ## Files and exports
 
 File inputs include CSV, TSV, Parquet, `.xls` and `.xlsx` workbooks, and `.jsonl` and `.ndjson` aliases.
+Parquet and Excel files open in Open Wrangler by default. **Reopen Editor With...** offers it for CSV, TSV and JSON
+Lines, whose default stays the text editor. A `workbench.editorAssociations` entry such as `"*.parquet": "default"`
+restores another editor. [Manifest tests](../src/test/packageManifest.unit.test.ts) pin each pattern's priority, and the
+[default-editor journey](../src/test/extensionHost/packagedDefaultEditors.ts) checks the default and an association in
+installed editors.
 Polars JSONL/NDJSON reads the selected file on Unix even when its path contains glob syntax or percent-looking text.
 On Windows, ordinary paths and local-drive verbatim paths such as `\\?\C:\data\sample.jsonl` retain exact file identity.
 The stable file entry-point scope excludes Windows Polars JSONL/NDJSON paths containing `*`, `?`, or `[` apart from the

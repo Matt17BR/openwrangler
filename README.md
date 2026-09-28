@@ -69,6 +69,10 @@ _Search or browse cleaning operations, then configure the selected step._
    into the notebook or R document that opened the data. Cleaned data exports to a separate CSV or Parquet file, so
    the source is never overwritten.
 
+Parquet and Excel files open in Open Wrangler by default. To use another editor for a file type, choose **Reopen Editor
+With...**, then **Configure default editor**, or add a `workbench.editorAssociations` entry such as
+`"*.parquet": "default"`.
+
 Files open in Editing unless `openWrangler.fileStartMode` is set to `viewing`. The engine picker in the toolbar switches
 a file between Pandas, Polars, DuckDB and the R libraries in the same tab and replays your steps. If a step can't run with
 the new engine, Open Wrangler asks before leaving it behind.
@@ -170,7 +174,7 @@ covers native R and the limits of its six-column synthetic fixtures.
 ## Compatibility and limits
 
 - Use VS Code 1.106 or newer. Opening data, running code and exporting require Workspace Trust, so Open Wrangler stays
-  inactive in Restricted Mode.
+  inactive in Restricted Mode and Parquet and Excel files open in VS Code's own editor.
 - Python workflows need Python 3.10 to 3.14. Open Wrangler names any missing packages before offering to install
   them.
 - Windows Python notebooks need CPython 3.10.15, 3.11.10, 3.12.4 or a later patch, or any supported 3.13 or 3.14

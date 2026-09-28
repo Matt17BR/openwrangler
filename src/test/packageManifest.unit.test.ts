@@ -25,6 +25,8 @@ interface WalkthroughStep {
   description?: string;
 }
 
+const activeOpenWranglerEditor = "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/";
+
 interface PackageManifest {
   description?: string;
   keywords?: string[];
@@ -54,8 +56,11 @@ interface PackageManifest {
     menus?: Record<string, MenuContribution[]>;
     customEditors?: Array<{
       viewType?: string;
+      displayName?: string;
       selector?: Array<{ filenamePattern?: string }>;
+      priority?: string;
     }>;
+    keybindings?: Array<{ command?: string; when?: string }>;
     notebookRenderer?: Array<{
       id?: string;
       displayName?: string;
@@ -192,12 +197,12 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openFile",
-      when: `${resourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+      when: `${resourcePredicate} && !(${activeOpenWranglerEditor})`,
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
       command: "openWrangler.openFile",
-      when: `${resourcePredicate} && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)`,
+      when: `${resourcePredicate} && !(${activeOpenWranglerEditor})`,
       group: "navigation@50"
     });
     expect(manifest.contributes?.commands).toContainEqual({
@@ -208,12 +213,12 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.changeImportOptions",
-      when: "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+      when: `openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || ${activeOpenWranglerEditor})`,
       group: "navigation@2"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
       command: "openWrangler.changeImportOptions",
-      when: "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+      when: `openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || ${activeOpenWranglerEditor})`,
       group: "navigation@51"
     });
     expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
@@ -361,11 +366,41 @@ describe("file launch contributions", () => {
     expect(match.test("untrusted.pickle")).toBe(false);
   });
 
-  it("offers .ndjson wherever JSONL files can launch without exposing pickle", () => {
-    const editor = manifest.contributes?.customEditors?.find(
-      (candidate) => candidate.viewType === "openWrangler.viewer"
+  it("opens Parquet and Excel files by default and offers text data files as an option", () => {
+    const editors = new Map(
+      manifest.contributes?.customEditors?.flatMap((editor) =>
+        (editor.selector ?? []).map((selector) => [selector.filenamePattern, [editor.viewType, editor.priority]])
+      )
     );
-    const patterns = editor?.selector?.map((selector) => selector.filenamePattern);
+    expect(editors).toEqual(
+      new Map([
+        ["*.parquet", ["openWrangler.viewer", "default"]],
+        ["*.xlsx", ["openWrangler.viewer", "default"]],
+        ["*.xls", ["openWrangler.viewer", "default"]],
+        ["*.csv", ["openWrangler.textDataViewer", "option"]],
+        ["*.tsv", ["openWrangler.textDataViewer", "option"]],
+        ["*.jsonl", ["openWrangler.textDataViewer", "option"]],
+        ["*.ndjson", ["openWrangler.textDataViewer", "option"]]
+      ])
+    );
+    expect(manifest.contributes?.customEditors?.map((editor) => editor.displayName)).toEqual([
+      "Open Wrangler",
+      "Open Wrangler"
+    ]);
+    expect(manifest.activationEvents).toEqual(
+      expect.arrayContaining(["onCustomEditor:openWrangler.viewer", "onCustomEditor:openWrangler.textDataViewer"])
+    );
+    const keybindings = manifest.contributes?.keybindings ?? [];
+    expect(keybindings).not.toHaveLength(0);
+    for (const { when } of keybindings) {
+      expect(when === activeOpenWranglerEditor || when?.startsWith(`${activeOpenWranglerEditor} && `)).toBe(true);
+    }
+  });
+
+  it("offers .ndjson wherever JSONL files can launch without exposing pickle", () => {
+    const patterns = manifest.contributes?.customEditors?.flatMap((editor) =>
+      (editor.selector ?? []).map((selector) => selector.filenamePattern)
+    );
     expect(patterns).toContain("*.jsonl");
     expect(patterns).toContain("*.ndjson");
     expect(patterns).not.toContain("*.pkl");

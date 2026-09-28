@@ -997,18 +997,18 @@ describe("file launch command", () => {
     expect(fileMocks.createPanel).not.toHaveBeenCalled();
   });
 
-  it("opens the file picker when no usable editor resource exists", async () => {
-    fileMocks.activeTabInput = new vscode.TabInputCustom(
-      vscode.Uri.file("/workspace/already.csv"),
-      "openWrangler.viewer"
-    );
-    register();
+  it.each(["openWrangler.viewer", "openWrangler.textDataViewer"])(
+    "opens the file picker when the active %s tab is already Open Wrangler",
+    async (viewType) => {
+      fileMocks.activeTabInput = new vscode.TabInputCustom(vscode.Uri.file("/workspace/already.csv"), viewType);
+      register();
 
-    await command("openWrangler.openFile")();
+      await command("openWrangler.openFile")();
 
-    expect(fileMocks.executeCommand).toHaveBeenCalledWith("openWrangler.openPath");
-    expect(fileMocks.createPanel).not.toHaveBeenCalled();
-  });
+      expect(fileMocks.executeCommand).toHaveBeenCalledWith("openWrangler.openPath");
+      expect(fileMocks.createPanel).not.toHaveBeenCalled();
+    }
+  );
 
   it("validates a picker result even when the native dialog returns a disallowed file", async () => {
     const selected = vscode.Uri.file("/workspace/notes.txt");
@@ -1213,19 +1213,23 @@ describe("file launch command", () => {
     expect(panel.dispose).not.toHaveBeenCalled();
   });
 
-  it("rejects a virtual custom-editor resource before constructing its panel", async () => {
-    const panel = { dispose: vi.fn() };
+  it("shows a notice instead of closing a diff for a Git version of a data file", async () => {
+    const uri = vscode.Uri.from({ scheme: "git", path: "/workspace/sales <i>&.parquet" });
+    const panel = { dispose: vi.fn(), webview: { options: {}, html: "" } };
     register();
 
-    await fileMocks.customEditorProvider?.resolveCustomEditor(
-      { uri: vscode.Uri.from({ scheme: "git", path: "/workspace/data.csv" }) },
-      panel,
-      resolutionToken()
-    );
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel, resolutionToken());
 
-    expect(panel.dispose).toHaveBeenCalledOnce();
-    expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+    expect(panel.dispose).not.toHaveBeenCalled();
+    expect(panel.webview.options).toEqual({ enableScripts: false, localResourceRoots: [] });
+    expect(panel.webview.html).toContain(`content="default-src 'none'; style-src 'unsafe-inline';"`);
+    expect(panel.webview.html).toContain("This copy of sales &lt;i&gt;&amp;.parquet comes from another source");
+    expect(panel.webview.html).not.toContain("<i>");
+    expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
     expect(fileMocks.stat).not.toHaveBeenCalled();
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.panelConstructor).not.toHaveBeenCalled();
+    expect(fileMocks.bridgeRequest).not.toHaveBeenCalled();
   });
 
   it("validates a supported custom-editor resource before constructing its panel", async () => {

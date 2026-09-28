@@ -174,6 +174,7 @@
     "onCommand:openWrangler.openSettings",
     "onCommand:openWrangler.reportIssue",
     "onCustomEditor:openWrangler.viewer",
+    "onCustomEditor:openWrangler.textDataViewer",
     "onView:openWrangler.dataSources",
     "onView:openWrangler.operations",
     "onView:openWrangler.summary",
@@ -471,41 +472,41 @@
         "command": "openWrangler.applyStep",
         "key": "ctrl+enter",
         "mac": "cmd+enter",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && openWrangler.hasDraft"
       },
       {
         "command": "openWrangler.discardStep",
         "key": "escape",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && openWrangler.hasDraft"
       },
       {
         "command": "openWrangler.editLatestStep",
         "key": "ctrl+shift+e",
         "mac": "cmd+shift+e",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && openWrangler.canChangePlan"
       },
       {
         "command": "openWrangler.undoStep",
         "key": "ctrl+alt+z",
         "mac": "cmd+alt+z",
-        "when": "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && openWrangler.canChangePlan"
       },
       {
         "command": "openWrangler.goToRow",
         "key": "ctrl+g",
-        "when": "activeCustomEditorId == openWrangler.viewer"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/"
       },
       {
         "command": "openWrangler.find",
         "key": "ctrl+f",
         "mac": "cmd+f",
-        "when": "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "command": "openWrangler.replace",
         "key": "ctrl+h",
         "mac": "cmd+alt+f",
-        "when": "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+        "when": "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/ && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       }
     ],
     "viewsContainers": {
@@ -589,25 +590,32 @@
         "displayName": "Open Wrangler",
         "selector": [
           {
-            "filenamePattern": "*.csv"
-          },
-          {
-            "filenamePattern": "*.tsv"
-          },
-          {
             "filenamePattern": "*.parquet"
-          },
-          {
-            "filenamePattern": "*.jsonl"
-          },
-          {
-            "filenamePattern": "*.ndjson"
           },
           {
             "filenamePattern": "*.xlsx"
           },
           {
             "filenamePattern": "*.xls"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "openWrangler.textDataViewer",
+        "displayName": "Open Wrangler",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.jsonl"
+          },
+          {
+            "filenamePattern": "*.ndjson"
           }
         ],
         "priority": "option"
@@ -693,12 +701,12 @@
         },
         {
           "command": "openWrangler.openFile",
-          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && !(activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/)",
           "group": "navigation@1"
         },
         {
           "command": "openWrangler.changeImportOptions",
-          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/)",
           "group": "navigation@2"
         },
         {
@@ -725,7 +733,7 @@
         },
         {
           "command": "openWrangler.openFile",
-          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && !(activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/)",
           "group": "navigation@50"
         },
         {
@@ -735,7 +743,7 @@
         },
         {
           "command": "openWrangler.changeImportOptions",
-          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/)",
           "group": "navigation@51"
         }
       ],
@@ -966,7 +974,7 @@
             "xlsx",
             "xls"
           ],
-          "description": "File types accepted by ordinary file launch commands and offered by their picker. The JSONL option includes both .jsonl and .ndjson files. Open DuckDB Table accepts any database filename independently of this setting. Explicit Reopen Editor With selection remains available."
+          "description": "File types accepted by ordinary file launch commands and offered by their picker. The JSONL option includes both .jsonl and .ndjson files. Open DuckDB Table accepts any database filename independently of this setting. The setting doesn't change which editor opens a file: Parquet and Excel files still open in Open Wrangler by default, and Reopen Editor With still offers Open Wrangler for every supported type. Set workbench.editorAssociations to choose another editor."
         },
         "openWrangler.insightsOnOpen": {
           "type": "boolean",

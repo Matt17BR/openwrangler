@@ -596,14 +596,17 @@ describe("lazy activation owners", () => {
       expect(owners.rDiscovery).not.toHaveBeenCalled();
       expect(owners.rFileLoaded).not.toHaveBeenCalled();
       expect(owners.rFileCreated).not.toHaveBeenCalled();
-      expect(host.customEditorProviders).toEqual([provider]);
-      expect(host.registerCustomEditorProvider).toHaveBeenCalledExactlyOnceWith("openWrangler.viewer", provider, {
-        supportsMultipleEditorsPerDocument: false,
-        webviewOptions: { retainContextWhenHidden: true }
-      });
+      expect(host.customEditorProviders).toEqual([provider, provider]);
+      const options = { supportsMultipleEditorsPerDocument: false, webviewOptions: { retainContextWhenHidden: true } };
+      expect(host.registerCustomEditorProvider.mock.calls).toEqual([
+        ["openWrangler.viewer", provider, options],
+        ["openWrangler.textDataViewer", provider, options]
+      ]);
       await active.shutdown();
       expect(host.customEditorProviders).toEqual([]);
-      expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
+      for (const registration of host.registerCustomEditorProvider.mock.results) {
+        expect(registration.value.dispose).toHaveBeenCalledOnce();
+      }
     }
   );
 
@@ -711,9 +714,23 @@ describe("lazy activation owners", () => {
     const provider = host.customEditorProviders[0];
     host.setRegistrationFailure({ id: "openWrangler.openFile", attempt: 2 });
     await expect(host.executeCommand("openWrangler.openFile")).rejects.toThrow("registration failed");
-    expect(host.customEditorProviders).toEqual([provider]);
+    expect(host.customEditorProviders).toEqual([provider, provider]);
     expect(host.commands.has("openWrangler.changeImportOptions")).toBe(false);
     await active.shutdown();
+    expect(host.customEditorProviders).toEqual([]);
+    for (const registration of host.registerCustomEditorProvider.mock.results) {
+      expect(registration.value.dispose).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("rolls back the first custom editor when the second one fails to register", () => {
+    const register = host.registerCustomEditorProvider.getMockImplementation();
+    if (!register) throw new Error("The host mock must register custom editors.");
+    host.registerCustomEditorProvider.mockImplementationOnce(register).mockImplementationOnce(() => {
+      throw new Error("custom editor registration failed");
+    });
+    active = createOwners();
+    expect(() => active?.startBeforeFirstYield()).toThrow("custom editor registration failed");
     expect(host.customEditorProviders).toEqual([]);
     expect(host.registerCustomEditorProvider.mock.results[0].value.dispose).toHaveBeenCalledOnce();
   });
@@ -755,7 +772,7 @@ describe("lazy activation owners", () => {
       if (kind === "custom editor") {
         expect(owners.customEditorResolved).toHaveBeenCalledExactlyOnceWith(document, view, nextToken);
         expect(owners.pythonConstructed).toHaveBeenCalledOnce();
-        expect(host.customEditorProviders).toEqual([custom]);
+        expect(host.customEditorProviders).toEqual([custom, custom]);
       } else {
         expect(owners.nativeWebviewResolved).toHaveBeenCalledExactlyOnceWith(view, context, nextToken);
         expect(owners.nativeRegistered).toHaveBeenCalledOnce();
