@@ -116,6 +116,44 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
+# Steps that keep each remaining row's private ID and relative order, so rows read in row-ID order stay in it.
+# Filter Rows may also sort, so its filter model decides.
+_ROW_ORDER_KINDS = frozenset(
+    {
+        "byExample",
+        "capitalizeText",
+        "castColumn",
+        "ceilNumber",
+        "cloneColumn",
+        "conditionalColumn",
+        "denseRank",
+        "dropColumns",
+        "dropDuplicates",
+        "dropMissingRows",
+        "extractRegexGroup",
+        "extractStructFields",
+        "fillMissingValues",
+        "findReplace",
+        "floorNumber",
+        "formatDatetime",
+        "formula",
+        "lookupColumns",
+        "lowerText",
+        "markDuplicates",
+        "minMaxScale",
+        "multiLabelBinarize",
+        "oneHotEncode",
+        "renameColumn",
+        "replaceMatches",
+        "roundNumber",
+        "selectColumns",
+        "splitText",
+        "splitTextColumns",
+        "stripText",
+        "textLength",
+        "upperText",
+    }
+)
 _VIEW_SNAPSHOT = '"open_wrangler_view_snapshot"'
 # DuckDB's top-N sort serves sorted pages that end within this many rows faster than numbering the whole view.
 _DIRECT_SORTED_PAGE_ROWS = 10_000
@@ -1573,6 +1611,17 @@ class DuckDBEngine(DataFrameEngine):
         return masks
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
+        result = self._apply_step(frame, step)
+        if (
+            getattr(frame, "row_id_order", False)
+            and step["kind"] in _ROW_ORDER_KINDS
+            and isinstance(result, DuckDBSqlPlan)
+            and self._row_id_column(result) == self._row_id_column(frame)
+        ):
+            return replace(result, row_id_order=True)
+        return result
+
+    def _apply_step(self, frame: Any, step: Mapping[str, Any]) -> Any:
         self._assert_cleaning_supported()
         frame = self.normalize(frame)
         kind = str(step["kind"])
@@ -1719,7 +1768,25 @@ class DuckDBEngine(DataFrameEngine):
             types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
             if any(types[name] != types[selected[0]] for name in selected[1:]):
                 raise EngineError("Pivot-longer columns must have one exactly compatible DuckDB type.")
-            row_count = self.shape(frame)["rows"]
+            source_plan = self.normalize(frame)
+            row_id = self._row_id_column(source_plan)
+            stride: int | None = None
+            if (
+                row_id is not None
+                and isinstance(source_plan, DuckDBSqlPlan)
+                and source_plan.row_id_order
+                and self._database_connection is None
+            ):
+                identifier = _quote_ident(row_id)
+                row_count, first_id, last_id = self._terminal_rows(
+                    _unordered_view(source_plan),
+                    f"SELECT system.main.count(*), min({identifier}), max({identifier}) FROM ow",
+                )[0]
+                stride = 0 if last_id is None else int(last_id) + 1
+                if first_id is not None and (int(first_id) < 0 or len(selected) * stride >= 2**63):
+                    stride = None
+            else:
+                row_count = self.shape(frame)["rows"]
             if row_count is None:
                 raise EngineError("Pivot longer requires an exact input row count before execution.")
             try:
@@ -1729,6 +1796,37 @@ class DuckDBEngine(DataFrameEngine):
             visible = self._visible_columns(frame)
             unselected = [name for name in visible if name not in set(selected)]
             reserved = [*columns, *outputs]
+            label_value = [
+                (
+                    f"{_sql_literal(selected_name)} AS {_quote_ident(params['labelColumn'])}",
+                    f"{_quote_ident(selected_name)} AS {_quote_ident(params['valueColumn'])}",
+                )
+                for selected_name in selected
+            ]
+            if stride is not None:
+                identifier = _quote_ident(str(row_id))
+                # Rows already read in ascending row-ID order give each output row its position arithmetically,
+                # so the result sorts once and needs no numbering window before or after the pivot.
+                ordinal_name = _unique_internal(reserved, "__ow_pivot_row")
+                ordinal = _quote_ident(ordinal_name)
+                ordered = (
+                    "SELECT * FROM ("
+                    + " UNION ALL ".join(
+                        "SELECT "
+                        + ", ".join(
+                            [
+                                *(_quote_ident(name) for name in unselected),
+                                *pair,
+                                f"{identifier} + {index * stride} AS {ordinal}",
+                            ]
+                        )
+                        + " FROM ow"
+                        for index, pair in enumerate(label_value)
+                    )
+                    + f") ORDER BY {ordinal}"
+                )
+                plan = self._relation(frame, f"SELECT * EXCLUDE ({ordinal}) FROM ({ordered})")
+                return replace(plan, ordinal_sql=_compose_sql(source_plan.sql, ordered), ordinal=ordinal_name)
             source_order = _unique_internal(reserved, "__ow_pivot_source_order")
             pivot_order = _unique_internal([*reserved, source_order], "__ow_pivot_selected_order")
             # The private row identity belongs to the source capture, so it may
@@ -1738,16 +1836,9 @@ class DuckDBEngine(DataFrameEngine):
             # execution preserves the same order as generated code.
             source = "SELECT *, row_number() OVER () - 1 AS " + _quote_ident(source_order) + " FROM ow"
             branches = []
-            for ordinal, selected_name in enumerate(selected):
+            for ordinal, pair in enumerate(label_value):
                 projections = [*(_quote_ident(name) for name in unselected)]
-                projections.extend(
-                    (
-                        f"{_sql_literal(selected_name)} AS {_quote_ident(params['labelColumn'])}",
-                        f"{_quote_ident(selected_name)} AS {_quote_ident(params['valueColumn'])}",
-                        f"{ordinal} AS {_quote_ident(pivot_order)}",
-                        _quote_ident(source_order),
-                    )
-                )
+                projections.extend((*pair, f"{ordinal} AS {_quote_ident(pivot_order)}", _quote_ident(source_order)))
                 branches.append("SELECT " + ", ".join(projections) + " FROM pivot_source")
             query = (
                 "WITH pivot_source AS ("
@@ -1844,7 +1935,7 @@ class DuckDBEngine(DataFrameEngine):
             frame = self.normalize(frame)
             ordered = getattr(frame, "row_id_order", False)
             try:
-                result = _duckdb_lookup_columns(
+                return _duckdb_lookup_columns(
                     frame,
                     self._columns(frame),
                     [str(item) for item in frame.types],
@@ -1858,7 +1949,6 @@ class DuckDBEngine(DataFrameEngine):
                 )
             except ValueError as error:
                 raise EngineError(str(error)) from error
-            return replace(result, row_id_order=True) if ordered and isinstance(result, DuckDBSqlPlan) else result
         if kind == "replaceMatches":
             for reference in params["columns"]:
                 try:
@@ -2995,32 +3085,68 @@ class DuckDBEngine(DataFrameEngine):
         replacement: str,
         temporary_names: Sequence[str],
     ) -> Any:
-        """Fill ``target`` with window ``stages`` that sort every row, keeping the input row order.
+        """Fill ``target`` with window ``stages`` whose last CTE is ``filled``, keeping the input row order."""
 
-        ``stages`` are the CTEs after ``numbered``, which numbers input rows as ``original_name``; the last is
-        ``filled``. File sessions run the stages once over only the private row ID and ``inputs`` and store each
-        row's filled value in a private checkpoint. Reads join those values back to the input rows by ID instead
-        of sorting every column again.
+        original = _quote_ident(original_name)
+        fallback = (
+            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), {stages} "
+            f"SELECT * EXCLUDE ({_identifier_list([original_name, *temporary_names])}) REPLACE ("
+            f"{replacement} AS {_quote_ident(target)}) FROM filled ORDER BY {original}"
+        )
+        return self._stored_window_step(
+            frame, fallback, [target, *inputs], original_name, stages, "filled", [(target, replacement)]
+        )
+
+    def _stored_window_step(
+        self,
+        frame: Any,
+        fallback: str,
+        inputs: Sequence[str],
+        original_name: str,
+        stages: str,
+        result: str,
+        outputs: Sequence[tuple[str, str]],
+        keep: str | None = None,
+    ) -> Any:
+        """Run window ``stages`` over every row and keep the input row order.
+
+        ``stages`` are the CTEs after ``numbered``, which holds ``inputs`` and numbers input rows as
+        ``original_name``. Each ``(column, expression)`` output is selected from the ``result`` CTE, replacing an
+        existing column or adding one, and ``keep`` optionally selects the rows that remain. Window output reaches
+        a table writer on one thread, so file sessions run the stages once over only the private row ID and
+        ``inputs`` and store each kept row's outputs in a private checkpoint. Reads join those values back to the
+        input rows by ID instead of running the windows over every column again. Other plans run ``fallback``.
         """
 
         source = self.normalize(frame)
-        original = _quote_ident(original_name)
-        target_identifier = _quote_ident(target)
         row_id = self._row_id_column(source)
         if row_id is None or not isinstance(source, DuckDBSqlPlan) or self._database_connection is not None:
-            return self._relation(
-                source,
-                f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), {stages} "
-                f"SELECT * EXCLUDE ({_identifier_list([original_name, *temporary_names])}) REPLACE ("
-                f"{replacement} AS {target_identifier}) FROM filled ORDER BY {original}",
-            )
+            return self._relation(source, fallback)
         identifier = _quote_ident(row_id)
-        narrow = _identifier_list(list(dict.fromkeys([row_id, target, *inputs])))
-        # Rows already read in row-ID order need no window to number them.
+        original = _quote_ident(original_name)
+        # Rows already read in row-ID order need no window to number them, and their IDs give the order.
         numbering = identifier if source.row_id_order else "row_number() OVER ()"
+        position = identifier if source.row_id_order else original
+        narrow = _identifier_list(list(dict.fromkeys([row_id, *inputs])))
+        stored = ", ".join(
+            [
+                *dict.fromkeys([identifier, position]),
+                *(f"{expression} AS {_quote_ident(name)}" for name, expression in outputs),
+            ]
+        )
+        columns = self._columns(source)
+        replaced = [_quote_ident(name) for name, _ in outputs if name in columns]
+        added = [_quote_ident(name) for name, _ in outputs if name not in columns]
+        projection = "".join(
+            [
+                "ow.*",
+                f" REPLACE ({', '.join(f'step.{name} AS {name}' for name in replaced)})" if replaced else "",
+                *(f", step.{name}" for name in added),
+            ]
+        )
         checkpoint = _DuckDBCheckpoint(
-            TemporaryDirectory(prefix="open-wrangler-duckdb-fill-"),
-            "__open_wrangler_fill_" + uuid4().hex,
+            TemporaryDirectory(prefix="open-wrangler-duckdb-window-"),
+            "__open_wrangler_window_" + uuid4().hex,
             original_name,
             source.checkpoint,
         )
@@ -3033,16 +3159,18 @@ class DuckDBEngine(DataFrameEngine):
                     f"CREATE TABLE {alias}.main.step AS "
                     + _compose_sql(
                         source_sql,
-                        f"WITH numbered AS (SELECT {narrow}, {numbering} AS {original} FROM ow), {stages} "
-                        f"SELECT {identifier}, {original}, {replacement} AS {target_identifier} FROM filled",
+                        f"WITH numbered AS (SELECT {narrow}, {numbering} AS {original} FROM ow)"
+                        + (f", {stages}" if stages else "")
+                        + f" SELECT {stored} FROM {result}"
+                        + ("" if keep is None else f" WHERE {keep}"),
                     )
                 )
                 connection.execute(f"DETACH {alias}")
             plan = self._relation_from_sql(
                 _compose_sql(
                     source.sql,
-                    f"SELECT ow.* REPLACE (step.{target_identifier} AS {target_identifier}) FROM ow "
-                    f"JOIN {alias}.main.step AS step ON ow.{identifier} = step.{identifier} ORDER BY step.{original}",
+                    f"SELECT {projection} FROM ow JOIN {alias}.main.step AS step "
+                    f"ON ow.{identifier} = step.{identifier} ORDER BY step.{position}",
                 ),
                 checkpoint=checkpoint,
             )
@@ -3051,7 +3179,7 @@ class DuckDBEngine(DataFrameEngine):
                     raise EngineError("The DuckDB engine is closed.")
                 self._checkpoints.add(checkpoint)
             accepted = True
-            return replace(plan, row_id_order=source.row_id_order)
+            return plan
         finally:
             if not accepted:
                 checkpoint.close()
@@ -3390,20 +3518,32 @@ class DuckDBEngine(DataFrameEngine):
         rank_name = _unique_internal([*self._columns(frame), order_name], "__ow_dupe_rank")
         count_name = _unique_internal([*self._columns(frame), order_name, rank_name], "__ow_dupe_count")
         partition = _identifier_list(selected)
+        order, rank, count = map(_quote_ident, (order_name, rank_name, count_name))
         direction = "DESC" if keep == "last" else "ASC"
-        predicate = f"{_quote_ident(count_name)} = 1" if keep == "none" else f"{_quote_ident(rank_name)} = 1"
+        predicate = f"{count} = 1" if keep == "none" else f"{rank} = 1"
+        windows = (
+            f"row_number() OVER (PARTITION BY {partition} ORDER BY {order} {direction}) AS {rank}, "
+            f"count(*) OVER (PARTITION BY {partition}) AS {count}"
+        )
         # Window keys may normalize source values. Select original captured rows
         # by ordinal instead of publishing values from the comparison window.
-        query = (
-            f"WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS {_quote_ident(order_name)} FROM ow), "
-            f"ranked AS (SELECT {_quote_ident(order_name)}, row_number() OVER (PARTITION BY {partition} "
-            f"ORDER BY {_quote_ident(order_name)} {direction}) AS {_quote_ident(rank_name)}, "
-            f"count(*) OVER (PARTITION BY {partition}) AS {_quote_ident(count_name)} FROM numbered) "
-            f"SELECT n.* EXCLUDE ({_quote_ident(order_name)}) FROM numbered AS n SEMI JOIN "
-            f"(SELECT {_quote_ident(order_name)} FROM ranked WHERE {predicate}) AS kept "
-            f"USING ({_quote_ident(order_name)}) ORDER BY n.{_quote_ident(order_name)}"
+        fallback = (
+            f"WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS {order} FROM ow), "
+            f"ranked AS (SELECT {order}, {windows} FROM numbered) "
+            f"SELECT n.* EXCLUDE ({order}) FROM numbered AS n SEMI JOIN "
+            f"(SELECT {order} FROM ranked WHERE {predicate}) AS kept "
+            f"USING ({order}) ORDER BY n.{order}"
         )
-        return self._relation(frame, query)
+        return self._stored_window_step(
+            frame,
+            fallback,
+            selected,
+            order_name,
+            f"ranked AS (SELECT *, {windows} FROM numbered)",
+            "ranked",
+            [],
+            predicate,
+        )
 
     def _mark_duplicates(self, frame: Any, columns: list[str], target: str) -> Any:
         original = self._columns(frame)
@@ -3411,14 +3551,15 @@ class DuckDBEngine(DataFrameEngine):
         order_name = _unique_internal([*original, target], "__ow_dupe_order")
         flag_name = _unique_internal([*original, target, order_name], "__ow_dupe_flag")
         order, flag = map(_quote_ident, (order_name, flag_name))
+        membership = f"count(*) OVER (PARTITION BY {_identifier_list(columns)}) > 1"
         # Keep partition comparison separate from the original scalar/nested values.
-        return self._relation(
-            frame,
+        fallback = (
             f"WITH numbered AS MATERIALIZED (SELECT *, row_number() OVER () AS {order} FROM ow), "
-            f"membership AS (SELECT {order}, count(*) OVER (PARTITION BY {_identifier_list(columns)}) > 1 "
+            f"membership AS (SELECT {order}, {membership} "
             f"AS {flag} FROM numbered) SELECT n.* EXCLUDE ({order}), m.{flag} AS {_quote_ident(target)} "
-            f"FROM numbered n JOIN membership m USING ({order}) ORDER BY n.{order}",
+            f"FROM numbered n JOIN membership m USING ({order}) ORDER BY n.{order}"
         )
+        return self._stored_window_step(frame, fallback, columns, order_name, "", "numbered", [(target, membership)])
 
     def _one_hot(self, frame: Any, params: Mapping[str, Any]) -> Any:
         columns = list(params["columns"])
@@ -3551,10 +3692,18 @@ class DuckDBEngine(DataFrameEngine):
             f"dense_rank() OVER (ORDER BY {value} {sort_direction} NULLS LAST) END"
         )
         # Number the current cleaning input before the rank window reorders it.
-        return self._relation(
-            frame,
+        fallback = (
             f"SELECT * EXCLUDE ({order}, {value}), {rank} AS {_quote_ident(target)} "
-            f"FROM (SELECT *, row_number() OVER () AS {order}, {prepared} AS {value} FROM ow) ORDER BY {order}",
+            f"FROM (SELECT *, row_number() OVER () AS {order}, {prepared} AS {value} FROM ow) ORDER BY {order}"
+        )
+        return self._stored_window_step(
+            frame,
+            fallback,
+            [column],
+            order_name,
+            f"prepared AS (SELECT *, {prepared} AS {value} FROM numbered)",
+            "prepared",
+            [(target, rank)],
         )
 
     def _min_max(self, frame: Any, column: str, target: str) -> Any:
@@ -3562,30 +3711,47 @@ class DuckDBEngine(DataFrameEngine):
         value = _quote_ident(value_name)
         source = _quote_ident(column)
         raw_type = str(frame.types[self._columns(frame).index(column)])
-        if _is_integer_type(raw_type) or raw_type.upper().startswith("DECIMAL"):
+        exact = _is_integer_type(raw_type) or raw_type.upper().startswith("DECIMAL")
+        if exact:
             # Widen before subtracting. Only full-width integer and Decimal
             # spans need BIGNUM; every <=64-bit span fits native HUGEINT.
             unscaled = (
                 f"replace(CAST({source} AS VARCHAR), '.', '')" if raw_type.upper().startswith("DECIMAL") else source
             )
-            widened_type = (
+            value_type = (
                 "BIGNUM" if "HUGEINT" in raw_type.upper() or raw_type.upper().startswith("DECIMAL") else "HUGEINT"
             )
-            prepared = f"CAST({unscaled} AS {widened_type})"
-            minimum = f"min({value}) OVER ()"
-            maximum = f"max({value}) OVER ()"
-            ratio = f"CAST(({value} - {minimum}) AS DOUBLE) / CAST(({maximum} - {minimum}) AS DOUBLE)"
+            prepared = f"CAST({unscaled} AS {value_type})"
+            counted = ""
             missing = f"{value} IS NULL"
         else:
+            value_type = "DOUBLE"
             prepared = f"try_cast({source} AS DOUBLE)"
-            minimum = f"min({value}) FILTER (WHERE isfinite({value})) OVER ()"
-            maximum = f"max({value}) FILTER (WHERE isfinite({value})) OVER ()"
+            counted = f" FILTER (WHERE isfinite({value}))"
+            missing = f"{value} IS NULL OR NOT isfinite({value})"
+        plan = self.normalize(frame)
+        if isinstance(plan, DuckDBSqlPlan) and self._database_connection is None:
+            # A file plan is immutable, so its bounds are read once and inlined as exact literals. A whole-column
+            # window would hold every row before streaming any.
+            bounds = self._terminal_rows(
+                plan,
+                f"SELECT CAST(min({value}){counted} AS VARCHAR), CAST(max({value}){counted} AS VARCHAR) "
+                f"FROM (SELECT {prepared} AS {value} FROM ow)",
+            )[0]
+            minimum, maximum = (
+                f"CAST({'NULL' if bound is None else _sql_literal(bound)} AS {value_type})" for bound in bounds
+            )
+        else:
+            minimum = f"min({value}){counted} OVER ()"
+            maximum = f"max({value}){counted} OVER ()"
+        if exact:
+            ratio = f"CAST(({value} - {minimum}) AS DOUBLE) / CAST(({maximum} - {minimum}) AS DOUBLE)"
+        else:
             span = f"({maximum} - {minimum})"
             ratio = (
                 f"CASE WHEN isfinite({span}) THEN ({value} - {minimum}) / {span} "
                 f"ELSE ({value} / 2 - {minimum} / 2) / ({maximum} / 2 - {minimum} / 2) END"
             )
-            missing = f"{value} IS NULL OR NOT isfinite({value})"
         expression = f"CASE WHEN {missing} THEN NULL WHEN {minimum} = {maximum} THEN 0.0 ELSE {ratio} END"
         modifier = (
             f"* EXCLUDE ({value}) REPLACE ({expression} AS {_quote_ident(target)})"
