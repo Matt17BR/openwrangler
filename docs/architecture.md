@@ -1416,11 +1416,12 @@ keeps one such order: a new sorted view replaces it and closing the engine delet
 direct sorted query.
 
 Directional Fill and Linear Interpolation sort every row, and DuckDB writes window output on one thread. In file
-sessions they run their windows over only the private row ID, the target and the order or coordinate columns, then
-join the filled column back to every row by ID into a private checkpoint that is owned and released like a Custom
-Code result. Later pages, profiles and steps read those stored rows in the input order, and the result keeps the
-input's row-ID order. Database tables, notebook relations and plans without row IDs, including generated code, keep
-one sorted query. The next present row for a gap limit is a descending running minimum, because DuckDB evaluates a
+sessions they run their windows once over only the private row ID, the target and the order or coordinate columns,
+and store each row's ID, input position and filled value in a private checkpoint that is owned and released like a
+Custom Code result. Later pages, profiles and steps join those values back to the input rows by ID in the input
+order, so the checkpoint also keeps the input plan's checkpoint attached, and the result keeps the input's row-ID
+order. Database tables, notebook relations and plans without row IDs, including generated code, keep one sorted
+query. The next present row for a gap limit is a descending running minimum, because DuckDB evaluates a
 frame that reaches the end of a large window far more slowly.
 
 Top-level `TIMESTAMP_NS` cells use native text projection before Python can narrow their values. One SQL display

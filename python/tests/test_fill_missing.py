@@ -1117,7 +1117,7 @@ def test_duckdb_directional_fill_preserves_case_variant_internal_name_columns() 
 
 
 @pytest.mark.parametrize("reordered", [False, True])
-def test_duckdb_row_id_fills_store_the_fallback_rows_with_their_ids(reordered: bool) -> None:
+def test_duckdb_row_id_fills_store_values_that_match_the_fallback(reordered: bool) -> None:
     engine = DuckDBEngine()
     sort = {
         "id": "sort",
@@ -1156,7 +1156,8 @@ def test_duckdb_row_id_fills_store_the_fallback_rows_with_their_ids(reordered: b
         expected = engine.apply_transform(engine.apply_transform(plain, operations[0]), operations[1])
         assert [row[:-1] for row in normalized_rows(chained)] == normalized_rows(expected)
         assert chained.checkpoint is not None
-        stored.append(Path(chained.checkpoint.temporary.name))
+        assert chained.checkpoint.parent is not None
+        stored.extend(Path(checkpoint.temporary.name) for checkpoint in (chained.checkpoint, chained.checkpoint.parent))
     finally:
         engine.close()
     assert not any(path.exists() for path in stored)

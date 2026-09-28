@@ -194,6 +194,8 @@ class _DuckDBCheckpoint:
     temporary: TemporaryDirectory[str]
     alias: str
     ordinal: str
+    # Stored fill results join the input plan's rows, so reads also attach its checkpoint.
+    parent: _DuckDBCheckpoint | None = None
     closed: bool = False
 
     @property
@@ -203,6 +205,8 @@ class _DuckDBCheckpoint:
     def attach(self, connection: Any) -> None:
         if self.closed:
             raise EngineError("The captured DuckDB result is closed.")
+        if self.parent is not None:
+            self.parent.attach(connection)
         connection.execute(f"ATTACH {_sql_literal(self.path)} AS {_quote_ident(self.alias)} (READ_ONLY, TYPE DUCKDB)")
 
     def close(self) -> None:
@@ -2994,9 +2998,9 @@ class DuckDBEngine(DataFrameEngine):
         """Fill ``target`` with window ``stages`` that sort every row, keeping the input row order.
 
         ``stages`` are the CTEs after ``numbered``, which numbers input rows as ``original_name``; the last is
-        ``filled``. Window output reaches a table writer on one thread, so file sessions run the stages over only
-        the private row ID and ``inputs``, then join the filled column back to every row by ID in a private
-        checkpoint. Later pages and profiles read those stored rows instead of sorting again.
+        ``filled``. File sessions run the stages once over only the private row ID and ``inputs`` and store each
+        row's filled value in a private checkpoint. Reads join those values back to the input rows by ID instead
+        of sorting every column again.
         """
 
         source = self.normalize(frame)
@@ -3018,6 +3022,7 @@ class DuckDBEngine(DataFrameEngine):
             TemporaryDirectory(prefix="open-wrangler-duckdb-fill-"),
             "__open_wrangler_fill_" + uuid4().hex,
             original_name,
+            source.checkpoint,
         )
         accepted = False
         try:
@@ -3025,24 +3030,21 @@ class DuckDBEngine(DataFrameEngine):
             with self._terminal_connection(source) as (connection, source_sql):
                 connection.execute(f"ATTACH {_sql_literal(checkpoint.path)} AS {alias} (TYPE DUCKDB)")
                 connection.execute(
-                    "CREATE TEMP TABLE step AS "
+                    f"CREATE TABLE {alias}.main.step AS "
                     + _compose_sql(
                         source_sql,
                         f"WITH numbered AS (SELECT {narrow}, {numbering} AS {original} FROM ow), {stages} "
                         f"SELECT {identifier}, {original}, {replacement} AS {target_identifier} FROM filled",
                     )
                 )
-                connection.execute(
-                    f"CREATE TABLE {alias}.main.rows AS "
-                    + _compose_sql(
-                        source_sql,
-                        f"SELECT ow.* REPLACE (step.{target_identifier} AS {target_identifier}), step.{original} "
-                        f"FROM ow JOIN temp.main.step AS step ON ow.{identifier} = step.{identifier}",
-                    )
-                )
                 connection.execute(f"DETACH {alias}")
             plan = self._relation_from_sql(
-                f"SELECT * EXCLUDE ({original}) FROM {alias}.main.rows ORDER BY {original}", checkpoint=checkpoint
+                _compose_sql(
+                    source.sql,
+                    f"SELECT ow.* REPLACE (step.{target_identifier} AS {target_identifier}) FROM ow "
+                    f"JOIN {alias}.main.step AS step ON ow.{identifier} = step.{identifier} ORDER BY step.{original}",
+                ),
+                checkpoint=checkpoint,
             )
             with self._lifecycle_lock:
                 if self._closed:
