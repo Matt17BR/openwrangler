@@ -98,6 +98,8 @@ _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _DUCKDB_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _STRUCTURAL_TRANSFORM_KINDS = frozenset({"renameColumn", "selectColumns", "dropColumns"})
 _VIEW_SNAPSHOT = '"open_wrangler_view_snapshot"'
+# DuckDB's top-N sort serves sorted pages that end within this many rows faster than numbering the whole view.
+_DIRECT_SORTED_PAGE_ROWS = 10_000
 
 
 @dataclass
@@ -206,6 +208,8 @@ class DuckDBSqlPlan:
     # Rows are read in ascending private row-ID order, so the ID is a stable sort tie-break.
     row_id_order: bool = False
     unordered_row_id_order: bool = False
+    # Over ``unordered_sql``, numbers each private row ID by its zero-based position in this sorted view.
+    sorted_order_sql: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -412,6 +416,8 @@ class DuckDBEngine(DataFrameEngine):
         self._database_connection: Any | None = None
         self._database_reservation: _DuckDBDatabaseReservation | None = None
         self._checkpoints: WeakSet[_DuckDBCheckpoint] = WeakSet()
+        self._sorted_order: tuple[DuckDBSqlPlan, _DuckDBCheckpoint] | None = None
+        self._sorted_order_lock = RLock()
         self._lookup_copies: TemporaryDirectory[str] | None = None
 
     def detect(self, value: Any) -> bool:
@@ -570,6 +576,9 @@ class DuckDBEngine(DataFrameEngine):
                 self._notebook_relation_owners.clear()
                 checkpoints = list(self._checkpoints)
                 self._checkpoints.clear()
+                if self._sorted_order is not None:
+                    checkpoints.append(self._sorted_order[1])
+                    self._sorted_order = None
                 lookup_copies, self._lookup_copies = self._lookup_copies, None
             try:
                 if self._database_connection is not None:
@@ -930,14 +939,73 @@ class DuckDBEngine(DataFrameEngine):
         view = self.apply_filter_model(frame, model)
         source = self.normalize(frame)
         available = set(self._columns(source))
-        if _sort_clause(available, model) is None:
+        order = _sort_clause(available, model)
+        if order is None:
             return view
         unordered_sql = _compose_sql(source.sql, _filter_query(available, {**model, "sort": []}))
         if isinstance(view, DuckDBSqlPlan):
+            row_id = self._row_id_column(source)
             return replace(
-                view, unordered_sql=unordered_sql, unordered_row_id_order=getattr(source, "row_id_order", False)
+                view,
+                unordered_sql=unordered_sql,
+                unordered_row_id_order=getattr(source, "row_id_order", False),
+                sorted_order_sql=None
+                if row_id is None
+                else _sorted_order_query(available, order, row_id, getattr(source, "row_id_order", False)),
             )
         return replace(view, unordered_sql=unordered_sql)
+
+    @contextmanager
+    def _sorted_page_order(
+        self, frame: Any, offset: int, limit: int, row_id: str | None
+    ) -> Iterator[_DuckDBCheckpoint | None]:
+        """Number a sorted view's rows once, so deep pages read their rows by identity instead of re-sorting.
+
+        The lock spans the caller's read, so a replaced order is never closed while a page still reads it.
+        """
+
+        if (
+            not isinstance(frame, DuckDBSqlPlan)
+            or frame.sorted_order_sql is None
+            or row_id is None
+            or self._database_connection is not None
+            or offset + limit <= _DIRECT_SORTED_PAGE_ROWS
+        ):
+            yield None
+            return
+        with self._sorted_order_lock:
+            with self._lifecycle_lock:
+                if self._closed:
+                    raise EngineError("The DuckDB engine is closed.")
+                cached = self._sorted_order
+            if cached is not None and cached[0] is frame:
+                yield cached[1]
+                return
+            checkpoint = _DuckDBCheckpoint(
+                TemporaryDirectory(prefix="open-wrangler-duckdb-order-"),
+                "__open_wrangler_order_" + uuid4().hex,
+                "pos",
+            )
+            accepted = False
+            try:
+                alias = _quote_ident(checkpoint.alias)
+                with self._terminal_connection(_unordered_view(frame)) as (connection, source_sql):
+                    connection.execute(f"ATTACH {_sql_literal(checkpoint.path)} AS {alias} (TYPE DUCKDB)")
+                    connection.execute(
+                        f"CREATE TABLE {alias}.main.rows AS {_compose_sql(source_sql, frame.sorted_order_sql)}"
+                    )
+                    connection.execute(f"DETACH {alias}")
+                with self._lifecycle_lock:
+                    if self._closed:
+                        raise EngineError("The DuckDB engine is closed.")
+                    previous, self._sorted_order = self._sorted_order, (frame, checkpoint)
+                accepted = True
+            finally:
+                if not accepted:
+                    checkpoint.close()
+            if previous is not None:
+                previous[1].close()
+            yield checkpoint
 
     def unsorted_view(self, view: Any) -> Any | None:
         return _unordered_view(view) if getattr(view, "unordered_sql", None) is not None else None
@@ -964,7 +1032,6 @@ class DuckDBEngine(DataFrameEngine):
         # DuckDB has no empty SELECT list. Session frames always have a private
         # row identity, while this literal preserves direct zero-column paging.
         select_list = _identifier_list(terminal_columns) if terminal_columns else "1 AS __ow_page_placeholder"
-        query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
         projections: dict[str, tuple[str | None, bool]] = {}
         for column in selected_columns:
             expression = _quote_ident(column)
@@ -985,28 +1052,41 @@ class DuckDBEngine(DataFrameEngine):
             column: len(terminal_columns) + index
             for index, column in enumerate(column for column in selected_columns if projections[column][1])
         }
-        if any(output for output, _cardinality in projections.values()) or cardinality_positions:
-            # Python fetch narrows timestamps, including nested values and map keys.
-            # Keep one overflow code point or byte for the existing payload refusal.
-            # Base64 encodes each three bytes as four characters.
-            # Prepare only the selected page; source values and ordering stay native.
-            formatted = []
-            for column in terminal_columns:
-                output = projections.get(column, (None, False))[0]
-                formatted.append(f"{output} AS {_quote_ident(column)}" if output else _quote_ident(column))
-            formatted.extend(f"system.main.cardinality({_quote_ident(column)})" for column in cardinality_positions)
-            query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
         row_count = (
             int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
             if total_rows is None
             else total_rows
         )
-        with self._terminal_connection(frame) as (connection, source_sql):
-            records = _execute_rows(
+        with self._sorted_page_order(frame, offset, limit, row_id) as order:
+            if order is None:
+                query = f"SELECT {select_list} FROM ow LIMIT {int(limit)} OFFSET {int(offset)}"
+            else:
+                query = (
+                    f"SELECT {', '.join('ow.' + _quote_ident(column) for column in terminal_columns)} FROM "
+                    f"(SELECT pos, rid FROM {_quote_ident(order.alias)}.main.rows "
+                    f"WHERE pos >= {int(offset)} AND pos < {int(offset) + int(limit)}) AS ow_order "
+                    f"JOIN ow ON ow.{_quote_ident(str(row_id))} = ow_order.rid ORDER BY ow_order.pos"
+                )
+            if any(output for output, _cardinality in projections.values()) or cardinality_positions:
+                # Python fetch narrows timestamps, including nested values and map keys.
+                # Keep one overflow code point or byte for the existing payload refusal.
+                # Base64 encodes each three bytes as four characters.
+                # Prepare only the selected page; source values and ordering stay native.
+                formatted = []
+                for column in terminal_columns:
+                    output = projections.get(column, (None, False))[0]
+                    formatted.append(f"{output} AS {_quote_ident(column)}" if output else _quote_ident(column))
+                formatted.extend(f"system.main.cardinality({_quote_ident(column)})" for column in cardinality_positions)
+                query = f"SELECT {', '.join(formatted)} FROM ({query}) AS ow_page"
+            with self._terminal_connection(frame if order is None else _unordered_view(frame)) as (
                 connection,
                 source_sql,
-                query,
-            )
+            ):
+                if order is not None:
+                    order.attach(connection)
+                records = _execute_rows(connection, source_sql, query)
+        if order is not None and len(records) != max(0, min(int(limit), int(row_count) - int(offset))):
+            raise EngineError("The sorted DuckDB view returned the wrong rows for this page. Reopen the file.")
         rows = []
         for row_number, record in enumerate(records, start=offset):
             identity = record[0] if row_id is not None else row_number
@@ -4862,6 +4942,22 @@ def _filter_query(columns: Iterable[str], model: Mapping[str, Any], *, tiebreak:
     )
 
 
+def _sorted_order_query(available: set[str], order: str, row_id: str, row_id_order: bool) -> str:
+    """Number rows exactly as ``_filter_query`` sorts them, breaking ties by row ID or by source position."""
+
+    identity = _quote_ident(row_id)
+    if row_id_order:
+        return (
+            f'SELECT system.main."-"(row_number() OVER (ORDER BY {order}, {identity}), 1) AS pos, '
+            f"{identity} AS rid FROM ow"
+        )
+    ordinal = _quote_ident(_unique_internal(available, "__ow_sort_order"))
+    return (
+        f'SELECT system.main."-"(row_number() OVER (ORDER BY {order}, {ordinal}), 1) AS pos, {identity} AS rid '
+        f"FROM (SELECT *, row_number() OVER () AS {ordinal} FROM ow) AS numbered"
+    )
+
+
 def _sort_clause(available: set[str], model: Mapping[str, Any]) -> str | None:
     rules = [rule for rule in model.get("sort", []) if not available or rule.get("column") in available]
     if not rules:
@@ -4885,6 +4981,7 @@ def _unordered_view(frame: Any) -> Any:
             unordered_sql=None,
             row_id_order=frame.unordered_row_id_order,
             unordered_row_id_order=False,
+            sorted_order_sql=None,
         )
     return replace(frame, sql=unordered_sql, unordered_sql=None)
 

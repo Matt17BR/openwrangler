@@ -1522,6 +1522,56 @@ def test_duckdb_parquet_sorted_views_keep_source_tie_order_and_unordered_aggrega
         engine.close()
 
 
+@pytest.mark.parametrize("row_id_order", [True, False])
+def test_duckdb_deep_sorted_pages_read_one_numbered_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row_id_order: bool
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    keys = ["b", "a", None, "a", "b", "a"] * 20
+    scores = [None if index % 5 == 0 else float(index % 7) for index in range(len(keys))]
+    path = tmp_path / "deep.parquet"
+    pq.write_table(pa.table({"key": keys, "score": scores, "value": list(range(len(keys)))}), path, row_group_size=7)
+    value_filter = {
+        "column": "value",
+        "type": "integer",
+        "predicates": [{"kind": "predicate", "operator": "gt", "value": 10}],
+    }
+    model = {
+        "filters": [value_filter],
+        "sort": [
+            {"column": "key", "direction": "desc", "nulls": "first"},
+            {"column": "score", "direction": "asc", "nulls": "last"},
+        ],
+    }
+    engine = DuckDBEngine()
+    try:
+        source = replace(engine.ensure_row_ids(engine.read_file(str(path)), "source"), row_id_order=row_id_order)
+        view = engine.filter_view(source, model)
+        offsets = range(0, len(keys) + 7, 7)
+        monkeypatch.setattr(duckdb_runtime, "_DIRECT_SORTED_PAGE_ROWS", 10**9)
+        expected = [engine.page(view, offset, 7) for offset in offsets]
+        assert engine._sorted_order is None
+        monkeypatch.setattr(duckdb_runtime, "_DIRECT_SORTED_PAGE_ROWS", 0)
+        assert [engine.page(view, offset, 7) for offset in reversed(offsets)] == expected[::-1]
+        assert engine._sorted_order is not None and engine._sorted_order[0] is view
+        numbered = engine._sorted_order[1]
+        assert engine.page(view, 21, 7) == expected[3]
+        assert engine._sorted_order[1] is numbered
+
+        resorted = engine.filter_view(
+            source, {**model, "sort": [{"column": "value", "direction": "desc", "nulls": "last"}]}
+        )
+        assert [row["values"][2]["raw"] for row in engine.page(resorted, 7, 3)["rows"]] == [112, 111, 110]
+        replacement = engine._sorted_order[1]
+        assert numbered.closed and not Path(numbered.path).parent.exists()
+        assert engine._sorted_order[0] is resorted
+    finally:
+        engine.close()
+    assert engine._sorted_order is None
+    assert replacement.closed and not Path(replacement.path).parent.exists()
+
+
 def test_duckdb_custom_checkpoint_retains_rows_and_stored_ids(tmp_path: Path) -> None:
     path = tmp_path / "capture.csv"
     path.write_text("id\n0\n1\n2\n3\n", encoding="utf-8")
