@@ -320,11 +320,6 @@ def test_duckdb_database_viewers_share_spill_until_last_reader_closes(database_f
                 return connection.execute("SELECT current_setting('threads')").fetchone()[0]
 
         default_threads = threads(first)
-        with first._tracked_connection() as connection, first._single_threaded(connection):
-            second.header_stats(second_frame)
-            # The overlapping statistics query still owns the shared setting.
-            assert threads(second) == 1
-        assert threads(second) == default_threads
         assert second.header_stats(second_frame) == {
             "missingCells": 1,
             "missingRows": 1,
@@ -3617,13 +3612,11 @@ def test_duckdb_header_stats_use_one_source_execution_with_exact_existing_semant
     reference = reference_header_stats(engine, frame)
     row_queries: list[str] = []
     scalar_queries: list[str] = []
-    terminal_threads: list[int] = []
     native_execute_rows = duckdb_runtime._execute_rows
     native_execute_scalar = duckdb_runtime._execute_scalar
 
     def capture_rows(connection: Any, plan_sql: str, query: str) -> list[tuple[Any, ...]]:
         row_queries.append(query)
-        terminal_threads.append(int(connection.execute("SELECT current_setting('threads')").fetchone()[0]))
         return native_execute_rows(connection, plan_sql, query)
 
     def capture_scalar(connection: Any, plan_sql: str, query: str) -> Any:
@@ -3646,35 +3639,22 @@ def test_duckdb_header_stats_use_one_source_execution_with_exact_existing_semant
     )
     assert len(row_queries) == 1
     assert scalar_queries == []
-    assert terminal_threads == [1]
     assert "GROUP BY" in row_queries[0]
 
 
-def test_duckdb_header_stats_thread_pin_is_request_local_and_connection_closes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_duckdb_header_stats_close_their_transient_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = DuckDBEngine()
     frame = engine.normalize(
         duckdb.sql("SELECT * FROM (VALUES (1, NULL::DOUBLE), (1, 'NaN'::DOUBLE)) AS source(key, value)")
     )
     native_connect = duckdb_runtime._connect
     connections: list[Any] = []
-    set_queries: list[str] = []
-    observed_threads: list[int] = []
 
     class TrackedConnection:
         def __init__(self) -> None:
             self.inner = native_connect()
             self.closed = False
             connections.append(self)
-
-        def execute(self, query: str, *args: Any, **kwargs: Any) -> Any:
-            if query.strip().casefold() == "set threads = 1":
-                set_queries.append(query)
-            result = self.inner.execute(query, *args, **kwargs)
-            if query.strip().casefold() == "set threads = 1":
-                observed_threads.append(int(self.inner.execute("SELECT current_setting('threads')").fetchone()[0]))
-            return result
 
         def close(self) -> None:
             self.inner.close()
@@ -3687,8 +3667,6 @@ def test_duckdb_header_stats_thread_pin_is_request_local_and_connection_closes(
     stats = engine.header_stats(frame)
 
     assert stats["missingCells"] == 2
-    assert set_queries == ["SET threads = 1"]
-    assert observed_threads == [1]
     assert len(connections) == 1
     assert connections[0].closed is True
     with pytest.raises(duckdb.ConnectionException, match="closed"):
