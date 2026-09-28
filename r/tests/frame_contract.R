@@ -9291,17 +9291,28 @@ assert_identical(
   "a reordered capture published the wrong stable row identities"
 )
 
-forged_mapped_capture <- clone_capture(
-  mapped_identity_capture,
-  replacements = list(rowOrigins = c(4L, 2L, 2L, 1L))
+forged_row_origins <- list(
+  c(4L, 2L, 2L, 1L), c(4, 2, 2, 1), c(4L, 2L, NA, 1L), c(4, 2, NaN, 1), c(4, 2, 2.5, 1), c(4, 2, Inf, 1),
+  c(4L, 2L, 0L, 1L), c(4L, 2L, 5L, 1L)
 )
-assert_error(
+for (forged_origins in forged_row_origins) {
+  assert_error(
+    openwrangler_r_frame_contract$materialize_page(
+      clone_capture(mapped_identity_capture, replacements = list(rowOrigins = forged_origins)),
+      row_limit = 1L,
+      column_limit = 1L
+    ),
+    "invalid-capture"
+  )
+}
+assert_identical(
   openwrangler_r_frame_contract$materialize_page(
-    forged_mapped_capture,
-    row_limit = 1L,
-    column_limit = 1L
+    clone_capture(mapped_identity_capture, replacements = list(rowOrigins = c(4, 2, 3, 1))),
+    row_limit = 4L,
+    column_limit = 2L
   ),
-  "invalid-capture"
+  mapped_identity_page,
+  "whole-number double row identities changed a mapped page"
 )
 
 inconsistent_sequential_capture <- clone_capture(
