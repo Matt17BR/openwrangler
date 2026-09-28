@@ -263,7 +263,7 @@ class PySparkEngine(DataFrameEngine):
         # until a bounded page reaches the end of the logical view.
         return {"rows": None, "columns": len(self._visible_columns(frame))}
 
-    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+    def ensure_row_ids(self, frame: Any, token: str, *, owned: bool = False) -> Any:
         self.validate_internal_row_id_namespace(frame)
         self.validate_column_addressability(frame)
         row_id = self._row_id_column(frame)

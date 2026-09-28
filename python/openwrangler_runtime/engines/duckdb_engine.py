@@ -933,7 +933,7 @@ class DuckDBEngine(DataFrameEngine):
             return
         super().validate_internal_row_id_namespace(frame, allowed_internal)
 
-    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+    def ensure_row_ids(self, frame: Any, token: str, *, owned: bool = False) -> Any:
         frame = self.normalize(frame)
         if self._row_id_column(frame) is not None:
             return frame

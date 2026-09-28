@@ -1066,8 +1066,11 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def ensure_row_ids(self, frame: Any, token: str) -> Any:
-        """Attach private row identities when a transformation did not preserve them."""
+    def ensure_row_ids(self, frame: Any, token: str, *, owned: bool = False) -> Any:
+        """Attach private row identities when a transformation did not preserve them.
+
+        ``owned`` means no caller outside the session can write into the frame's data.
+        """
         raise NotImplementedError
 
     @abstractmethod

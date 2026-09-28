@@ -1244,7 +1244,7 @@ class PolarsEngine(DataFrameEngine):
         rows, _ = df.shape
         return {"rows": int(rows), "columns": len(self._visible_columns(df))}
 
-    def ensure_row_ids(self, frame: Any, token: str) -> Any:
+    def ensure_row_ids(self, frame: Any, token: str, *, owned: bool = False) -> Any:
         if any(label.startswith(INTERNAL_ROW_ID_PREFIX) for label in self._raw_column_labels(frame)):
             return frame
         return frame.with_row_index(f"{INTERNAL_ROW_ID_PREFIX}{token}")
