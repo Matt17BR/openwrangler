@@ -2730,6 +2730,38 @@ def test_pandas_sorted_rows_keep_object_column_facts(parallel: bool, monkeypatch
     assert PandasEngine().schema(result) == schema
 
 
+def test_pandas_pivot_longer_keeps_object_column_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "text": pd.Series(["b", None, "a"], dtype=object),
+            "mixed": pd.Series([2, "x", 1.5], dtype=object),
+            "first": [1.0, 2.0, 3.0],
+            "second": [4.0, None, 6.0],
+        }
+    )
+    frame = engine.ensure_row_ids(source, "pivot")
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    params = {"columns": [lineage[2], lineage[3]], "labelColumn": "measure", "valueColumn": "value"}
+    operation = bind_step(validate_step({"id": "pivot", "kind": "pivotLonger", "params": params}), schema, lineage)
+    scanned: list[str] = []
+    native = pandas_engine_module._pandas_has_missing
+
+    def counted(series: Any) -> bool:
+        scanned.append(str(series.name))
+        return native(series)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_has_missing", counted)
+    result = engine.apply_transform(frame, operation)
+
+    assert result["text"].tolist() == ["b", None, "a", "b", None, "a"]
+    pivoted = engine.schema(result)
+    assert scanned == ["measure", "value"]
+    assert pivoted[:2] == schema[:2]
+    assert pivoted == PandasEngine().schema(result)
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -2742,6 +2774,8 @@ def test_pandas_sorted_rows_keep_object_column_facts(parallel: bool, monkeypatch
         "no-columns",
         "no-rows",
         "frame",
+        "multiindex-frame",
+        "column-less-frame",
         "shared-attrs",
         "unique-labels",
     ],
@@ -2775,6 +2809,11 @@ def test_pandas_column_appends_match_concat_and_share_existing_columns(case: str
         frame, added = frame.iloc[:0], [part.iloc[:0] for part in added]
     elif case == "frame":
         added = [pd.concat(added[:2], axis=1)]
+    elif case == "multiindex-frame":
+        frame.columns = pd.MultiIndex.from_tuples([("text", "a"), ("number", "b")])
+        added = [pd.concat(added[:2], axis=1)]
+    elif case == "column-less-frame":
+        added = [pd.DataFrame(index=index)]
     elif case == "shared-attrs":
         for part in added:
             part.attrs = {"source": "kept"}
@@ -2792,6 +2831,6 @@ def test_pandas_column_appends_match_concat_and_share_existing_columns(case: str
             pd.testing.assert_frame_equal(part, original)
         else:
             pd.testing.assert_series_equal(part, original)
-    # Added frames, and frames that refuse duplicate labels, go through concat, which may consolidate columns.
-    if frame.size and case not in {"frame", "unique-labels"}:
+    # Frames that refuse duplicate labels go through concat, which may consolidate columns.
+    if frame.size and case != "unique-labels":
         assert np.shares_memory(actual.iloc[:, 0].to_numpy(), frame.iloc[:, 0].to_numpy())
