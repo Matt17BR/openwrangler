@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import weakref
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from decimal import Decimal
@@ -10,7 +11,9 @@ from importlib.util import find_spec
 from inspect import getsource, signature
 from math import isfinite
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from textwrap import indent
+from threading import Lock
 from typing import Any, Literal, cast
 
 from .._column_binding import compile_output_collision_guards
@@ -98,6 +101,8 @@ _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
 _POLARS_EXPLODE_MAX_ROWS = 2_147_483_647
+# Longer sorted lazy views read later pages by stored row IDs; shorter ones sort again cheaply.
+_POLARS_STORED_ORDER_ROWS = 100_000
 
 
 def _polars_filter_literal(value: Any, dtype: Any, operator: str) -> Any:
@@ -971,6 +976,26 @@ class PolarsEngine(DataFrameEngine):
         supports_find=True,
     )
 
+    def __init__(self) -> None:
+        # Sorted lazy views from filter_view, and the stored row-ID order of the one whose later pages read it last.
+        self._sorted_views: list[weakref.ref[Any]] = []
+        self._sorted_order: tuple[weakref.ref[Any], TemporaryDirectory[str]] | None = None
+        self._sorted_lock = Lock()
+
+    def close(self) -> None:
+        try:
+            with self._sorted_lock:
+                self._sorted_views.clear()
+                self._replace_sorted_order(None)
+        finally:
+            super().close()
+
+    def _replace_sorted_order(self, order: tuple[weakref.ref[Any], TemporaryDirectory[str]] | None) -> None:
+        """Keep ``order`` and delete the previous one; the caller holds the sorted lock."""
+        previous, self._sorted_order = self._sorted_order, order
+        if previous is not None:
+            previous[1].cleanup()
+
     def prepare(self, source: Mapping[str, Any] | None = None) -> None:
         super().prepare(source)
         if source is None or source.get("kind") != "file":
@@ -1019,7 +1044,7 @@ class PolarsEngine(DataFrameEngine):
                     "Use the Pandas backend for this encoding."
                 )
             encoding: Literal["utf8", "utf8-lossy"] = "utf8-lossy" if requested_encoding == "utf8-lossy" else "utf8"
-            return pl.scan_csv(
+            frame = pl.scan_csv(
                 path,
                 glob=False,
                 raise_if_empty=False,
@@ -1029,6 +1054,10 @@ class PolarsEngine(DataFrameEngine):
                 has_header=options.get("hasHeader", True),
                 eol_char="\r" if options.get("lineEnding") == "cr" else "\n",
             )
+            # Polars counts a body that is one unterminated quoted field as no rows, then slices it without parsing.
+            # A fixed plan numbers rows above the scan instead, where the first page parses the text and fails.
+            frame.collect_schema()
+            return frame
         if extension == ".parquet":
             return pl.scan_parquet(path, glob=False)
         if extension in {".jsonl", ".ndjson"}:
@@ -1216,9 +1245,19 @@ class PolarsEngine(DataFrameEngine):
         return {"rows": int(rows), "columns": len(self._visible_columns(df))}
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
-        if self._row_id_column(frame) is not None:
+        if any(label.startswith(INTERNAL_ROW_ID_PREFIX) for label in self._raw_column_labels(frame)):
             return frame
         return frame.with_row_index(f"{INTERNAL_ROW_ID_PREFIX}{token}")
+
+    @staticmethod
+    def _raw_column_labels(frame: Any) -> list[Any]:
+        import polars as pl
+
+        if isinstance(frame, pl.LazyFrame):
+            # Reading a lazy plan's schema fixes it, and Polars then numbers rows above a file scan instead of
+            # inside it, where no filter or slice reaches the scan. A copy keeps the plan open for its row index.
+            return list(frame.clone().collect_schema().names())
+        return DataFrameEngine._raw_column_labels(frame)
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         import polars as pl
@@ -1340,6 +1379,61 @@ class PolarsEngine(DataFrameEngine):
             )
         return df
 
+    def filter_view(self, frame: Any, model: Mapping[str, Any]) -> Any:
+        import polars as pl
+
+        view = self.apply_filter_model(frame, model)
+        if isinstance(view, pl.LazyFrame) and self._row_id_column(view) is not None:
+            columns = set(view.collect_schema().names())
+            if any(rule.get("column") in columns for rule in model.get("sort", [])):
+                with self._sorted_lock:
+                    self._sorted_views = [reference for reference in self._sorted_views if reference() is not None]
+                    self._sorted_views.append(weakref.ref(view))
+                    if self._sorted_order is not None and self._sorted_order[0]() is None:
+                        self._replace_sorted_order(None)
+        return view
+
+    def _sorted_page(self, view: Any, offset: int, limit: int, row_id: str, columns: list[str]) -> Any | None:
+        """Read a sorted lazy view's page by its rows' private IDs, or None to slice the view instead.
+
+        Polars sorts every row again for a page after the first. The first such page streams the view's IDs, in view
+        order, to a private temporary Parquet file. Each page reads its own IDs from that file and filters the view by
+        them, which Polars applies before the sort.
+        """
+        import polars as pl
+
+        with self._sorted_lock:
+            if not any(reference() is view for reference in self._sorted_views):
+                return None
+            order = self._sorted_order
+            if order is None or order[0]() is not view:
+                directory = TemporaryDirectory(prefix="open-wrangler-polars-order-")
+                try:
+                    view.select(_ow_polars_col(view, row_id)).sink_parquet(Path(directory.name) / "order.parquet")
+                except (OSError, pl.exceptions.PolarsError):
+                    # The direct slice reports the view's own failure, or pages without the stored order.
+                    directory.cleanup()
+                    self._sorted_views = [reference for reference in self._sorted_views if reference() is not view]
+                    return None
+                except BaseException:
+                    directory.cleanup()
+                    raise
+                order = (weakref.ref(view), directory)
+                self._replace_sorted_order(order)
+            wanted = (
+                pl.scan_parquet(Path(order[1].name) / "order.parquet", glob=False)
+                .slice(offset, limit)
+                .collect()
+                .to_series()
+            )
+        page = (
+            view.filter(_ow_polars_col(view, row_id).is_in(wanted.implode()))
+            .select(_ow_polars_columns(view, columns))
+            .collect(engine="streaming")
+        )
+        # Unique IDs select exactly the page's rows, still in view order.
+        return page if page.height == wanted.len() else None
+
     def page(
         self,
         frame: Any,
@@ -1364,15 +1458,21 @@ class PolarsEngine(DataFrameEngine):
         if isinstance(frame, pl.LazyFrame):
             if total_rows is None:
                 total_rows = int(frame.select(pl.len()).collect(engine="streaming").item())
-            # Projection must enter the lazy plan before its terminal slice and
-            # collect so scan adapters can prune every unneeded output column.
             sliced = (
-                frame.select(_ow_polars_columns(frame, terminal_columns))
-                .slice(offset, limit)
-                .collect(engine="streaming")
-                if terminal_columns
-                else frame.slice(offset, limit).collect(engine="streaming")
+                self._sorted_page(frame, offset, limit, row_id, terminal_columns)
+                if offset > 0 and row_id is not None and total_rows > _POLARS_STORED_ORDER_ROWS
+                else None
             )
+            if sliced is None:
+                # Projection must enter the lazy plan before its terminal slice and
+                # collect so scan adapters can prune every unneeded output column.
+                sliced = (
+                    frame.select(_ow_polars_columns(frame, terminal_columns))
+                    .slice(offset, limit)
+                    .collect(engine="streaming")
+                    if terminal_columns
+                    else frame.slice(offset, limit).collect(engine="streaming")
+                )
         else:
             df = self.normalize(frame)
             sliced = (

@@ -1199,6 +1199,21 @@ Older supported Polars without this API still boxes and base64-encodes complete 
 These expressions add no source scan and run only for applicable selected columns. They do not bound native source
 memory, aggregate page allocation or nested values.
 
+A lazy Parquet or JSON Lines source numbers its rows inside the file scan. Reading a plan's schema fixes it, and Polars
+then adds a row index as a separate step above the scan that no filter or slice passes, so the engine reads column names
+from a copy of the plan before it adds the private row ID column. A CSV or TSV scan reads its schema as it opens and keeps
+the separate step. Polars counts a text body that is one unterminated quoted field as no rows and slices it without
+parsing, so only a first page read through that step parses the text and reports the error.
+
+A sorted LazyFrame view reads its first page with the native sorted slice, which Polars answers without sorting every
+row. Later pages of a view longer than 100,000 rows would each sort it again, so the first of them writes the view's
+private row IDs, in view order, to a Parquet file in a private temporary directory. That page and the ones after it read
+their own IDs from the file and filter the view by them, which Polars applies inside the scan before the sort. A page
+whose ID filter returns a different row count, or a view whose IDs cannot be written, uses the sorted slice instead. The
+engine keeps one view's IDs and deletes their directory when another view needs its own, when a later sorted view finds
+that view gone, or when the engine closes. Shorter views sort again, and eager DataFrame views are already sorted in
+memory.
+
 Native Datetime and Duration columns retain their precision in pages, value choices and profile labels. Pages format
 only the projected, sliced result after its source collection. Choice search and tie ordering use native temporal
 text; exact ticks and labels are retained only for the limited choices. Profile labels are formatted after counting
