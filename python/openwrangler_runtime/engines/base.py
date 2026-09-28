@@ -107,13 +107,16 @@ VIEW_PREDICATE_OPERATORS: Mapping[str, frozenset[str]] = {
     "struct": _NULL_PREDICATE_OPERATORS,
     "unknown": _NULL_PREDICATE_OPERATORS,
 }
-_INTEGER_VIEW_TEXT = re.compile(r"^[+-]?\d+$")
-_NUMBER_VIEW_TEXT = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
+_INTEGER_VIEW_TEXT = re.compile(r"^[+-]?[0-9]+$")
+_NUMBER_VIEW_TEXT = re.compile(r"^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?$")
 _INFINITY_VIEW_TEXT = re.compile(r"^(?:[+-]?Infinity|-?inf)$")
-_DATE_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_DATETIME_VIEW_TEXT = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?$")
-_DURATION_SECONDS_TEXT = re.compile(r"^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$")
-_DURATION_TEXT = re.compile(r"^(?:(-?\d+) days?, )?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$")
+_DATE_VIEW_TEXT = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_DATETIME_VIEW_TEXT = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?"
+    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})?$"
+)
+_DURATION_SECONDS_TEXT = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]{0,6})?|\.[0-9]{1,6})$")
+_DURATION_TEXT = re.compile(r"^(?:(-?[0-9]+) days?, )?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,6}))?$")
 
 
 def validate_view_predicate_operator(column_type: str | None, operator: Any) -> str:
@@ -260,11 +263,11 @@ def coerce_typed_view_value(value: Any, column_type: str | None, *, preserve_flo
                 or (len(text) >= 19 and text[16] == ":" and int(text[17:19]) > 59)
             ):
                 raise ValueError("datetime hours, minutes, or seconds are outside their portable range")
-            offset = re.search(r"[+-](\d{2}):?(\d{2})$", text)
+            offset = re.search(r"[+-]([0-9]{2}):?([0-9]{2})$", text)
             if offset and (int(offset.group(1)) > 23 or int(offset.group(2)) > 59):
                 raise ValueError("datetime offset hours or minutes are outside their portable range")
-            text = re.sub(r"\.(\d{1,6})", lambda match: "." + match.group(1).ljust(6, "0"), text)
-            text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+            text = re.sub(r"\.([0-9]{1,6})", lambda match: "." + match.group(1).ljust(6, "0"), text)
+            text = re.sub(r"([+-][0-9]{2})([0-9]{2})$", r"\1:\2", text)
             return datetime.fromisoformat(text.replace("Z", "+00:00"))
         if column_type == "duration":
             if isinstance(value, timedelta):
@@ -614,7 +617,7 @@ def generated_view_value_helper_lines() -> list[str]:
         "        if isinstance(value, bool):",
         "            raise ValueError('Boolean is not an integer view-filter value.')",
         "        text = str(value)",
-        "        if not re.fullmatch(r'[+-]?\\d+', text):",
+        "        if not re.fullmatch(r'[+-]?[0-9]+', text):",
         "            raise ValueError('Integer view-filter values require decimal digits.')",
         "        return int(text)",
         "    if column_type == 'float':",
@@ -623,11 +626,11 @@ def generated_view_value_helper_lines() -> list[str]:
         "        text = str(value)",
         "        if text == 'NaN':",
         "            raise ValueError('NaN must use the explicit includeNaN option.')",
-        ("        number = re.fullmatch(r'[+-]?(?:(?:\\d+(?:\\.\\d*)?)|(?:\\.\\d+))(?:[eE][+-]?\\d+)?', text)"),
+        ("        number = re.fullmatch(r'[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?', text)"),
         "        infinity = re.fullmatch(r'[+-]?Infinity|-?inf', text)",
         "        if not (number or infinity):",
         "            raise ValueError('Float view-filter values require a decimal number or explicit Infinity.')",
-        "        if preserve_float_integers and re.fullmatch(r'[+-]?\\d+', text):",
+        "        if preserve_float_integers and re.fullmatch(r'[+-]?[0-9]+', text):",
         "            return int(text)",
         "        result = float(text)",
         "        if result != result:",
@@ -637,7 +640,7 @@ def generated_view_value_helper_lines() -> list[str]:
         "        return result",
         "    if column_type == 'decimal':",
         "        text = str(value)",
-        ("        if not re.fullmatch(r'[+-]?(?:(?:\\d+(?:\\.\\d*)?)|(?:\\.\\d+))(?:[eE][+-]?\\d+)?', text):"),
+        ("        if not re.fullmatch(r'[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?', text):"),
         "            raise ValueError('Decimal view-filter values require a decimal number.')",
         "        return Decimal(text)",
         "    if column_type == 'boolean':",
@@ -651,7 +654,7 @@ def generated_view_value_helper_lines() -> list[str]:
         "        if isinstance(value, date) and not isinstance(value, datetime):",
         "            return value",
         "        text = str(value)",
-        "        if not re.fullmatch(r'\\d{4}-\\d{2}-\\d{2}', text):",
+        "        if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', text):",
         "            raise ValueError('Date view-filter values require YYYY-MM-DD.')",
         "        return date.fromisoformat(text)",
         "    if column_type == 'datetime':",
@@ -660,8 +663,8 @@ def generated_view_value_helper_lines() -> list[str]:
         "        text = str(value)",
         (
             "        if not re.fullmatch("
-            "r'\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?'"
-            " r'(?:Z|[+-]\\d{2}:?\\d{2})?', text):"
+            "r'[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?'"
+            " r'(?:Z|[+-][0-9]{2}:?[0-9]{2})?', text):"
         ),
         "            raise ValueError('Datetime view-filter values require a portable ISO datetime.')",
         (
@@ -669,20 +672,23 @@ def generated_view_value_helper_lines() -> list[str]:
             "(len(text) >= 19 and text[16] == ':' and int(text[17:19]) > 59)):"
         ),
         "            raise ValueError('Datetime components are outside their portable range.')",
-        "        offset = re.search(r'[+-](\\d{2}):?(\\d{2})$', text)",
+        "        offset = re.search(r'[+-]([0-9]{2}):?([0-9]{2})$', text)",
         "        if offset and (int(offset.group(1)) > 23 or int(offset.group(2)) > 59):",
         "            raise ValueError('Datetime offset components are outside their portable range.')",
-        "        text = re.sub(r'\\.(\\d{1,6})', lambda match: '.' + match.group(1).ljust(6, '0'), text)",
-        "        text = re.sub(r'([+-]\\d{2})(\\d{2})$', r'\\1:\\2', text)",
+        "        text = re.sub(r'\\.([0-9]{1,6})', lambda match: '.' + match.group(1).ljust(6, '0'), text)",
+        "        text = re.sub(r'([+-][0-9]{2})([0-9]{2})$', r'\\1:\\2', text)",
         "        return datetime.fromisoformat(text.replace('Z', '+00:00'))",
         "    if column_type == 'duration':",
         "        if isinstance(value, timedelta):",
         "            return value",
         "        text = str(value)",
-        "        if re.fullmatch(r'[+-]?(?:\\d+(?:\\.\\d{0,6})?|\\.\\d{1,6})', text):",
+        "        if re.fullmatch(r'[+-]?(?:[0-9]+(?:\\.[0-9]{0,6})?|\\.[0-9]{1,6})', text):",
         "            numerator, denominator = Decimal(text).as_integer_ratio()",
         "            return timedelta(microseconds=numerator * 1000000 // denominator)",
-        ("        match = re.fullmatch(r'(?:(-?\\d+) days?, )?(\\d{1,2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,6}))?', text)"),
+        (
+            "        match = re.fullmatch("
+            "r'(?:(-?[0-9]+) days?, )?([0-9]{1,2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,6}))?', text)"
+        ),
         "        if not match:",
         "            raise ValueError(\"Duration view-filter values require seconds or '[days, ]HH:MM:SS[.ffffff]'.\")",
         "        days, hours, minutes, seconds, fraction = match.groups()",

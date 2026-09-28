@@ -72,6 +72,14 @@
     { "type": "date", "value": "2024-01-31\n" },
     { "type": "datetime", "value": "2024-01-31T23:59:58\n" },
     { "type": "duration", "value": "1.25\n" },
-    { "type": "duration", "value": "00:00:01\n" }
+    { "type": "duration", "value": "00:00:01\n" },
+    { "type": "integer", "value": "\u0661\u0662" },
+    { "type": "integer", "value": "\uff11\uff12" },
+    { "type": "float", "value": "\u0661.\u0665" },
+    { "type": "decimal", "value": "\u0661.\u0665" },
+    { "type": "date", "value": "\u0662\u0660\u0662\u0664-01-31" },
+    { "type": "datetime", "value": "2024-01-31T\u0662\u0663:59:58" },
+    { "type": "duration", "value": "\u0661\u0662" },
+    { "type": "duration", "value": "00:00:\u0660\u0661" }
   ]
 }
