@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import pixelmatch from "pixelmatch";
+import { PNG } from "pngjs";
 
 export async function verifyGridColumnHeaderBrowserAcceptance(browser, harnessDirectory) {
   const states = [
@@ -444,9 +446,100 @@ export async function verifyGridColumnHeaderBrowserAcceptance(browser, harnessDi
     }
     await page.close();
   }
+  await verifyDeepScrollColumnMenus(browser, harnessDirectory);
   console.log(
-    "Computed column-header target size, separation, focus, resize, menu, zoom, narrow and forced colors verified."
+    "Computed column-header target size, separation, focus, resize, menu, deep-scroll menu paint, zoom, narrow and forced colors verified."
   );
+}
+
+async function verifyDeepScrollColumnMenus(browser, harnessDirectory) {
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 760 });
+  await page.goto(pathToFileURL(resolve(harnessDirectory, "grid-terminal-range-dark-320.html")).href, {
+    waitUntil: "load"
+  });
+  await page.locator(".columnResizeHandle").first().waitFor();
+  const scroller = page.getByTestId("data-grid-scroller");
+  for (const { scrollLeft, verticalFraction } of [
+    { scrollLeft: 0, verticalFraction: 0.5 },
+    { scrollLeft: 0, verticalFraction: 1 },
+    { scrollLeft: 300, verticalFraction: 0.5 }
+  ]) {
+    const label = `grid-terminal-range-dark-320.html at ${verticalFraction * 100}% height and scrollLeft ${scrollLeft}`;
+    await scroller.evaluate(
+      (element, target) => {
+        element.scrollTop = (element.scrollHeight - element.clientHeight) * target.verticalFraction;
+        element.scrollLeft = target.scrollLeft;
+      },
+      { scrollLeft, verticalFraction }
+    );
+    await page.waitForFunction((target) => {
+      const element = document.querySelector('[data-testid="data-grid-scroller"]');
+      return (
+        element instanceof HTMLElement &&
+        element.scrollTop > 1_000_000 &&
+        Math.abs(element.scrollLeft - target) <= 1 &&
+        element.querySelector("tbody tr[aria-rowindex]") !== null
+      );
+    }, scrollLeft);
+    const column = await page.locator("th[data-grid-column]").evaluateAll((headers) => {
+      const scrollerBounds = headers[0]?.closest('[data-testid="data-grid-scroller"]')?.getBoundingClientRect();
+      const rowHeader = document.querySelector("thead th.rowHeader")?.getBoundingClientRect();
+      const visibleLeft = Math.max(scrollerBounds?.left ?? 0, rowHeader?.right ?? 0);
+      return (
+        headers
+          .find((header) => {
+            const bounds = header.getBoundingClientRect();
+            return bounds.left >= visibleLeft && bounds.right <= (scrollerBounds?.right ?? 0);
+          })
+          ?.getAttribute("data-grid-column") ?? null
+      );
+    });
+    if (column === null) throw new Error(`${label} exposed no complete column header.`);
+    const header = page.locator(`th[data-grid-column="${column}"]`);
+    const toggle = header.locator(".columnMenu > summary");
+    const menu = header.locator(".columnMenuContent");
+    await toggle.click();
+    await menu.waitFor({ state: "visible" });
+    const placement = await menu.evaluate((content) => {
+      const bounds = content.getBoundingClientRect();
+      const anchor = content.parentElement?.querySelector(":scope > summary")?.getBoundingClientRect();
+      return {
+        anchored: Boolean(
+          anchor && Math.abs(bounds.top - anchor.bottom) <= 1 && Math.abs(bounds.left - anchor.left) <= 1
+        ),
+        clip: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+        positionArea: getComputedStyle(content).positionArea ?? "unsupported"
+      };
+    });
+    // CSS anchor positioning lays these menus out but leaves them unpainted after deep scrolls in VS Code 1.139.
+    if (!placement.anchored || !["none", "unsupported"].includes(placement.positionArea)) {
+      throw new Error(`${label} did not place its column menu at its actions button: ${JSON.stringify(placement)}.`);
+    }
+    const clip = {
+      x: Math.floor(placement.clip.x),
+      y: Math.floor(placement.clip.y),
+      width: Math.ceil(placement.clip.width),
+      height: Math.ceil(placement.clip.height)
+    };
+    const shown = PNG.sync.read(await page.screenshot({ clip }));
+    await menu.evaluate((content) => {
+      content.style.visibility = "hidden";
+    });
+    const hidden = PNG.sync.read(await page.screenshot({ clip }));
+    await menu.evaluate((content) => {
+      content.style.visibility = "";
+    });
+    const paintedFraction =
+      pixelmatch(shown.data, hidden.data, undefined, shown.width, shown.height, { threshold: 0.1 }) /
+      (shown.width * shown.height);
+    if (paintedFraction < 0.2) {
+      throw new Error(`${label} laid out its column menu without painting it: ${paintedFraction} of pixels changed.`);
+    }
+    await toggle.click();
+    await menu.waitFor({ state: "hidden" });
+  }
+  await page.close();
 }
 
 async function verifyCompactColumnMenu(page) {

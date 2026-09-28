@@ -90,6 +90,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 - Generated R Filter Rows and Conditional Column agree with live integer64 comparisons at the minimum signed 64-bit bound.
 - Live R viewing sorts refresh after integer64 values change, including by-reference data.table updates and changes between zero and missing values.
 - R Date value selections keep all rows for 1970-01-01, including dates stored as negative zero. Pickers and profiles count those dates together.
+- Column menus, opened with **…** in a column header, appear after you scroll far down or sideways. Previously, in VS Code 1.139, such a menu could open invisibly, so Filter, Sort and Copy column were out of reach until you scrolled back to the top.
 
 ## [2.6.0] - 2026-09-19
 

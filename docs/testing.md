@@ -120,6 +120,10 @@ Its existing interaction owner checks inspection scope above the editor at wide,
 excluded from the code document and the editor still reachable by keyboard.
 The grid owner checks that hovered row labels hide horizontally scrolled cell text and filter controls with translucent
 theme colors, while exposed cell menus and keyboard focus remain usable in dark, light and forced colors.
+The column-header owner opens column menus in the 100,000,000-row terminal-range harness at half and full height, with
+and without horizontal scroll. Each menu must sit at its actions button, be placed without CSS anchor positioning and
+change the screenshot pixels beneath it. VS Code 1.139's Chromium 150 lays out anchor-positioned menus there without
+painting them, which hit tests cannot detect; the pinned Chromium paints them.
 The drawer workflow also checks that closing the panel profiles newly exposed partial columns without another
 window resize or grid scroll.
 Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
