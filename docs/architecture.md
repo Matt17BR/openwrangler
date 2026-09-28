@@ -525,11 +525,43 @@ native reader before a four-byte check adapts a zero-byte or single-UTF-8-BOM fi
 No shared whitespace scan discards native records. Other parse errors retain their normal refusal path.
 
 Every cleaning operation except Custom Code addresses input columns through public `{id, name}` references. The runtime
-binds public references against the exact input schema and lineage to private positions before execution. A bound reference
-also records the column's native type when the schema reports one, so generated code can emit only what that type needs.
-Unknown, stale, repeated where
-disallowed, type/name-mismatched, colliding, or private row-identity references fail closed. The current catalog and
-parameters are listed in the generated [transformation reference](reference.md#transformation-operations).
+binds public references against the exact input schema and lineage to private positions before execution. When the
+schema reports a native type, a bound reference also records it with the type Open Wrangler shows, so generated code can
+emit only what those types need. Unknown, stale, repeated where disallowed, type/name-mismatched, colliding, or private
+row-identity references fail closed. The current catalog and parameters are listed in the generated
+[transformation reference](reference.md#transformation-operations).
+
+### Generated code
+
+Generated code reads like code a person would write for the plan: it contains only what the plan does to the recorded
+column types. Engines adopt these rules one at a time; an engine that hasn't adopted them yet keeps its earlier generic
+code.
+
+- The code is one `clean_data(df)` function with its imports inside, so it never rebinds names in the user's
+  notebook. R defines `clean_data <- function(df)` and then publishes its result as the R contract describes. Helpers are nested, have plain names and a one-line docstring (R: a one-line
+  comment), and handle only what the plan needs. Each step starts with a comment holding its catalog title.
+- A column's family is the type Open Wrangler shows, with datetimes further split by their recorded time zone. Each
+  type-specific branch is exact for every member of its family: any integer width or nullability, any float width,
+  both Pandas Boolean kinds, every text storage including Pandas 2 `object` text and categorical text, and every
+  datetime unit. Pandas `object` columns that mix text with other values form their own family.
+- A script stops only when the new data could give a different result than live execution. One short check block runs
+  before the first step and another right after each Custom Code step, because user code can change any type. It stops
+  when a column's family differs, a column is missing or repeated, or a column the plan adds already exists. The
+  message names the column, the type it found and the family the code expects. It then gives the exact conversion to
+  run first when one can't change any value, such as converting a datetime to the recorded time zone, and otherwise
+  advises generating the code again from the new data. Refusals that depend on data values, such as the integer
+  envelope, stay inside the step that makes them, as in live execution.
+- `plan_check_segments` in `python/openwrangler_runtime/engines/_generated_checks.py` decides which columns each check
+  block covers. Engines check only the families their emitted code depends on. `GeneratedScript` in
+  `_generated_script.py` assembles the Python shape, and `expected_columns` words the family in stop messages.
+- Every engine and R library stops for a type mismatch the same way: an `if` that raises the nested
+  `type_error(column, found, expected, advice)` helper (`GeneratedScript.type_check`). R defines the same helper and
+  message and calls `stop(type_error(...), call. = FALSE)`.
+
+`fixtures/generated-code-plans.json` holds one step for every operation and several realistic multi-step plans. Each
+engine and R library compares live and generated results for every member of each family its code accepts, keeps the
+fixture plans within per-operation line limits, and checks the shape rules above with
+`python/tests/generated_code_test_support.py` or its R counterpart.
 
 Session capabilities explicitly list supported operations. Polars editing sources, DuckDB file editing and native R
 support Extract Struct Fields. Polars editing sources and native R support Explode List. Pandas and viewing-only

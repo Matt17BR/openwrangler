@@ -1,0 +1,1167 @@
+{
+  "version": 1,
+  "source": {
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "integer",
+        "values": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
+      },
+      {
+        "name": "customer",
+        "type": "string",
+        "values": ["  Acme Corp ", "beta LLC", "Beta LLC", null, "Élodie", "straße GmbH", "  Acme Corp ", "gamma inc"]
+      },
+      {
+        "name": "region",
+        "type": "string",
+        "values": ["North", "South", "North", null, "East", "West", "North", "South"]
+      },
+      {
+        "name": "quarter",
+        "type": "string",
+        "values": ["Q1", "Q2", "Q3", "Q4", "Q1", "Q2", "Q3", "Q4"]
+      },
+      {
+        "name": "units",
+        "type": "integer",
+        "values": [12, 8, null, 15, 20, 5, 12, 9]
+      },
+      {
+        "name": "price",
+        "type": "float",
+        "values": [
+          19.99,
+          24.5,
+          null,
+          {
+            "$nan": true
+          },
+          10.0,
+          8.5,
+          19.99,
+          12.0
+        ]
+      },
+      {
+        "name": "discount",
+        "type": "float",
+        "values": [0.05, 0.1, 0.0, null, 0.15, 0.2, 0.05, 0.1]
+      },
+      {
+        "name": "active",
+        "type": "boolean",
+        "values": [true, false, null, true, false, true, null, false]
+      },
+      {
+        "name": "ordered_at",
+        "type": "datetime",
+        "values": [
+          "2024-01-15T10:30:00.123456",
+          "2024-02-20T14:00:00.000000",
+          "2024-03-10T08:15:30.500000",
+          "2024-04-01T18:45:00.999999",
+          "2024-05-12T11:00:00.000000",
+          "2024-06-30T23:59:59.000000",
+          "2024-07-04T09:09:09.090909",
+          "2024-08-19T16:20:00.000000"
+        ]
+      },
+      {
+        "name": "delivered_on",
+        "type": "date",
+        "values": [
+          "2024-01-20",
+          "2024-02-25",
+          "2024-03-15",
+          null,
+          "2024-05-18",
+          "2024-07-05",
+          "2024-07-10",
+          "2024-08-25"
+        ]
+      },
+      {
+        "name": "amount",
+        "type": "decimal",
+        "values": ["123.45", "89.10", "0.00", "45.67", "200.00", "15.25", "123.45", "67.89"]
+      },
+      {
+        "name": "tags",
+        "type": "string",
+        "values": ["red;blue", "green", null, "red", "blue;green", "", "red;blue", "green"]
+      },
+      {
+        "name": "items",
+        "type": "list",
+        "values": [[1, 2], [], null, [3], [4, 5], [6], [1, 2], [7]]
+      },
+      {
+        "name": "address",
+        "type": "struct",
+        "values": [
+          {
+            "city": "Paris",
+            "zip": "75001"
+          },
+          {
+            "city": "Berlin",
+            "zip": "10115"
+          },
+          {
+            "city": "Lyon",
+            "zip": "69001"
+          },
+          {
+            "city": "Munich",
+            "zip": "80331"
+          },
+          {
+            "city": "Nantes",
+            "zip": "44000"
+          },
+          {
+            "city": "Hamburg",
+            "zip": "20095"
+          },
+          {
+            "city": "Paris",
+            "zip": "75001"
+          },
+          {
+            "city": "Cologne",
+            "zip": "50667"
+          }
+        ]
+      }
+    ]
+  },
+  "oneStep": {
+    "sortRows": {
+      "steps": [
+        {
+          "kind": "sortRows",
+          "params": {
+            "rules": [
+              {
+                "column": {
+                  "$column": "units"
+                },
+                "direction": "desc",
+                "nulls": "last"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "filterRows": {
+      "steps": [
+        {
+          "kind": "filterRows",
+          "params": {
+            "filterModel": {
+              "logic": "and",
+              "filters": [
+                {
+                  "column": {
+                    "$column": "customer"
+                  },
+                  "type": "string",
+                  "logic": "and",
+                  "predicates": [
+                    {
+                      "kind": "predicate",
+                      "operator": "contains",
+                      "value": "Acme"
+                    }
+                  ]
+                }
+              ],
+              "sort": []
+            }
+          }
+        }
+      ]
+    },
+    "dropMissingRows": {
+      "steps": [
+        {
+          "kind": "dropMissingRows",
+          "params": {
+            "columns": [
+              {
+                "$column": "units"
+              }
+            ],
+            "how": "any"
+          }
+        }
+      ]
+    },
+    "fillMissingValues": {
+      "steps": [
+        {
+          "kind": "fillMissingValues",
+          "params": {
+            "column": {
+              "$column": "units"
+            },
+            "replacement": {
+              "kind": "integer",
+              "value": "0"
+            }
+          }
+        }
+      ]
+    },
+    "dropDuplicates": {
+      "steps": [
+        {
+          "kind": "dropDuplicates",
+          "params": {
+            "columns": [
+              {
+                "$column": "customer"
+              },
+              {
+                "$column": "units"
+              }
+            ],
+            "keep": "first"
+          }
+        }
+      ]
+    },
+    "markDuplicates": {
+      "steps": [
+        {
+          "kind": "markDuplicates",
+          "params": {
+            "columns": [
+              {
+                "$column": "customer"
+              }
+            ],
+            "newColumn": "duplicate_customer"
+          }
+        }
+      ]
+    },
+    "selectColumns": {
+      "steps": [
+        {
+          "kind": "selectColumns",
+          "params": {
+            "columns": [
+              {
+                "$column": "order_id"
+              },
+              {
+                "$column": "customer"
+              },
+              {
+                "$column": "region"
+              },
+              {
+                "$column": "units"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "dropColumns": {
+      "steps": [
+        {
+          "kind": "dropColumns",
+          "params": {
+            "columns": [
+              {
+                "$column": "tags"
+              },
+              {
+                "$column": "items"
+              },
+              {
+                "$column": "address"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "renameColumn": {
+      "steps": [
+        {
+          "kind": "renameColumn",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newName": "customer_name"
+          }
+        }
+      ]
+    },
+    "cloneColumn": {
+      "steps": [
+        {
+          "kind": "cloneColumn",
+          "params": {
+            "column": {
+              "$column": "units"
+            },
+            "newName": "units_copy"
+          }
+        }
+      ]
+    },
+    "extractStructFields": {
+      "steps": [
+        {
+          "kind": "extractStructFields",
+          "params": {
+            "column": {
+              "$column": "address"
+            },
+            "fields": [
+              {
+                "field": "city",
+                "newColumn": "city"
+              },
+              {
+                "field": "zip",
+                "newColumn": "postal_code"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "explodeList": {
+      "steps": [
+        {
+          "kind": "explodeList",
+          "params": {
+            "column": {
+              "$column": "items"
+            }
+          }
+        }
+      ]
+    },
+    "castColumn": {
+      "steps": [
+        {
+          "kind": "castColumn",
+          "params": {
+            "column": {
+              "$column": "discount"
+            },
+            "dtype": "float"
+          }
+        }
+      ]
+    },
+    "formula": {
+      "steps": [
+        {
+          "kind": "formula",
+          "params": {
+            "leftColumn": {
+              "$column": "units"
+            },
+            "operator": "multiply",
+            "rightColumn": {
+              "$column": "price"
+            },
+            "newColumn": "line_total"
+          }
+        }
+      ]
+    },
+    "conditionalColumn": {
+      "steps": [
+        {
+          "kind": "conditionalColumn",
+          "params": {
+            "column": {
+              "$column": "units"
+            },
+            "columnType": "integer",
+            "predicate": {
+              "kind": "predicate",
+              "operator": "gte",
+              "value": "10"
+            },
+            "newColumn": "large_order",
+            "resultType": "boolean",
+            "trueValue": true,
+            "falseValue": false,
+            "missingValue": null
+          }
+        }
+      ]
+    },
+    "textLength": {
+      "steps": [
+        {
+          "kind": "textLength",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_length"
+          }
+        }
+      ]
+    },
+    "oneHotEncode": {
+      "steps": [
+        {
+          "kind": "oneHotEncode",
+          "params": {
+            "columns": [
+              {
+                "$column": "quarter"
+              }
+            ],
+            "prefixSeparator": "_",
+            "dropOriginal": false
+          }
+        }
+      ]
+    },
+    "multiLabelBinarize": {
+      "steps": [
+        {
+          "kind": "multiLabelBinarize",
+          "params": {
+            "column": {
+              "$column": "tags"
+            },
+            "delimiter": ";",
+            "prefix": "tag_",
+            "dropOriginal": false
+          }
+        }
+      ]
+    },
+    "findReplace": {
+      "steps": [
+        {
+          "kind": "findReplace",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "find": "Acme",
+            "replacement": "ACME",
+            "newColumn": "customer_branded"
+          }
+        }
+      ]
+    },
+    "replaceMatches": {
+      "steps": [
+        {
+          "kind": "replaceMatches",
+          "params": {
+            "columns": [
+              {
+                "$column": "customer"
+              },
+              {
+                "$column": "tags"
+              }
+            ],
+            "find": ";",
+            "replacement": "|",
+            "matchCase": true,
+            "wholeCell": false,
+            "spelling": "python"
+          }
+        }
+      ]
+    },
+    "stripText": {
+      "steps": [
+        {
+          "kind": "stripText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_trimmed"
+          }
+        }
+      ]
+    },
+    "splitText": {
+      "steps": [
+        {
+          "kind": "splitText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "delimiter": " ",
+            "index": 0,
+            "newColumn": "customer_first_token"
+          }
+        }
+      ]
+    },
+    "splitTextColumns": {
+      "steps": [
+        {
+          "kind": "splitTextColumns",
+          "params": {
+            "column": {
+              "$column": "tags"
+            },
+            "delimiter": ";",
+            "newColumns": ["tag_left", "tag_right"]
+          }
+        }
+      ]
+    },
+    "extractRegexGroup": {
+      "steps": [
+        {
+          "kind": "extractRegexGroup",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "pattern": "([A-Za-z]+)",
+            "group": 1,
+            "newColumn": "customer_word"
+          }
+        }
+      ]
+    },
+    "capitalizeText": {
+      "steps": [
+        {
+          "kind": "capitalizeText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_title"
+          }
+        }
+      ]
+    },
+    "lowerText": {
+      "steps": [
+        {
+          "kind": "lowerText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_lower"
+          }
+        }
+      ]
+    },
+    "upperText": {
+      "steps": [
+        {
+          "kind": "upperText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_upper"
+          }
+        }
+      ]
+    },
+    "denseRank": {
+      "steps": [
+        {
+          "kind": "denseRank",
+          "params": {
+            "column": {
+              "$column": "units"
+            },
+            "direction": "asc",
+            "newColumn": "units_rank"
+          }
+        }
+      ]
+    },
+    "minMaxScale": {
+      "steps": [
+        {
+          "kind": "minMaxScale",
+          "params": {
+            "column": {
+              "$column": "price"
+            },
+            "newColumn": "price_scaled"
+          }
+        }
+      ]
+    },
+    "roundNumber": {
+      "steps": [
+        {
+          "kind": "roundNumber",
+          "params": {
+            "column": {
+              "$column": "price"
+            },
+            "decimals": 1,
+            "newColumn": "price_rounded"
+          }
+        }
+      ]
+    },
+    "floorNumber": {
+      "steps": [
+        {
+          "kind": "floorNumber",
+          "params": {
+            "column": {
+              "$column": "price"
+            },
+            "newColumn": "price_floor"
+          }
+        }
+      ]
+    },
+    "ceilNumber": {
+      "steps": [
+        {
+          "kind": "ceilNumber",
+          "params": {
+            "column": {
+              "$column": "price"
+            },
+            "newColumn": "price_ceil"
+          }
+        }
+      ]
+    },
+    "formatDatetime": {
+      "steps": [
+        {
+          "kind": "formatDatetime",
+          "params": {
+            "column": {
+              "$column": "ordered_at"
+            },
+            "format": "%Y-%m",
+            "newColumn": "order_month"
+          }
+        }
+      ]
+    },
+    "pivotLonger": {
+      "steps": [
+        {
+          "kind": "pivotLonger",
+          "params": {
+            "columns": [
+              {
+                "$column": "price"
+              },
+              {
+                "$column": "discount"
+              }
+            ],
+            "labelColumn": "measure",
+            "valueColumn": "reading"
+          }
+        }
+      ]
+    },
+    "pivotWider": {
+      "columns": ["order_id", "quarter", "units"],
+      "steps": [
+        {
+          "kind": "pivotWider",
+          "params": {
+            "namesFrom": {
+              "$column": "quarter"
+            },
+            "valuesFrom": {
+              "$column": "units"
+            },
+            "outputs": [
+              {
+                "key": {
+                  "kind": "typedSelection",
+                  "version": 1,
+                  "columnType": "string",
+                  "cell": {
+                    "kind": "string",
+                    "raw": "Q1",
+                    "display": "Q1",
+                    "isNull": false,
+                    "isNaN": false
+                  }
+                },
+                "name": "quarter_q1"
+              },
+              {
+                "key": {
+                  "kind": "typedSelection",
+                  "version": 1,
+                  "columnType": "string",
+                  "cell": {
+                    "kind": "string",
+                    "raw": "Q2",
+                    "display": "Q2",
+                    "isNull": false,
+                    "isNaN": false
+                  }
+                },
+                "name": "quarter_q2"
+              },
+              {
+                "key": {
+                  "kind": "typedSelection",
+                  "version": 1,
+                  "columnType": "string",
+                  "cell": {
+                    "kind": "string",
+                    "raw": "Q3",
+                    "display": "Q3",
+                    "isNull": false,
+                    "isNaN": false
+                  }
+                },
+                "name": "quarter_q3"
+              },
+              {
+                "key": {
+                  "kind": "typedSelection",
+                  "version": 1,
+                  "columnType": "string",
+                  "cell": {
+                    "kind": "string",
+                    "raw": "Q4",
+                    "display": "Q4",
+                    "isNull": false,
+                    "isNaN": false
+                  }
+                },
+                "name": "quarter_q4"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "lookupColumns": {
+      "steps": [
+        {
+          "kind": "lookupColumns",
+          "params": {
+            "file": {
+              "$fixtureLookup": "regions.csv"
+            },
+            "keys": [
+              {
+                "column": {
+                  "$column": "region"
+                },
+                "lookupColumn": "region"
+              }
+            ],
+            "columns": [
+              {
+                "lookupColumn": "region_label",
+                "newColumn": "region_name"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "groupBy": {
+      "steps": [
+        {
+          "kind": "groupBy",
+          "params": {
+            "keys": [
+              {
+                "$column": "region"
+              }
+            ],
+            "aggregations": [
+              {
+                "column": {
+                  "$column": "units"
+                },
+                "operation": "sum",
+                "alias": "total_units"
+              },
+              {
+                "column": {
+                  "$column": "price"
+                },
+                "operation": "mean",
+                "alias": "avg_price"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "byExample": {
+      "steps": [
+        {
+          "kind": "byExample",
+          "params": {
+            "sourceColumns": [
+              {
+                "$column": "region"
+              },
+              {
+                "$column": "units"
+              }
+            ],
+            "newColumn": "region_units",
+            "examples": [
+              {
+                "inputs": ["North", 12],
+                "output": "North-12"
+              },
+              {
+                "inputs": ["South", 8],
+                "output": "South-8"
+              },
+              {
+                "inputs": ["East", 20],
+                "output": "East-20"
+              }
+            ],
+            "program": {
+              "kind": "concat",
+              "parts": [
+                {
+                  "kind": "column",
+                  "column": {
+                    "$column": "region"
+                  }
+                },
+                {
+                  "kind": "literal",
+                  "value": "-"
+                },
+                {
+                  "kind": "column",
+                  "column": {
+                    "$column": "units"
+                  }
+                }
+              ]
+            },
+            "warnings": [],
+            "candidateCount": 1
+          }
+        }
+      ]
+    },
+    "customCode": {
+      "steps": [
+        {
+          "kind": "customCode",
+          "params": {
+            "code": {
+              "$engine": {
+                "pandas": "result = df[df[\"units\"].fillna(0) > 10]",
+                "polars": "result = df.filter(pl.col(\"units\").fill_null(0) > 10)",
+                "duckdb": "result = df.filter(\"coalesce(units, 0) > 10\")",
+                "r": "result <- dplyr::filter(df, dplyr::coalesce(units, 0L) > 10L)"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "multiStep": [
+    {
+      "name": "tidy-customer-order",
+      "summary": "Trim customer text, fill missing units, compute line totals, drop duplicate rows, and sort.",
+      "steps": [
+        {
+          "kind": "stripText",
+          "params": {
+            "column": {
+              "$column": "customer"
+            },
+            "newColumn": "customer_clean"
+          }
+        },
+        {
+          "kind": "fillMissingValues",
+          "params": {
+            "column": {
+              "$column": "units"
+            },
+            "replacement": {
+              "kind": "integer",
+              "value": "0"
+            }
+          }
+        },
+        {
+          "kind": "formula",
+          "params": {
+            "leftColumn": {
+              "$column": "units"
+            },
+            "operator": "multiply",
+            "rightColumn": {
+              "$column": "price"
+            },
+            "newColumn": "line_total"
+          }
+        },
+        {
+          "kind": "dropDuplicates",
+          "params": {
+            "columns": [
+              {
+                "$column": "customer_clean"
+              },
+              {
+                "$column": "line_total"
+              }
+            ],
+            "keep": "first"
+          }
+        },
+        {
+          "kind": "sortRows",
+          "params": {
+            "rules": [
+              {
+                "column": {
+                  "$column": "line_total"
+                },
+                "direction": "desc",
+                "nulls": "last"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "active-region-summary",
+      "summary": "Keep active orders, aggregate units by region, and rename the total column.",
+      "steps": [
+        {
+          "kind": "filterRows",
+          "params": {
+            "filterModel": {
+              "logic": "and",
+              "filters": [
+                {
+                  "column": {
+                    "$column": "active"
+                  },
+                  "type": "boolean",
+                  "logic": "and",
+                  "predicates": [
+                    {
+                      "kind": "predicate",
+                      "operator": "equals",
+                      "value": true
+                    }
+                  ]
+                }
+              ],
+              "sort": []
+            }
+          }
+        },
+        {
+          "kind": "groupBy",
+          "params": {
+            "keys": [
+              {
+                "$column": "region"
+              }
+            ],
+            "aggregations": [
+              {
+                "column": {
+                  "$column": "units"
+                },
+                "operation": "sum",
+                "alias": "region_units"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "renameColumn",
+          "params": {
+            "column": {
+              "$column": "region"
+            },
+            "newName": "sales_region"
+          }
+        },
+        {
+          "kind": "sortRows",
+          "params": {
+            "rules": [
+              {
+                "column": {
+                  "$column": "region_units"
+                },
+                "direction": "desc",
+                "nulls": "last"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tag-features",
+      "summary": "Split semicolon tags into columns and one-hot encode the quarter column.",
+      "steps": [
+        {
+          "kind": "splitTextColumns",
+          "params": {
+            "column": {
+              "$column": "tags"
+            },
+            "delimiter": ";",
+            "newColumns": ["primary_tag", "secondary_tag"]
+          }
+        },
+        {
+          "kind": "upperText",
+          "params": {
+            "column": {
+              "$column": "primary_tag"
+            },
+            "newColumn": "primary_upper"
+          }
+        },
+        {
+          "kind": "oneHotEncode",
+          "params": {
+            "columns": [
+              {
+                "$column": "quarter"
+              }
+            ],
+            "prefixSeparator": "_",
+            "dropOriginal": true
+          }
+        },
+        {
+          "kind": "selectColumns",
+          "params": {
+            "columns": [
+              {
+                "$column": "order_id"
+              },
+              {
+                "$column": "primary_upper"
+              },
+              {
+                "$column": "quarter_Q1"
+              },
+              {
+                "$column": "quarter_Q2"
+              },
+              {
+                "$column": "quarter_Q3"
+              },
+              {
+                "$column": "quarter_Q4"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "reshape-prices",
+      "summary": "Unpivot price and discount, rank the values, keep the ranked rows, and sort.",
+      "columns": ["order_id", "price", "discount"],
+      "steps": [
+        {
+          "kind": "pivotLonger",
+          "params": {
+            "columns": [
+              {
+                "$column": "price"
+              },
+              {
+                "$column": "discount"
+              }
+            ],
+            "labelColumn": "metric",
+            "valueColumn": "value"
+          }
+        },
+        {
+          "kind": "denseRank",
+          "params": {
+            "column": {
+              "$column": "value"
+            },
+            "direction": "desc",
+            "newColumn": "value_rank"
+          }
+        },
+        {
+          "kind": "filterRows",
+          "params": {
+            "filterModel": {
+              "logic": "and",
+              "filters": [
+                {
+                  "column": {
+                    "$column": "metric"
+                  },
+                  "type": "string",
+                  "logic": "and",
+                  "predicates": [
+                    {
+                      "kind": "predicate",
+                      "operator": "equals",
+                      "value": "price"
+                    }
+                  ]
+                }
+              ],
+              "sort": []
+            }
+          }
+        },
+        {
+          "kind": "sortRows",
+          "params": {
+            "rules": [
+              {
+                "column": {
+                  "$column": "value_rank"
+                },
+                "direction": "asc",
+                "nulls": "last"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

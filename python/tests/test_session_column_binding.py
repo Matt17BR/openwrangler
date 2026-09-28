@@ -48,7 +48,12 @@ def contains_private_binding(value: Any) -> bool:
 
 
 def bound(reference: dict[str, str], schema_column: dict[str, Any]) -> dict[str, Any]:
-    return {**reference, "position": schema_column["position"], "rawType": schema_column["rawType"]}
+    return {
+        **reference,
+        "position": schema_column["position"],
+        "rawType": schema_column["rawType"],
+        "type": schema_column["type"],
+    }
 
 
 def test_polars_literal_column_names_survive_session_apply_history_and_generated_code(tmp_path: Path) -> None:

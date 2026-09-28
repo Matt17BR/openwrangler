@@ -1600,7 +1600,13 @@ def bound_column_raw_type(value: Any, operation: str) -> str | None:
     return value.get("rawType")
 
 
-_BOUND_COLUMN_REFERENCE_FIELDS = ({"id", "name", "position"}, {"id", "name", "position", "rawType"})
+def bound_column_type(value: Any, operation: str) -> str | None:
+    """Return the column type Open Wrangler showed when the reference was bound, if recorded."""
+    _validate_bound_column_reference(value, operation)
+    return value.get("type")
+
+
+_BOUND_COLUMN_REFERENCE_FIELDS = ({"id", "name", "position"}, {"id", "name", "position", "rawType", "type"})
 
 
 def is_bound_column_reference(value: Any) -> bool:
@@ -1611,8 +1617,9 @@ def is_bound_column_reference(value: Any) -> bool:
 def _validate_bound_column_reference(value: Any, operation: str) -> None:
     if not is_bound_column_reference(value):
         raise EngineError(f"{operation} requires a bound column reference.")
-    if "rawType" in value and (not isinstance(value["rawType"], str) or not value["rawType"]):
-        raise EngineError(f"{operation} requires a bound column reference.")
+    for field in ("rawType", "type"):
+        if field in value and (not isinstance(value[field], str) or not value[field]):
+            raise EngineError(f"{operation} requires a bound column reference.")
     if not isinstance(value.get("id"), str) or not value["id"]:
         raise EngineError(f"{operation} requires a bound column reference.")
     if not isinstance(value.get("name"), str):

@@ -56,12 +56,12 @@ def test_binding_resolves_exact_duplicate_columns_and_keeps_public_step_unchange
     assert public["params"] == {"columns": [ref("c:source:1", "duplicate"), ref("c:source:2", "value")]}
 
 
-def test_binding_records_the_native_input_type_only_when_the_schema_has_one() -> None:
+def test_binding_records_the_native_and_shown_input_types_only_when_the_schema_has_a_native_type() -> None:
     schema = [{**SCHEMA[0], "rawType": "Int64"}, SCHEMA[1], {**SCHEMA[2], "rawType": "int64"}]
     public = step("selectColumns", columns=[ref("c:source:0", "duplicate"), ref("c:source:1", "duplicate")])
 
     assert bind_step(public, schema, LINEAGE)["params"]["columns"] == [
-        {"id": "c:source:0", "name": "duplicate", "position": 0, "rawType": "Int64"},
+        {"id": "c:source:0", "name": "duplicate", "position": 0, "rawType": "Int64", "type": "integer"},
         {"id": "c:source:1", "name": "duplicate", "position": 1},
     ]
     assert public["params"] == {"columns": [ref("c:source:0", "duplicate"), ref("c:source:1", "duplicate")]}

@@ -89,6 +89,7 @@ class _Column:
         reference: dict[str, str | int] = {"id": self.identifier, "name": self.name, "position": self.position}
         if self.native_raw_type:
             reference["rawType"] = self.raw_type
+            reference["type"] = self.semantic_type
         return reference
 
 
