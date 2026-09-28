@@ -128,6 +128,7 @@ def _numeric_keys() -> dict[str, pd.Series]:
         "int8": pd.Series(small.astype(np.int8)),
         "int64": pd.Series(small * 2**61),
         "uint64": pd.Series(small.astype(np.uint64) + np.uint64(2**63)),
+        "wide-uint64": pd.Series(generator.choice(np.array([0, 2**63 - 1, 2**63, 2**64 - 1], dtype=np.uint64), size)),
         "float32": pd.Series(floats.astype(np.float32)),
         "float64": pd.Series(floats),
         "all-missing": pd.Series(np.full(size, np.nan)),
@@ -137,13 +138,24 @@ def _numeric_keys() -> dict[str, pd.Series]:
     }
 
 
+@pytest.mark.parametrize("chunks", [None, 3, 16])
 @pytest.mark.parametrize("name", list(_numeric_keys()))
-def test_pandas_numeric_orders_match_the_stable_pandas_sort(name: str) -> None:
+def test_pandas_numeric_orders_match_the_stable_pandas_sort(
+    name: str, chunks: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     series = _numeric_keys()[name]
+    if chunks is not None:
+        monkeypatch.setattr(pandas_engine_module, "_PANDAS_PARALLEL_SORT_ROWS", 0)
+        monkeypatch.setattr(pandas_engine_module, "_PANDAS_SORT_CHUNKS", chunks)
+        monkeypatch.setattr(pandas_engine_module.os, "cpu_count", lambda: 32)
     for ascending in (True, False):
         for nulls in ("first", "last"):
             numeric = _pandas_numeric_order(series, ascending, nulls)
             assert numeric is not None
+            # Small integer ranges and keys with no present values keep Arrow's single sort.
+            assert (numeric._sorted_in_chunks() is not None) is (
+                chunks is not None and name not in {"int8", "uint64", "bool", "all-missing"}
+            )
             expected = _pandas_sort_order(series, ascending, nulls)
             np.testing.assert_array_equal(numeric.complete(), expected)
             missing = int(series.isna().sum())
