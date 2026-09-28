@@ -1725,6 +1725,75 @@ def test_polars_session_opens_pages_and_closes_a_literal_bracket_path(tmp_path: 
     assert path.read_bytes() == source_bytes
 
 
+@pytest.mark.parametrize("extension", ["parquet", "jsonl"])
+def test_polars_file_sessions_number_rows_inside_the_file_scan(extension: str, tmp_path: Path) -> None:
+    if extension == "jsonl" and os.name == "nt":
+        pytest.skip("Polars cannot scan JSON Lines literally on Windows.")
+    path = tmp_path / f"rows.{extension}"
+    _write_polars_file(path, extension, [17, 18, 19])
+    manager = SessionManager()
+    opened = manager.open_session({"kind": "file", "label": path.name, "path": str(path)}, backend="polars")
+    session_id = opened["metadata"]["sessionId"]
+
+    # A separate row-index node above the scan keeps every filter and slice from reaching the file.
+    plan = manager.sessions[session_id].original.explain(optimized=False)
+    assert "SCAN" in plan.splitlines()[0]
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+
+
+def test_polars_sorted_lazy_pages_read_their_rows_by_stored_private_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(polars_engine, "_POLARS_STORED_ORDER_ROWS", 0)
+    engine = PolarsEngine()
+    keys = [3, None, 1, 3, 2, 1, None, 3] * 5
+    source = engine.ensure_row_ids(pl.LazyFrame({"key": keys, "text": [f"t{row}" for row in range(40)]}), "source")
+    model = {
+        "logic": "and",
+        "filters": [
+            {
+                "column": "text",
+                "type": "string",
+                "logic": "and",
+                "predicates": [{"kind": "predicate", "operator": "notEquals", "value": "t9"}],
+            }
+        ],
+        "sort": [{"column": "key", "direction": "desc", "nulls": "first"}],
+    }
+    view = engine.filter_view(source, model)
+    expected = engine.page(view.collect(), 0, 40)["rows"]
+    assert len(expected) == 39
+    for offset, limit in [(0, 7), (5, 7), (33, 7), (38, 5), (39, 5)]:
+        assert engine.page(view, offset, limit)["rows"] == expected[offset : offset + limit]
+    order = engine._sorted_order
+    assert order is not None and order[0]() is view
+    stored = Path(order[1].name)
+    assert pl.read_parquet(stored / "order.parquet").height == 39
+
+    # Repeated IDs could select extra rows, so the page slices the view instead.
+    repeated = pl.LazyFrame(
+        {"key": [2, 1, 2, 1], engine._row_id_column(source): pl.Series([0, 0, 1, 1], dtype=pl.UInt32)}
+    )
+    repeated_view = engine.filter_view(repeated, {"logic": "and", "filters": [], "sort": model["sort"]})
+    assert engine.page(repeated_view, 1, 2)["rows"] == engine.page(repeated_view.collect(), 1, 2)["rows"]
+    assert not stored.exists()
+
+    # A view whose order cannot be stored keeps slicing.
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    unstored_view = engine.filter_view(source, model)
+    with monkeypatch.context() as patch:
+        patch.setattr(pl.LazyFrame, "sink_parquet", refuse)
+        assert engine.page(unstored_view, 5, 7)["rows"] == expected[5:12]
+    assert engine.page(unstored_view, 12, 7)["rows"] == expected[12:19]
+    stored = Path(cast(Any, engine._sorted_order)[1].name)
+
+    # Only sorted views from filter_view read by ID, and closing deletes the stored order.
+    engine.close()
+    assert engine._sorted_order is None and not stored.exists()
+    assert engine.page(source.sort("key"), 5, 7)["rows"] == engine.page(source.sort("key").collect(), 5, 7)["rows"]
+    assert engine._sorted_order is None
+
+
 @pytest.mark.parametrize("lazy", [False, True])
 def test_polars_page_bounds_boxed_strings_without_changing_source_queries(
     monkeypatch: pytest.MonkeyPatch, lazy: bool
