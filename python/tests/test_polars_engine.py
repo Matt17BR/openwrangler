@@ -2561,6 +2561,45 @@ def test_live_notebook_lazyframe_stays_lazy_through_bounded_queries_edit_export_
     assert all(length <= 20 for length in to_list_lengths)
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("dtype", [pl.String, pl.Categorical])
+def test_polars_multi_label_matches_generated_code_for_distinct_values(lazy: bool, dtype: Any) -> None:
+    source = pl.DataFrame(
+        {"tags": ["value|_value", None, "", "b|b", "value", "b||", None, "_value|b"], "row": list(range(8))},
+        schema_overrides={"tags": dtype},
+    )
+    # With no prefix the labels "value" and "_value" are also output names.
+    operation = {
+        "id": "labels",
+        "kind": "multiLabelBinarize",
+        "params": {
+            "column": {"id": "c:source:0", "name": "tags", "position": 0},
+            "delimiter": "|",
+            "prefix": "",
+            "dropOriginal": True,
+        },
+    }
+    engine = PolarsEngine()
+    try:
+        frame = source.lazy() if lazy else source
+        live = engine.apply_transform(frame, operation)
+        namespace: dict[str, Any] = {}
+        exec(engine.compile_plan([operation]), namespace)
+        generated = namespace["clean_data"](frame)
+        if isinstance(generated, pl.LazyFrame):
+            generated = generated.collect()
+        assert live.to_dict(as_series=False) == {
+            "row": list(range(8)),
+            "_value": [1, 0, 0, 0, 0, 0, 0, 1],
+            "b": [0, 0, 0, 1, 0, 1, 0, 1],
+            "value": [1, 0, 0, 0, 1, 0, 0, 0],
+        }
+        assert live.schema == generated.schema
+        assert live.equals(generated)
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("kind", ["oneHotEncode", "multiLabelBinarize"])
 def test_live_notebook_lazyframe_dynamic_encoder_returns_eager_preview(
     kind: str,

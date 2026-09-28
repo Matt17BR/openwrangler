@@ -2508,39 +2508,39 @@ class PolarsEngine(DataFrameEngine):
             column = bound_column_name(params["column"], kind)
             delimiter = params["delimiter"]
             explode_options = (
-                {"empty_as_null": True} if "empty_as_null" in signature(pl.Expr.explode).parameters else {}
+                {"empty_as_null": True} if "empty_as_null" in signature(pl.Series.explode).parameters else {}
             )
-            labels = (
-                eager.select(
-                    _ow_polars_col(df, column)
-                    .cast(pl.String)
-                    .str.split(delimiter)
-                    .explode(**explode_options)
-                    .drop_nulls()
-                    .unique()
-                )
-                .get_column(column)
-                .to_list()
+            text = eager.select(_ow_polars_col(df, column).cast(pl.String)).to_series()
+            # Each distinct value is split once, and one join spreads its labels over the rows.
+            distinct = text.unique().drop_nulls()
+            parts = distinct.str.split(delimiter)
+            labels = sorted(
+                label for label in parts.explode(**explode_options).drop_nulls().unique().to_list() if label
             )
-            expressions = [
-                _ow_polars_col(df, column)
-                .fill_null("")
-                .cast(pl.String)
-                .str.split(delimiter)
-                .list.contains(label)
-                .cast(pl.Int8)
-                .alias(f"{params.get('prefix', f'{column}_')}{label}")
-                for label in sorted(str(label) for label in labels if str(label))
-            ]
+            generated_names = [f"{params.get('prefix', f'{column}_')}{label}" for label in labels]
             base = eager.drop(_ow_polars_columns(eager, [column])) if params.get("dropOriginal", False) else eager
-            generated_names = [
-                f"{params.get('prefix', f'{column}_')}{label}"
-                for label in sorted(str(label) for label in labels if str(label))
-            ]
             ensure_output_columns_available(base.columns, generated_names, "Multi-label binarization")
-            if not expressions:
+            if not labels:
                 return base
-            encoded = eager.select(expressions)
+            key = "value"
+            while key in generated_names:
+                key = f"_{key}"
+            flags = pl.DataFrame(
+                [
+                    distinct.alias(key),
+                    *[
+                        parts.list.contains(label).cast(pl.Int8).alias(name)
+                        for label, name in zip(labels, generated_names, strict=True)
+                    ],
+                ]
+            )
+            encoded = (
+                text.alias(key)
+                .to_frame()
+                .join(flags, on=key, how="left", maintain_order="left")
+                .drop(key)
+                .fill_null(pl.lit(0, pl.Int8))
+            )
             return base.hstack(encoded) if base.width else encoded
         if kind == "splitTextColumns":
             column = bound_column_name(params["column"], kind)
