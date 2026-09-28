@@ -124,30 +124,38 @@ def test_pandas_mixed_text_reduction_normalizes_categories_once_and_streams_obje
 
     monkeypatch.setattr(pandas_engine_module, "normalize_cell", observe_normalize_cell)
 
+    categories = pd.Series(pd.Categorical([None, 1, 200, 1, 200, 1] * 1_024, categories=[1, 200]))
     category_summary = pandas_engine_module._pandas_text_summary(
-        pd.Series(pd.Categorical([None, 1, 200, 1, 200, 1] * 1_024, categories=[1, 200]))
+        categories, pandas_engine_module._pandas_value_counts(categories)
     )
 
     assert normalized == [1, 200]
-    assert category_summary == {
-        "emptyCount": 0,
-        "minLength": 1,
-        "maxLength": 3,
-        "meanLength": 1.8,
-    }
+    assert category_summary == (
+        {
+            "emptyCount": 0,
+            "minLength": 1,
+            "maxLength": 3,
+            "meanLength": 1.8,
+        },
+        None,
+    )
 
     normalized.clear()
+    objects = pd.Series([b"\x00", "x", None, float("nan"), b"\x00"], dtype="object")
     object_summary = pandas_engine_module._pandas_text_summary(
-        pd.Series([b"\x00", "x", None, float("nan"), b"\x00"], dtype="object")
+        objects, pandas_engine_module._pandas_value_counts(objects)
     )
 
     assert normalized == [b"\x00", "x", b"\x00"]
-    assert object_summary == {
-        "emptyCount": 0,
-        "minLength": 1,
-        "maxLength": 4,
-        "meanLength": 3.0,
-    }
+    assert object_summary == (
+        {
+            "emptyCount": 0,
+            "minLength": 1,
+            "maxLength": 4,
+            "meanLength": 3.0,
+        },
+        None,
+    )
 
 
 def test_eager_mixed_text_profile_probe_runs_one_bounded_child(
