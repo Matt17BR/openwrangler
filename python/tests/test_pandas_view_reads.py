@@ -192,11 +192,12 @@ def test_pandas_arrow_text_fast_paths_match_row_wise_semantics(dtype: Any) -> No
             _pandas_distinct_text_condition(series, method, value), _pandas_text_condition(series, method, value)
         )
 
-    frame = pd.DataFrame({"text": series, "number": range(len(series))})
+    frame = pd.DataFrame({"text": series, "number": range(len(series)), "reversed": _chunked(TEXT[::-1] * 3, dtype)})
     contiguous = _pandas_contiguous_text(frame)
-    assert contiguous.iloc[:, 0].array.__arrow_array__().num_chunks == 1
+    for position in (0, 2):
+        assert contiguous.iloc[:, position].array.__arrow_array__().num_chunks == 1
+        assert frame.iloc[:, position].array.__arrow_array__().num_chunks == 2
     pd.testing.assert_frame_equal(contiguous, frame)
-    assert frame.iloc[:, 0].array.__arrow_array__().num_chunks == 2
 
 
 @pytest.mark.parametrize("values", [[0, 0, 1, 0, 2], [0.0, 1.5, None, 0.0]], ids=["integer", "float"])
