@@ -162,6 +162,38 @@ local({
   send("getPage", list(sessionId = session_id, page = filtered_window("absent")))
   assert_identical(scans, before + 2L, "an empty query did not release membership")
 
+  # An unfiltered sorted file view keeps one order across pages and profiles until the view drops its sorts.
+  sorted_window <- function(offset = 0L) {
+    window <- page_window(sorts = list(list(column = list(id = "r:c:1", name = "value"), direction = "desc", nulls = "first")),
+      row_limit = 2L)
+    window$rowOffset <- offset
+    window
+  }
+  sorted_ids <- function(response) vapply(response$page$page$rows, `[[`, character(1L), "id")
+  before_sorts <- sorts
+  assert_identical(sorted_ids(send("getPage", list(sessionId = session_id, page = sorted_window()))), c("r:r:2", "r:r:3"),
+    "the unfiltered file sort changed order")
+  assert_identical(sorted_ids(send("getPage", list(sessionId = session_id, page = sorted_window(2L)))), c("r:r:0", "r:r:1"),
+    "a later unfiltered file page changed order")
+  unfiltered_summary <- send("getSummary", list(sessionId = session_id, columns = reference, view = sorted_window()$view))
+  assert_identical(unfiltered_summary$summaries[[1L]]$totalCount, 4L, "the unfiltered sorted profile changed its population")
+  send("getPage", list(sessionId = session_id, page = sorted_window(1L)))
+  assert_identical(sorts, before_sorts + 1L, "unfiltered file pages or their profile rebuilt the same order")
+  assert_identical(cache$rows, c(3L, 4L, 1L, 2L), "the file agent did not retain the unfiltered order")
+  send("getPage", list(sessionId = session_id, page = page_window()))
+  assert_identical(is.null(cache$capture) && is.null(cache$sorts) && length(cache$rows) == 0L, TRUE,
+    "an unsorted view retained the unfiltered order")
+  unfiltered_budget <- get("maximum_file_filter_cache_bytes", frame_runtime, inherits = FALSE)
+  assign("maximum_file_filter_cache_bytes", 0, frame_runtime)
+  before_sorts <- sorts
+  for (attempt in seq_len(2L)) {
+    assert_identical(sorted_ids(send("getPage", list(sessionId = session_id, page = sorted_window()))), c("r:r:2", "r:r:3"),
+      "an over-budget unfiltered order changed")
+  }
+  assert_identical(sorts, before_sorts + 2L, "an over-budget unfiltered order was reused")
+  assert_identical(is.null(cache$capture), TRUE, "an over-budget unfiltered order was retained")
+  assign("maximum_file_filter_cache_bytes", unfiltered_budget, frame_runtime)
+
   # Charge the resolved key as well as indices without allocating a huge fixture.
   send("getPage", list(sessionId = session_id, page = filtered_window()))
   maximum_bytes <- get("maximum_file_filter_cache_bytes", frame_runtime, inherits = FALSE)

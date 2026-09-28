@@ -1941,21 +1941,25 @@ These choices have costs: text-fold reuse can slow unique-text inputs and increa
 adds source-order recovery and can retain extra pending-profile vectors. Initial filters and sorts remain synchronous,
 and sort changes reset UI profiling. The measurements do not establish that shared code is fastest for every input.
 
-Each managed file agent can retain one filtered row selection, shared by established-session pages, profiles and
+R view sorts build one stable radix order across all rules; it must match each library's committed Sort Rows order.
+Each managed file agent can retain one row selection, shared by established-session pages, profiles and
 value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation.
-The entry holds one integer position vector, in source order or the last requested sort order. Pages with the same
-resolved sort rules reuse that order. Sort changes start from physical capture order so ties remain stable.
+The entry holds one integer position vector, in source order or the last requested sort order. An unfiltered sorted
+view keeps its full order there rather than in the 32 MiB sort cache, which copies the sort columns to detect
+in-place notebook changes. Pages with the same resolved sort rules reuse that order. Sort changes start from
+physical capture order so ties remain stable.
 Unsorted pages, profiles and value queries recover source order without replacing the cached sort; that recovery
 adds work and allocates another vector. Pending profiles may each retain a recovered vector until completion.
 The positions, filter key and sort rules together may occupy at most 64 MiB. A filter miss releases the old entry
 before scanning; oversized selections remain usable without retention. Once filter membership is retained, a failed
 sort or over-budget sort metadata leaves that entry intact. This bound excludes the session-owned frame and
 pending-profile vectors.
-Empty page and profile filters release the entry. An auxiliary value lookup with no remaining filters bypasses the
+A page or profile without filters releases an entry built for another filter, and one without filters or sorts
+releases any entry. An auxiliary value lookup with no remaining filters bypasses the
 cache, preserving the grid's existing selection and order; a nonempty lookup uses the usual replacement rules.
 Source-reaching edits or replay, session close and agent disposal also release it before execution or cleanup can
 fail. Initial opening, inspection and mutation responses do not populate it; later reads may reuse a published active draft.
-The existing 32 MiB sort cache and live notebook, terminal and document behavior are unchanged. Initial and
+Live notebooks, R terminals and managed documents keep the 32 MiB sort cache. Initial and
 uncached filtering and sorting still run synchronously. Reuse does not promise a net improvement for every query
 sequence: changing sort also resets UI profiling, and each new profile may need source-order recovery.
 

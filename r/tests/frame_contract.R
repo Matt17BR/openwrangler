@@ -9446,6 +9446,47 @@ assert_identical(
   "changing sort priority retained more than the current order"
 )
 
+# Viewing sorts one combined radix order; it must match each library's own ordering in the committed sort step.
+ordering_rows <- 210L
+ordering_frame <- data.frame(
+  id = seq_len(ordering_rows),
+  group = factor(rep_len(c("b", "a", NA, "c"), ordering_rows), levels = c("c", "a", "b")),
+  small = bit64::as.integer64(rep_len(c(3, -2, NA, 7, 0), ordering_rows)),
+  medium = bit64::as.integer64(rep_len(c(3e9, -3e9, NA, 2^52), ordering_rows)),
+  wide = bit64::as.integer64(rep_len(c("9007199254740993", "9007199254740992", "-9223372036854775807", NA, "-1",
+    "9223372036854775807"), ordering_rows)),
+  real = rep_len(c(1.5, NaN, -Inf, NA, 1.5, Inf, 0), ordering_rows),
+  text = rep_len(c("b", NA, "B", "a", "", "\u00e9"), ordering_rows),
+  flag = rep_len(c(TRUE, NA, FALSE), ordering_rows),
+  civil = clock::naive_time_parse(rep_len(c("2026-03-29T02:30:00.000000000", NA, "1677-09-21T00:12:43.145224192",
+    "2026-03-29T02:30:00.000000001", "2262-04-11T23:47:16.854775807", "2026-03-29T02:30:01.000000000",
+    "1970-01-01T00:00:00.000000000", "1969-12-31T23:59:59.999999999"), ordering_rows), precision = "nanosecond")
+)
+ordering_capture <- openwrangler_r_frame_contract$capture_frame(ordering_frame)
+ordering_rule <- function(name, direction, nulls) {
+  sort_rule(sprintf("r:c:%d", match(name, names(ordering_frame)) - 1L), name, direction, nulls)
+}
+for (rules in list(
+  list(ordering_rule("group", "asc", "first"), ordering_rule("wide", "desc", "last")),
+  list(ordering_rule("medium", "desc", "first"), ordering_rule("real", "asc", "last"), ordering_rule("text", "desc", "first")),
+  list(ordering_rule("small", "asc", "last"), ordering_rule("civil", "desc", "first"), ordering_rule("flag", "asc", "last")),
+  list(ordering_rule("wide", "asc", "first")),
+  list(ordering_rule("civil", "asc", "last"), ordering_rule("medium", "asc", "last")),
+  list(ordering_rule("text", "asc", "last"), ordering_rule("real", "desc", "first"))
+)) {
+  ordering_query <- view_query(sorts = rules)
+  viewed <- openwrangler_r_frame_contract$materialize_view_page(ordering_capture, ordering_query, row_limit = ordering_rows)
+  for (library in c("dplyr", "data.table", "collapse")) {
+    committed <- openwrangler_r_frame_contract$transform_rows(ordering_capture, ordering_query, library)$frame$id
+    assert_identical(
+      vapply(viewed$page$rows, `[[`, character(1L), "id"),
+      sprintf("r:r:%d", committed - 1L),
+      sprintf("viewing order differs from the %s sort step for %s", library,
+        paste(vapply(rules, function(rule) rule$column$name, ""), collapse = ", "))
+    )
+  }
+}
+
 names(large_source$frame)[1L] <- "renamed_order_key"
 assert_error(
   openwrangler_r_frame_contract$materialize_view_page(large_capture, row_limit = 1L, column_limit = 1L),

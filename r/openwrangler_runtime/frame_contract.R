@@ -11713,31 +11713,64 @@ openwrangler_r_frame_contract <- local({
     ))
   }
 
+  # Keys for one radix order. Missing values get a neutral value because a separate flag key places them.
+  view_sort_value_keys <- function(column, missing, semantics) {
+    if (identical(semantics$kind, "integer64")) {
+      bindings <- ensure_integer64_bindings()
+      values <- suppressWarnings(integer64_as_double(column, bindings))
+      if (any(missing)) values[missing] <- 0
+      largest <- if (length(values) == 0L) 0 else max(abs(values))
+      # Doubles below 2^53 in magnitude are exact integers, so they order like the integer64 values.
+      if (largest < 2^53) return(list(if (largest <= .Machine$integer.max) as.integer(values) else values))
+      text <- integer64_as_character(column, bindings)
+      if (anyNA(text[!missing])) {
+        abort("invalid-view-value", "integer64 ordering value must be a decimal integer")
+      }
+      text[missing] <- "0"
+      negative <- startsWith(text, "-")
+      digits <- ifelse(negative, substring(text, 2L), text)
+      padded <- paste0(strrep("0", 19L - nchar(digits, type = "bytes")), digits)
+      return(list(!negative, ifelse(negative, chartr("0123456789", "9876543210", padded), padded)))
+    }
+    if (identical(semantics$kind, "clock_datetime")) {
+      parts <- unname(as.list(vctrs::vec_proxy_order(column)))
+      if (any(missing)) parts <- lapply(parts, function(part) {
+        part[missing] <- 0
+        part
+      })
+      return(parts)
+    }
+    if (is.factor(column)) {
+      column <- as.integer(column)
+    } else if (is.object(column)) {
+      column <- unclass(column)
+    }
+    if (any(missing)) column[missing] <- vector(typeof(column), 1L)
+    list(column)
+  }
+
   build_sorted_row_positions <- function(capture, sort_columns, resolved, row_positions = NULL) {
     descriptor <- capture$descriptor
-    if (is.null(row_positions)) row_positions <- seq_len(descriptor$shape$rows)
     add_metric(capture$metrics, "sortOrderBuilds")
-    add_metric(capture$metrics, "sortOrderRows", length(row_positions))
+    add_metric(capture$metrics, "sortOrderRows", if (is.null(row_positions)) descriptor$shape$rows else length(row_positions))
 
-    for (rule_index in rev(seq_along(resolved))) {
+    keys <- list()
+    decreasing <- logical()
+    for (rule_index in seq_along(resolved)) {
       rule <- resolved[[rule_index]]
-      column <- sort_columns[[rule_index]][row_positions]
+      column <- sort_columns[[rule_index]]
+      if (!is.null(row_positions)) column <- column[row_positions]
       missing <- is.na(column)
-      missing_positions <- row_positions[missing]
-      present_positions <- which(!missing)
-      present_order <- order_present_values(
-        column[present_positions],
-        descriptor$schema[[rule$position]]$semantics,
-        identical(rule$direction, "desc")
-      )
-      ordered_present <- row_positions[present_positions[present_order]]
-      row_positions <- if (identical(rule$nulls, "first")) {
-        c(missing_positions, ordered_present)
-      } else {
-        c(ordered_present, missing_positions)
+      if (any(missing)) {
+        keys[[length(keys) + 1L]] <- if (identical(rule$nulls, "first")) !missing else missing
+        decreasing <- c(decreasing, FALSE)
       }
+      values <- view_sort_value_keys(column, missing, descriptor$schema[[rule$position]]$semantics)
+      keys <- c(keys, values)
+      decreasing <- c(decreasing, rep.int(identical(rule$direction, "desc"), length(values)))
     }
-    row_positions
+    order_positions <- do.call(base::order, c(keys, list(decreasing = decreasing, method = "radix")))
+    if (is.null(row_positions)) order_positions else row_positions[order_positions]
   }
 
   cached_sorted_row_positions <- function(capture, frame, resolved) {
@@ -11782,23 +11815,28 @@ openwrangler_r_frame_contract <- local({
 
   view_row_positions <- function(capture, frame, view_query, apply_sorts, filter_cache = NULL) {
     resolved <- resolve_view_query(view_query, capture$descriptor)
-    if (length(resolved$filters) == 0L) clear_file_filter_cache(filter_cache)
-    if (length(resolved$filters) == 0L && (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L)) {
+    unfiltered <- length(resolved$filters) == 0L
+    # Source-reaching requests release a file agent's entry, so it can keep an unfiltered sort order without
+    # copying the sort columns.
+    filter_key <- if (!is.null(filter_cache)) list(logic = resolved$logic, filters = resolved$filters) else NULL
+    cached <- !is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)
+    if (unfiltered && (length(resolved$sorts) == 0L || !cached)) {
+      clear_file_filter_cache(filter_cache)
+      cached <- FALSE
+    }
+    if (unfiltered && (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L)) {
       if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
       return(list(rows = NULL, totalRows = capture$descriptor$shape$rows, resolved = resolved))
     }
-    filter_key <- if (!is.null(filter_cache) && length(resolved$filters) != 0L) {
-      list(logic = resolved$logic, filters = resolved$filters)
-    } else NULL
-    if (!is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)) {
+    if (cached && isTRUE(apply_sorts) && length(filter_cache$sorts) != 0L && identical(filter_cache$sorts, resolved$sorts)) {
+      clear_sort_cache(capture$sortCache)
+      return(list(rows = filter_cache$rows, totalRows = length(filter_cache$rows), resolved = resolved))
+    }
+    if (unfiltered) {
+      row_positions <- NULL
+    } else if (cached) {
       row_positions <- filter_cache$rows
-      if (length(filter_cache$sorts) != 0L) {
-        if (isTRUE(apply_sorts) && identical(filter_cache$sorts, resolved$sorts)) {
-          clear_sort_cache(capture$sortCache)
-          return(list(rows = row_positions, totalRows = length(row_positions), resolved = resolved))
-        }
-        row_positions <- sort.int(row_positions, method = "radix")
-      }
+      if (length(filter_cache$sorts) != 0L) row_positions <- sort.int(row_positions, method = "radix")
     } else {
       clear_file_filter_cache(filter_cache)
       row_positions <- filter_row_positions(frame, capture$descriptor, resolved)
@@ -11811,11 +11849,11 @@ openwrangler_r_frame_contract <- local({
         }
       }
     }
-    if (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L || length(row_positions) == 0L) {
+    if (!isTRUE(apply_sorts) || length(resolved$sorts) == 0L || (!unfiltered && length(row_positions) == 0L)) {
       if (length(resolved$sorts) == 0L) clear_sort_cache(capture$sortCache)
       return(list(rows = row_positions, totalRows = length(row_positions), resolved = resolved))
     }
-    if (length(resolved$filters) == 0L) {
+    if (unfiltered && is.null(filter_key)) {
       row_positions <- cached_sorted_row_positions(capture, frame, resolved$sorts)
     } else {
       clear_sort_cache(capture$sortCache)
@@ -11825,10 +11863,21 @@ openwrangler_r_frame_contract <- local({
         resolved$sorts,
         row_positions
       )
-      if (!is.null(filter_key) && identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key)) {
+      if (!is.null(filter_key)) {
         cache_bytes <- as.double(utils::object.size(row_positions)) + as.double(utils::object.size(filter_key)) +
           as.double(utils::object.size(resolved$sorts))
-        if (cache_bytes <= maximum_file_filter_cache_bytes) {
+        if (unfiltered) {
+          clear_file_filter_cache(filter_cache)
+          if (cache_bytes <= maximum_file_filter_cache_bytes) {
+            filter_cache$capture <- capture
+            filter_cache$key <- filter_key
+            filter_cache$rows <- row_positions
+            filter_cache$sorts <- resolved$sorts
+          }
+        } else if (
+          identical(filter_cache$capture, capture) && identical(filter_cache$key, filter_key) &&
+            cache_bytes <= maximum_file_filter_cache_bytes
+        ) {
           filter_cache$rows <- row_positions
           filter_cache$sorts <- resolved$sorts
         }
