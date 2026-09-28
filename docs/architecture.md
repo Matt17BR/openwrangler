@@ -919,7 +919,8 @@ writer opening; native Clone and Parquet export retain the stored types and tick
 Other native boxing limits, including timezone-dependent endpoint overflow, retain their errors.
 
 Dataset statistics reuse per-column missing counts for the total, including Sparse columns, without a second
-aggregate scan. Duplicate counting tries the native path first. Its specific unhashable-value TypeErrors for list,
+aggregate scan. Multi-column duplicate counting factorizes columns in order, as `DataFrame.duplicated` does, and stops
+once the leading columns tell every row apart, so a timestamp or ID column spares the rest. Its specific unhashable-value TypeErrors for list,
 dict, set or NumPy-array values leave only the multi-column duplicate count unavailable; other failures propagate.
 Ordinary object columns need no additional validation scan. Cleaning operations retain their separate rules.
 
@@ -1373,8 +1374,7 @@ leases keep their referenced frames alive. Preview, replay and inspection can re
 page and transport limits do not bound capture work, memory or temporary disk use.
 
 Database-table sessions retain one read-only connection in their engine and serialize each full query and fetch
-scope. They reuse the same SQL-plan, page and profile owners. Viewers of one database share its native thread setting,
-so dataset statistics limit it to one thread only while any viewer's grouped statistics query runs. Native spill files belong to a private temporary
+scope. They reuse the same SQL-plan, page and profile owners. Native spill files belong to a private temporary
 directory, removed after the last reserved reader closes; DuckDB's database-adjacent default is not used. External access is
 disabled. SQL editing is unsupported. A table's stored defaults and computed columns retain native behavior, so
 computed values may change between requests; only a view is read from a snapshot.
@@ -1385,8 +1385,8 @@ Viewers of the same resolved database path share a private spill directory and n
 engine retains its own connection, query lock and interruption tracking. A reservation includes pending opens; the last
 release removes the directory after native connection closure. Joining compares the existing file fingerprint with the
 first reservation, refusing a changed source instead of serving an older cached database. This adds no path-alias policy.
-An incompatible connection created outside these viewers is still refused without disturbing its owner. Header statistics
-retain their single-thread guard, which also affects the other readers of that database; resource budgets are not per viewer.
+An incompatible connection created outside these viewers is still refused without disturbing its owner. Resource budgets
+are not per viewer.
 Ordinary database writers are excluded while any reader remains open. Close waits for that engine's active query/fetch scope
 and releases its reservation once. Initial-open cancellation retains the existing late-result cleanup path; it does not
 promise immediate native preemption. Main-file identity is checked before and after reads even without a known suffix.

@@ -259,6 +259,41 @@ def test_pandas_sparse_missing_cell_total_reuses_exact_column_counts(layout: str
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_pandas_duplicate_rows_match_dataframe_duplicated(seed: int) -> None:
+    generator = np.random.default_rng(seed)
+    rows = 600
+
+    def frame(cardinality: int, width: int) -> pd.DataFrame:
+        def draw() -> np.ndarray:
+            return generator.integers(0, cardinality, rows)
+
+        def missing() -> np.ndarray:
+            return generator.random(rows) < 0.2
+
+        kinds = [
+            lambda: draw(),
+            lambda: np.where(missing(), np.nan, draw().astype(float)),
+            lambda: pd.Series(draw().astype(str), dtype=object).mask(missing(), None),
+            lambda: pd.Series(draw().astype(str), dtype="string").mask(missing()),
+            lambda: pd.Categorical(draw()),
+            lambda: pd.Series(pd.to_datetime(draw(), unit="s")).mask(missing()),
+        ]
+        return pd.DataFrame({f"c{index}": kinds[index % len(kinds)]() for index in range(width)})
+
+    few = frame(3, 4)
+    # Twelve columns of 500 values overflow one int64 key, so the leading columns are compressed first.
+    wide = frame(500, 12)
+    repeated = pd.concat([wide, wide.sample(200, random_state=seed)], ignore_index=True)
+    leading_unique = frame(3, 4).assign(c0=np.arange(rows))
+    engine = PandasEngine()
+    for source in (few, wide, repeated, leading_unique, few.iloc[:0], few.iloc[[0, 0]]):
+        expected = int(source.duplicated().sum())
+        assert pandas_engine_module._pandas_duplicate_row_count(source) == expected
+        assert engine.header_stats(source)["duplicateRows"] == expected
+    assert pandas_engine_module._pandas_duplicate_row_count(repeated) > 0
+
+
 @pytest.mark.parametrize("container", ["list", "dict", "numpy.ndarray", "set"])
 def test_pandas_container_stats_preserve_missing_counts_when_composite_duplicates_are_unavailable(
     container: str,
@@ -305,13 +340,15 @@ def test_pandas_container_stats_preserve_missing_counts_when_composite_duplicate
 def test_pandas_duplicate_stats_propagate_unclassified_native_failures(
     monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    def fail_duplicates(_frame: pd.DataFrame) -> Any:
+    def fail_duplicates(*_args: Any, **_kwargs: Any) -> Any:
         raise failure
 
     monkeypatch.setattr(pd.DataFrame, "duplicated", fail_duplicates)
-    with pytest.raises(type(failure)) as caught:
-        PandasEngine().header_stats(pd.DataFrame({"a": [1], "b": [2]}))
-    assert caught.value is failure
+    monkeypatch.setattr(pd, "factorize", fail_duplicates)
+    for source in (pd.DataFrame({"a": [1], "b": [2]}), pd.DataFrame({"a": [1]})):
+        with pytest.raises(type(failure)) as caught:
+            PandasEngine().header_stats(source)
+        assert caught.value is failure
 
 
 def test_pandas_duplicate_stats_preserve_error_subclasses_single_column_and_reduction_failures(
@@ -325,12 +362,13 @@ def test_pandas_duplicate_stats_preserve_error_subclasses_single_column_and_redu
 
     source = pd.DataFrame({"a": [1], "b": [2]})
 
-    def fail_duplicates(_frame: pd.DataFrame) -> Any:
+    def fail_duplicates(*_args: Any, **_kwargs: Any) -> Any:
         raise failure
 
     for failure in (CustomTypeError("unhashable type: 'list'"), pa.ArrowNotImplementedError("native failure")):
         with monkeypatch.context() as patch:
             patch.setattr(pd.DataFrame, "duplicated", fail_duplicates)
+            patch.setattr(pd, "factorize", fail_duplicates)
             with pytest.raises(type(failure)) as caught:
                 PandasEngine().header_stats(source)
             assert caught.value is failure
@@ -349,7 +387,7 @@ def test_pandas_duplicate_stats_preserve_error_subclasses_single_column_and_redu
     monkeypatch.setattr(mask, "sum", fail_reduction)
     monkeypatch.setattr(pd.DataFrame, "duplicated", lambda _frame: mask)
     with pytest.raises(TypeError) as caught:
-        PandasEngine().header_stats(source)
+        PandasEngine().header_stats(source[["a"]])
     assert caught.value is failure
 
 

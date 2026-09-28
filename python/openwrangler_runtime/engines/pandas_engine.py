@@ -1790,7 +1790,11 @@ class PandasEngine(DataFrameEngine):
         )
         del missing_row_mask
         try:
-            duplicate_mask = duplicate_keys.duplicated()
+            duplicate_rows = (
+                _pandas_duplicate_row_count(df)
+                if native_frame and duplicate_keys is df and df.shape[1] > 1
+                else int(duplicate_keys.duplicated().sum())
+            )
         except TypeError as error:
             if (
                 df.shape[1] <= 1
@@ -1807,8 +1811,6 @@ class PandasEngine(DataFrameEngine):
             ):
                 raise
             duplicate_rows = None
-        else:
-            duplicate_rows = int(duplicate_mask.sum())
         return {
             "missingCells": sum(item["count"] for item in missing_by_column),
             "missingRows": missing_rows,
@@ -8997,6 +8999,39 @@ def _pandas_ascii_label_matches(labels: Any, query: FindQuery, *, folded: bool =
     text = labels if query.match_case or folded else strings.lower(labels)
     needle = query.needle()
     return np.asarray(text == needle if query.whole_cell else strings.find(text, needle) >= 0, dtype=bool)
+
+
+def _pandas_duplicate_row_count(frame: Any) -> int:
+    """Count the rows ``DataFrame.duplicated`` marks, stopping once the leading columns tell every row apart."""
+    import numpy as np
+    import pandas as pd
+
+    rows = len(frame)
+    if rows > 2**31:
+        # Combined keys of two such columns could overflow int64.
+        return int(frame.duplicated().sum())
+    key = np.zeros(rows, dtype=np.int64)
+    size = 1
+    for position in range(frame.shape[1]):
+        codes, uniques = pd.factorize(frame.iloc[:, position].values, size_hint=rows)
+        codes = codes.astype(np.int64, copy=False)
+        width = len(uniques)
+        if (codes < 0).any():
+            # Missing values form their own group, as they do in ``duplicated``.
+            codes += 1
+            width += 1
+        if width == rows:
+            return 0
+        if size > np.iinfo(np.int64).max // width:
+            compressed, uniques = pd.factorize(key, size_hint=rows)
+            size = len(uniques)
+            if size == rows:
+                return 0
+            key = compressed.astype(np.int64, copy=False)
+        key *= width
+        key += codes
+        size *= width
+    return rows - len(pd.unique(key))
 
 
 def _pandas_cell_displays(values: Any) -> list[str | None]:
