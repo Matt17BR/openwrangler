@@ -104,6 +104,7 @@ from .base import (
     generated_fill_replacement_expression,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_bound_column_reference,
     is_internal_row_id_label,
     normalize_cell,
     normalize_export_options,
@@ -3353,7 +3354,7 @@ class PandasEngine(DataFrameEngine):
 
         def collect(value: Any) -> None:
             if isinstance(value, Mapping):
-                if set(value) == {"id", "name", "position"}:
+                if is_bound_column_reference(value):
                     binding = (bound_column_position(value, kind), bound_column_name(value, kind))
                     if binding not in bindings:
                         bindings.append(binding)

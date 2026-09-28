@@ -49,6 +49,14 @@ npm run test:ts
 npm run test:python
 ```
 
+`fixtures/generated-code-plans.json` is the shared plan fixture for generated cleaning code: an 8-row typed source
+table, one realistic step for every operation in catalog order, and several multi-step plans. The CSV in
+`fixtures/generated-code-lookup/` backs the Look up columns plan. `python/tests/generated_code_test_support.py` builds the
+source natively for Pandas, Polars and DuckDB, binds and runs plans live as a session does, runs generated code, and
+checks the generated-code shape rules. `python/tests/test_generated_code_plans.py` runs every plan live on each engine,
+Polars eager and lazy, and compares the generated result. Engine and R library size, family parity and shape tests use
+this fixture instead of their own plan data.
+
 Vitest's DOM project runs `.test.tsx` files and the plain TypeScript clipboard, notebook-renderer and Code Preview
 synchronization owners in jsdom. Other TypeScript owners run in Node. The projects share aliases and options in
 [`vite.config.mts`](../vite.config.mts); only the DOM project loads the popover shim. The global four-worker limit

@@ -37,12 +37,23 @@ def open_session(tmp_path: Path, backend: str = "pandas") -> tuple[SessionManage
     return manager, opened["metadata"]["sessionId"], opened["metadata"]["schema"]
 
 
-def contains_private_position(value: Any) -> bool:
+def contains_private_binding(value: Any) -> bool:
     if isinstance(value, dict):
-        return "position" in value or any(contains_private_position(item) for item in value.values())
+        return (
+            "position" in value or "rawType" in value or any(contains_private_binding(item) for item in value.values())
+        )
     if isinstance(value, list):
-        return any(contains_private_position(item) for item in value)
+        return any(contains_private_binding(item) for item in value)
     return False
+
+
+def bound(reference: dict[str, str], schema_column: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **reference,
+        "position": schema_column["position"],
+        "rawType": schema_column["rawType"],
+        "type": schema_column["type"],
+    }
 
 
 def test_polars_literal_column_names_survive_session_apply_history_and_generated_code(tmp_path: Path) -> None:
@@ -78,7 +89,7 @@ def test_polars_literal_column_names_survive_session_apply_history_and_generated
             assert applied["metadata"]["schema"][:3] == schema
             assert [row["id"] for row in applied["page"]["rows"]] == [row["id"] for row in original_rows]
             assert [row["rowNumber"] for row in applied["page"]["rows"]] == [0, 1, 2]
-            assert not contains_private_position(applied["metadata"]["steps"])
+            assert not contains_private_binding(applied["metadata"]["steps"])
         undone = manager.undo_step(sid, revision, 0, 10)
         assert [column["name"] for column in undone["metadata"]["schema"]] == [*source.columns, "copy pattern"]
         assert undone["metadata"]["schema"][-1]["id"] == "c:step:pattern:0"
@@ -181,7 +192,7 @@ def test_polars_explode_list_retains_history_fresh_ids_and_export(
         applied = manager.apply_draft(sid, preview["revision"], 0, 10)
         assert session.committed is draft and applied["metadata"]["steps"] == [sort, public]
         assert [row["id"] for row in applied["page"]["rows"]] == ids
-        assert not contains_private_position(applied["metadata"]["steps"])
+        assert not contains_private_binding(applied["metadata"]["steps"])
         undone = manager.undo_step(sid, applied["revision"], 0, 10)
         assert undone["page"] == sorted_result["page"]
         redone = manager.redo_step(sid, undone["revision"], 0, 10)
@@ -275,7 +286,7 @@ def test_extract_struct_fields_preserves_parent_rows_and_appended_identity_throu
             [200, None],
         ]
         assert applied["metadata"]["steps"] == [public]
-        assert not contains_private_position(applied["metadata"]["steps"])
+        assert not contains_private_binding(applied["metadata"]["steps"])
         undone = manager.undo_step(sid, applied["revision"], 0, 10)
         assert undone["metadata"]["schema"] == schema
         assert undone["page"] == opened["page"]
@@ -352,7 +363,7 @@ def test_conditional_column_retains_output_identity_through_edit_and_replay(tmp_
             ("null", None),
         ]
         assert applied["metadata"]["steps"] == [public]
-        assert not contains_private_position(applied["metadata"]["steps"])
+        assert not contains_private_binding(applied["metadata"]["steps"])
         undone = manager.undo_step(sid, applied["revision"], 0, 10)
         assert undone["metadata"]["schema"] == schema
         redone = manager.redo_step(sid, undone["revision"], 0, 10)
@@ -384,13 +395,13 @@ def test_bound_plan_survives_apply_replay_inspection_edit_and_undo(tmp_path: Pat
     preview = manager.preview_step(session_id, 0, rename, 0, 10)
     runtime = manager.sessions[session_id]
     assert runtime.draft_bound_step is not None
-    assert runtime.draft_bound_step["params"]["column"] == {**value, "position": 1}
-    assert not contains_private_position(preview["metadata"]["draftStep"])
+    assert runtime.draft_bound_step["params"]["column"] == bound(value, schema[1])
+    assert not contains_private_binding(preview["metadata"]["draftStep"])
 
     applied = manager.apply_draft(session_id, 1, 0, 10)
     assert runtime.plan == [rename]
-    assert runtime.bound_plan[0]["params"]["column"] == {**value, "position": 1}
-    assert not contains_private_position(applied["metadata"]["steps"])
+    assert runtime.bound_plan[0]["params"]["column"] == bound(value, schema[1])
+    assert not contains_private_binding(applied["metadata"]["steps"])
 
     amount = ref(value["id"], "amount")
     formula = step(
@@ -438,8 +449,9 @@ def test_group_and_by_example_bind_replay_inspect_and_undo_without_leaking_posit
         page_size=10,
     )
     session_id = opened["metadata"]["sessionId"]
-    group = ref(opened["metadata"]["schema"][0]["id"], "group")
-    value = ref(opened["metadata"]["schema"][1]["id"], "value")
+    schema = opened["metadata"]["schema"]
+    group = ref(schema[0]["id"], "group")
+    value = ref(schema[1]["id"], "value")
     runtime = manager.sessions[session_id]
 
     grouped_step = step(
@@ -453,14 +465,14 @@ def test_group_and_by_example_bind_replay_inspect_and_undo_without_leaking_posit
     )
     preview = manager.preview_step(session_id, 0, grouped_step, 0, 10)
     assert runtime.draft_bound_step is not None
-    assert runtime.draft_bound_step["params"]["keys"] == [{**group, "position": 0}]
+    assert runtime.draft_bound_step["params"]["keys"] == [bound(group, schema[0])]
     assert [item["column"] for item in runtime.draft_bound_step["params"]["aggregations"]] == [
-        {**value, "position": 1},
-        {**value, "position": 1},
+        bound(value, schema[1]),
+        bound(value, schema[1]),
     ]
-    assert not contains_private_position(preview["metadata"]["draftStep"])
+    assert not contains_private_binding(preview["metadata"]["draftStep"])
     applied = manager.apply_draft(session_id, 1, 0, 10)
-    assert not contains_private_position(applied["metadata"]["steps"])
+    assert not contains_private_binding(applied["metadata"]["steps"])
     inspection = manager.inspect_step(session_id, 2, "grouped", 0, 10)
     assert [column["name"] for column in inspection["outputSchema"]] == ["group", "total", "average"]
     assert "def clean_data" in inspection["code"]
@@ -482,13 +494,13 @@ def test_group_and_by_example_bind_replay_inspect_and_undo_without_leaking_posit
     preview = manager.preview_step(session_id, 3, example_step, 0, 10)
     assert runtime.draft_bound_step is not None
     assert runtime.draft_bound_step["params"]["sourceColumns"] == [
-        {**group, "position": 0},
-        {**value, "position": 1},
+        bound(group, schema[0]),
+        bound(value, schema[1]),
     ]
-    assert not contains_private_position(preview["metadata"]["draftStep"])
+    assert not contains_private_binding(preview["metadata"]["draftStep"])
     assert [row["values"][2]["display"] for row in preview["page"]["rows"]] == ["a1", "a2", "b3"]
     applied = manager.apply_draft(session_id, 4, 0, 10)
-    assert not contains_private_position(applied["metadata"]["steps"])
+    assert not contains_private_binding(applied["metadata"]["steps"])
     inspection = manager.inspect_step(session_id, 5, "combined", 0, 10)
     assert [column["name"] for column in inspection["outputSchema"]] == ["group", "value", "label"]
     assert "def clean_data" in inspection["code"]
