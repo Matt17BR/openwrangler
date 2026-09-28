@@ -7034,7 +7034,7 @@ openwrangler_r_kernel_agent <- local({
         "fallbackColumns", "directional", "groupedStatistic", "linearInterpolation"
       ))) c(
         "  .ow_fill_datetime <- function(.ow_text, .ow_timezone) {",
-        "    .ow_match <- regexec(\"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$\", .ow_text, perl = TRUE)",
+        "    .ow_match <- regexec(\"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?\\\\z\", .ow_text, perl = TRUE)",
         "    .ow_parts <- regmatches(.ow_text, .ow_match)[[1L]]",
         "    if (length(.ow_parts) == 0L || substring(.ow_parts[[2L]], 1L, 4L) == \"0000\") stop(\"Open Wrangler expected a valid ISO datetime\", call. = FALSE)",
         "    .ow_hours <- as.integer(.ow_parts[[3L]]); .ow_minutes <- as.integer(.ow_parts[[4L]])",
@@ -7147,7 +7147,7 @@ openwrangler_r_kernel_agent <- local({
         "      if (!is.logical(.ow_fill) || length(.ow_fill) != 1L || is.na(.ow_fill)) stop(\"Open Wrangler expected a boolean replacement\", call. = FALSE)",
         "    } else if (.ow_semantic_kind == \"date\") {",
         "      .ow_text <- .ow_replacement$value",
-        "      if (!grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_text, perl = TRUE) || startsWith(.ow_text, \"0000-\")) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
+        "      if (!grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}\\\\z\", .ow_text, perl = TRUE) || startsWith(.ow_text, \"0000-\")) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
         "      .ow_fill <- suppressWarnings(as.Date(.ow_text, format = \"%Y-%m-%d\"))",
         "      if (is.na(.ow_fill)) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
         "    } else if (.ow_semantic_kind == \"datetime\") {",
@@ -8721,7 +8721,7 @@ openwrangler_r_kernel_agent <- local({
   is_absolute_local_path <- function(path) {
     if (.Platform$OS.type == "windows") {
       grepl("^[A-Za-z]:[/\\\\]", path, perl = TRUE) ||
-        (grepl("^[/\\\\]{2}[^/\\\\]+[/\\\\][^/\\\\]+(?:[/\\\\]|$)", path, perl = TRUE) &&
+        (grepl("^[/\\\\]{2}[^/\\\\]+[/\\\\][^/\\\\]+(?:[/\\\\]|\\z)", path, perl = TRUE) &&
           !grepl("^[/\\\\]{2}[?.][/\\\\]", path, perl = TRUE))
     } else startsWith(path, "/")
   }
@@ -10147,7 +10147,7 @@ openwrangler_r_kernel_agent <- local({
           "  if (!identical(.ow_regex_participation, .ow_regex_pattern) && any(.ow_regex_found)) {",
           "    .ow_regex_candidates <- which(.ow_regex_found)",
           "    .ow_regex_full <- substring(.ow_regex_utf8[.ow_regex_candidates], .ow_regex_starts[.ow_regex_candidates, 1L], .ow_regex_starts[.ow_regex_candidates, 1L] + .ow_regex_lengths[.ow_regex_candidates, 1L] - 1L)",
-          "    .ow_regex_found[.ow_regex_candidates[as.integer(regexpr(paste0(\"^(?:\", .ow_regex_participation, \")$\"), .ow_regex_full, perl = TRUE, useBytes = FALSE)) == -1L]] <- FALSE",
+          "    .ow_regex_found[.ow_regex_candidates[as.integer(regexpr(paste0(\"^(?:\", .ow_regex_participation, \")\\\\z\"), .ow_regex_full, perl = TRUE, useBytes = FALSE)) == -1L]] <- FALSE",
           "  }",
           "  .ow_regex_output <- rep.int(NA_character_, length(.ow_regex_distinct))",
           "  .ow_selected <- .ow_regex_group + 1L",
