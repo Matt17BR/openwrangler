@@ -21,25 +21,19 @@ import {
 } from "../extension/r/rKernelColumnSchema";
 
 describe("R kernel column schema evolution", () => {
-  it("validates fill compatibility and data.table key ownership", () => {
+  it("validates fill compatibility", () => {
     const step: FillMissingValuesTransformStep = {
       id: "fill",
       kind: "fillMissingValues",
       params: { column: reference(0), replacement: { kind: "mean" } }
     };
 
-    expect(schemaAfterFillMissing(schema, step, [])).toEqual([
-      { ...schema[0]!, nullable: false },
-      schema[1],
-      schema[2]
-    ]);
-    expect(() => schemaAfterFillMissing(schema, step, ["r:c:0"])).toThrow("data.table key column");
+    expect(schemaAfterFillMissing(schema, step)).toEqual([{ ...schema[0]!, nullable: false }, schema[1], schema[2]]);
     expect(() =>
-      schemaAfterFillMissing(
-        schema,
-        { ...step, params: { ...step.params, replacement: { kind: "string", value: "wrong" } } },
-        []
-      )
+      schemaAfterFillMissing(schema, {
+        ...step,
+        params: { ...step.params, replacement: { kind: "string", value: "wrong" } }
+      })
     ).toThrow("incompatible with R double");
   });
 
@@ -52,30 +46,25 @@ describe("R kernel column schema evolution", () => {
         replacement: { kind: "linearInterpolation", coordinate: reference(2), maxGap: 4 }
       }
     };
-    expect(schemaAfterFillMissing(schema, base, [])).toEqual(schema);
+    expect(schemaAfterFillMissing(schema, base)).toEqual(schema);
     expect(() =>
-      schemaAfterFillMissing(
-        schema,
-        { ...base, params: { ...base.params, replacement: { kind: "linearInterpolation", coordinate: reference(0) } } },
-        []
-      )
+      schemaAfterFillMissing(schema, {
+        ...base,
+        params: { ...base.params, replacement: { kind: "linearInterpolation", coordinate: reference(0) } }
+      })
     ).toThrow("cannot also be the interpolation coordinate");
     expect(() =>
-      schemaAfterFillMissing(
-        schema,
-        {
-          ...base,
-          params: {
-            ...base.params,
-            replacement: {
-              kind: "directional",
-              direction: "forward",
-              orderBy: [{ column: reference(0), direction: "asc", nulls: "last" }]
-            }
+      schemaAfterFillMissing(schema, {
+        ...base,
+        params: {
+          ...base.params,
+          replacement: {
+            kind: "directional",
+            direction: "forward",
+            orderBy: [{ column: reference(0), direction: "asc", nulls: "last" }]
           }
-        },
-        []
-      )
+        }
+      })
     ).toThrow("cannot also be a directional ordering column");
   });
 
@@ -90,7 +79,7 @@ describe("R kernel column schema evolution", () => {
       kind: "fillMissingValues",
       params: { column, replacement }
     });
-    expect(schemaAfterFillMissing(withClock, fill({ kind: "mean" }), []).at(-1)).toEqual(clock);
+    expect(schemaAfterFillMissing(withClock, fill({ kind: "mean" })).at(-1)).toEqual(clock);
     expect(
       schemaAfterFillMissing(
         withClock,
@@ -98,22 +87,21 @@ describe("R kernel column schema evolution", () => {
           kind: "directional",
           direction: "forward",
           orderBy: [{ column: reference(2), direction: "asc", nulls: "last" }]
-        }),
-        []
+        })
       )
     ).toEqual(withClock);
     expect(() =>
-      schemaAfterFillMissing(withClock, fill({ kind: "datetime", value: "2026-09-18T12:00:00" }, reference(2)), [])
+      schemaAfterFillMissing(withClock, fill({ kind: "datetime", value: "2026-09-18T12:00:00" }, reference(2)))
     ).toThrow("clock datetime columns");
     expect(() =>
-      schemaAfterFillMissing(withClock, fill({ kind: "linearInterpolation", coordinate: reference(2) }), [])
+      schemaAfterFillMissing(withClock, fill({ kind: "linearInterpolation", coordinate: reference(2) }))
     ).toThrow("interpolation coordinates");
     expect(() =>
-      schemaAfterFillMissing(withClock, fill({ kind: "groupedStatistic", statistic: "mean", keys: [reference(2)] }), [])
+      schemaAfterFillMissing(withClock, fill({ kind: "groupedStatistic", statistic: "mean", keys: [reference(2)] }))
     ).toThrow("grouped-fill keys");
-    expect(() =>
-      schemaAfterFillMissing(withClock, fill({ kind: "fallbackColumns", columns: [reference(2)] }), [])
-    ).toThrow("clock datetime fallback");
+    expect(() => schemaAfterFillMissing(withClock, fill({ kind: "fallbackColumns", columns: [reference(2)] }))).toThrow(
+      "clock datetime fallback"
+    );
     expect(
       schemaAfterClone(withClock, {
         id: "clone",
@@ -129,15 +117,15 @@ describe("R kernel column schema evolution", () => {
       })[0]
     ).toEqual({ ...clock, position: 0 });
     expect(() =>
-      schemaAfterCast(
-        withClock,
-        { id: "cast", kind: "castColumn", params: { column: reference(2), dtype: "datetime" } },
-        []
-      )
+      schemaAfterCast(withClock, {
+        id: "cast",
+        kind: "castColumn",
+        params: { column: reference(2), dtype: "datetime" }
+      })
     ).toThrow("cannot safely convert");
   });
 
-  it("maps safe native R casts without relaxing key or raw-type checks", () => {
+  it("maps safe native R casts without relaxing raw-type checks", () => {
     const cast: CastColumnTransformStep = {
       id: "cast",
       kind: "castColumn",
@@ -146,14 +134,12 @@ describe("R kernel column schema evolution", () => {
     const factorSchema = schema.map((column) =>
       column.id === "r:c:1" ? { ...column, rawType: "ordered factor" } : column
     );
-    expect(schemaAfterCast(factorSchema, cast, [])[1]).toEqual({ ...factorSchema[1]!, rawType: "character" });
-    expect(() => schemaAfterCast(factorSchema, cast, ["r:c:1"])).toThrow("key column");
+    expect(schemaAfterCast(factorSchema, cast)[1]).toEqual({ ...factorSchema[1]!, rawType: "character" });
     expect(() =>
-      schemaAfterCast(
-        [{ ...schema[0]!, rawType: "list", type: "list" }],
-        { ...cast, params: { column: reference(0), dtype: "float" } },
-        []
-      )
+      schemaAfterCast([{ ...schema[0]!, rawType: "list", type: "list" }], {
+        ...cast,
+        params: { column: reference(0), dtype: "float" }
+      })
     ).toThrow("cannot safely convert R list values");
   });
 
@@ -163,7 +149,7 @@ describe("R kernel column schema evolution", () => {
       kind: "findReplace",
       params: { column: reference(1), find: "a", replacement: "b", newColumn: "clean_group" }
     };
-    expect(schemaAfterTextTransform(schema, find, []).at(-1)).toEqual({
+    expect(schemaAfterTextTransform(schema, find).at(-1)).toEqual({
       id: "c:step:find:0",
       name: "clean_group",
       position: 3,
@@ -171,9 +157,9 @@ describe("R kernel column schema evolution", () => {
       type: "string",
       nullable: false
     });
-    expect(() =>
-      schemaAfterTextTransform(schema, { ...find, params: { ...find.params, newColumn: "value" } }, [])
-    ).toThrow("already exists");
+    expect(() => schemaAfterTextTransform(schema, { ...find, params: { ...find.params, newColumn: "value" } })).toThrow(
+      "already exists"
+    );
 
     const length: TextLengthTransformStep = {
       id: "length",

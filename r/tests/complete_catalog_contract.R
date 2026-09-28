@@ -1063,6 +1063,18 @@ local({
       verify = function(output, input) assert_identical(output$value, c("x", "abc\n", "\n", NA),
         "Whole-cell Replace matched a cell that ends with a newline")
     ),
+    keyedTable = list(
+      source = function() {
+        value <- data.table::data.table(first = c(1L, 1L, 2L), second = c("a", "b", "a"), value = 1:3)
+        data.table::setkey(value, first, second)
+        value
+      },
+      step = function(frame, id) replace_step(frame, id, "second", "a", "z", whole_cell = TRUE),
+      verify = function(output, input) {
+        assert_identical(output$second, c("z", "b", "z"), "Replace changed a data.table key column wrongly")
+        assert_identical(data.table::key(output), "first", "Replace did not keep the key columns before the replaced key")
+      }
+    ),
     precise = list(
       source = precise_source,
       step = function(frame, id) replace_step(frame, id, c("precise", "instant"), ".000000002", ".000000009", spelling = "r"),

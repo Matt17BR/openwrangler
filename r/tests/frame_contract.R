@@ -3558,14 +3558,9 @@ for (result in list(lower_table_append, lower_table_replace)) {
 }
 assert_identical(lower_table_append$`lower key`, c("b", "a"), "derived lowerText changed keyed source values")
 assert_identical(lower_table_replace$payload, c("second", "first"), "in-place lowerText changed non-key values")
-assert_error(
-  openwrangler_r_frame_contract$lower_text_column_at(
-    lower_table,
-    1L,
-    "primary_key"
-  ),
-  "choose a new output column"
-)
+lower_table_key <- openwrangler_r_frame_contract$lower_text_column_at(lower_table, 1L, "primary_key")
+assert_identical(lower_table_key$primary_key, c("b", "a"), "in-place lowerText did not change a data.table key column")
+assert_identical(data.table::key(lower_table_key), NULL, "in-place lowerText kept a stale data.table key")
 assert_identical(lower_table, lower_table_before, "lowerText mutated its source data.table")
 
 for (invalid_lower in list(
@@ -3966,22 +3961,15 @@ assert_identical(text_tools_tibble, text_tools_tibble_before, "text tools mutate
 text_tools_table <- data.table::data.table(primary_key = c(" [B] ", " [a] "), payload = c("ONE||", "TWO||tail"))
 data.table::setkey(text_tools_table, primary_key)
 text_tools_table_before <- data.table::copy(text_tools_table)
-assert_error(
-  openwrangler_r_frame_contract$capitalize_text_column_at(
-    text_tools_table,
-    1L,
-    "primary_key"
-  ),
-  "choose a new output column"
-)
-assert_error(
-  openwrangler_r_frame_contract$strip_text_column_at(
-    text_tools_table,
-    1L,
-    "primary_key"
-  ),
-  "choose a new output column"
-)
+for (text_tool in list(
+  openwrangler_r_frame_contract$capitalize_text_column_at,
+  openwrangler_r_frame_contract$strip_text_column_at
+)) {
+  keyed_result <- text_tool(text_tools_table, 1L, "primary_key")
+  unkeyed_result <- text_tool(as.data.frame(text_tools_table), 1L, "primary_key")
+  assert_identical(keyed_result$primary_key, unkeyed_result$primary_key, "an in-place text tool changed a key column differently")
+  assert_identical(data.table::key(keyed_result), NULL, "an in-place text tool kept a stale data.table key")
+}
 text_tools_table_result <- openwrangler_r_frame_contract$split_text_column_at(
   text_tools_table,
   2L,
@@ -4201,24 +4189,12 @@ assert_error(
 text_cleanup_table <- data.table::data.table(primary_key = c("b", "a"), payload = c("old-2", "old-1"))
 data.table::setkey(text_cleanup_table, primary_key)
 text_cleanup_table_before <- data.table::copy(text_cleanup_table)
-assert_error(
-  openwrangler_r_frame_contract$upper_text_column_at(
-    text_cleanup_table,
-    1L,
-    "primary_key"
-  ),
-  "choose a new output column"
-)
-assert_error(
-  openwrangler_r_frame_contract$find_replace_column_at(
-    text_cleanup_table,
-    1L,
-    "primary_key",
-    "a",
-    "A"
-  ),
-  "choose a new output column"
-)
+table_upper_key <- openwrangler_r_frame_contract$upper_text_column_at(text_cleanup_table, 1L, "primary_key")
+assert_identical(table_upper_key$primary_key, c("A", "B"), "in-place upperText did not change a data.table key column")
+assert_identical(data.table::key(table_upper_key), NULL, "in-place upperText kept a stale data.table key")
+table_replaced_key <- openwrangler_r_frame_contract$find_replace_column_at(text_cleanup_table, 1L, "primary_key", "a", "A")
+assert_identical(table_replaced_key$primary_key, c("A", "b"), "in-place findReplace did not change a data.table key column")
+assert_identical(data.table::key(table_replaced_key), NULL, "in-place findReplace kept a stale data.table key")
 table_replaced <- openwrangler_r_frame_contract$find_replace_column_at(
   text_cleanup_table,
   1L,
@@ -4501,10 +4477,9 @@ assert_identical(
 scale_table <- data.table::data.table(primary_key = c(2, 1), marker = c("second", "first"))
 data.table::setkey(scale_table, primary_key)
 scale_table_before <- data.table::copy(scale_table)
-assert_error(
-  openwrangler_r_frame_contract$min_max_scale_column_at(scale_table, 1L, "primary_key"),
-  "choose a new output column"
-)
+scaled_key_table <- openwrangler_r_frame_contract$min_max_scale_column_at(scale_table, 1L, "primary_key")
+assert_identical(scaled_key_table$primary_key, c(0, 1), "in-place Min-max scale did not change a data.table key column")
+assert_identical(data.table::key(scaled_key_table), NULL, "in-place Min-max scale kept a stale data.table key")
 scaled_table <- openwrangler_r_frame_contract$min_max_scale_column_at(
   scale_table,
   1L,
@@ -4762,12 +4737,9 @@ datetime_table <- data.table::data.table(
 )
 data.table::setkeyv(datetime_table, "primary key")
 datetime_table_before <- data.table::copy(datetime_table)
-assert_error(
-  openwrangler_r_frame_contract$format_datetime_column_at(
-    datetime_table, 1L, "primary key", "%Y%m%d"
-  ),
-  "choose a new output column"
-)
+datetime_table_key <- openwrangler_r_frame_contract$format_datetime_column_at(datetime_table, 1L, "primary key", "%Y%m%d")
+assert_identical(datetime_table_key$`primary key`, c("20260101", "20260102"), "in-place formatDatetime did not change a key column")
+assert_identical(data.table::key(datetime_table_key), NULL, "in-place formatDatetime kept a stale data.table key")
 datetime_table_derived <- openwrangler_r_frame_contract$format_datetime_column_at(
   datetime_table,
   1L,
@@ -5106,16 +5078,30 @@ fill_table_result <- openwrangler_r_frame_contract$fill_missing_column_at(
 assert_identical(class(fill_table_result), c("data.table", "data.frame"), "Fill Missing Values changed data.table class")
 assert_identical(data.table::key(fill_table_result), "primary_key", "Fill Missing Values dropped an unaffected data.table key")
 assert_identical(fill_table_result$payload, c("missing", "ready"), "Fill Missing Values returned the wrong data.table values")
-assert_error(
-  openwrangler_r_frame_contract$fill_missing_column_at(
-    fill_table,
-    1L,
-    "primary_key",
-    list(kind = "integer", value = "0")
-  ),
-  "key column"
+fill_table_key <- openwrangler_r_frame_contract$fill_missing_column_at(
+  fill_table,
+  1L,
+  "primary_key",
+  list(kind = "integer", value = "0")
 )
+assert_identical(data.table::key(fill_table_key), NULL, "Fill Missing Values kept a stale data.table key")
 assert_identical(fill_table, fill_table_before, "Fill Missing Values mutated its source data.table")
+
+two_key_table <- data.table::data.table(first = c(1L, 1L, 2L), second = c(NA_character_, "b", "a"), value = 1:3)
+data.table::setkey(two_key_table, first, second)
+two_key_table_before <- data.table::copy(two_key_table)
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  second_filled <- openwrangler_r_frame_contract$fill_missing_column_at(
+    two_key_table, 2L, "second", list(kind = "string", value = "none"), library = library
+  )
+  assert_identical(second_filled$second, c("none", "b", "a"), paste(library, "Fill Missing Values changed a key column wrongly"))
+  assert_identical(data.table::key(second_filled), "first", paste(library, "did not keep the key columns before a filled key"))
+  first_filled <- openwrangler_r_frame_contract$fill_missing_column_at(
+    two_key_table, 1L, "first", list(kind = "integer", value = "0"), library = library
+  )
+  assert_identical(data.table::key(first_filled), NULL, paste(library, "kept a key after filling its first column"))
+}
+assert_identical(two_key_table, two_key_table_before, "Fill Missing Values mutated a two-column-key source")
 
 assert_error(
   openwrangler_r_frame_contract$fill_missing_column_at(
@@ -5337,16 +5323,14 @@ fallback_table_result <- openwrangler_r_frame_contract$fill_missing_from_fallbac
 )
 assert_identical(data.table::key(fallback_table_result), "key_value", "fallback fill dropped a data.table key")
 assert_identical(fallback_table_result$target, c("ready", "b"), "a keyed fallback column was not usable")
-assert_error(
-  openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
-    fallback_table,
-    1L,
-    "key_value",
-    2L,
-    "target"
-  ),
-  "key column"
+fallback_key_result <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_table,
+  1L,
+  "key_value",
+  2L,
+  "target"
 )
+assert_identical(data.table::key(fallback_key_result), NULL, "fallback fill kept a stale data.table key")
 assert_identical(fallback_table, fallback_table_before, "fallback fill mutated its source data.table")
 
 directional_frame <- data.frame(
@@ -6003,10 +5987,12 @@ assert_identical(fixed_result$primary_key, fixed_before$primary_key, "fixed-layo
 assert_identical(as.double(fixed_result$value), c(1709164800, 1798675200), "fixed-layout Cast changed keyed-frame values")
 assert_identical(fixed_table, fixed_before, "fixed-layout Cast mutated its source")
 fixed_keyed <- data.table::copy(fixed_table)
-data.table::setkey(fixed_keyed, value)
+data.table::setkeyv(fixed_keyed, c("primary_key", "value"))
 fixed_keyed_before <- data.table::copy(fixed_keyed)
-assert_error(openwrangler_r_frame_contract$cast_column_at(fixed_keyed, 2L, "value", "datetime", "DD/MM/YYYY"), "key column")
-assert_identical(fixed_keyed, fixed_keyed_before, "refused fixed-layout Cast mutated its keyed source")
+fixed_keyed_result <- openwrangler_r_frame_contract$cast_column_at(fixed_keyed, 2L, "value", "datetime", "DD/MM/YYYY")
+assert_identical(as.double(fixed_keyed_result$value), c(1709164800, 1798675200), "Cast changed a key column wrongly")
+assert_identical(data.table::key(fixed_keyed_result), "primary_key", "Cast did not keep the key columns before the cast key")
+assert_identical(fixed_keyed, fixed_keyed_before, "fixed-layout Cast mutated its keyed source")
 
 cast_nonnullable_source <- data.frame(value = c("1", "2"), check.names = FALSE)
 cast_nonnullable_capture <- openwrangler_r_frame_contract$capture_frame(cast_nonnullable_source)
@@ -6281,15 +6267,11 @@ cast_table_result <- openwrangler_r_frame_contract$cast_column_at(
 assert_identical(data.table::key(cast_table_result), "primary_key", "castColumn changed a retained data.table key")
 assert_identical(cast_table_result$row_marker, cast_table_before$row_marker, "castColumn changed data.table row order")
 assert_identical(cast_table_result$value, c(NA_integer_, 2L), "castColumn changed non-key data.table values")
-assert_error(
-  openwrangler_r_frame_contract$cast_column_at(
-    cast_table,
-    1L,
-    "primary_key",
-    "string"
-  ),
-  "clone the column before casting it"
-)
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  cast_key_result <- openwrangler_r_frame_contract$cast_column_at(cast_table, 1L, "primary_key", "string", library = library)
+  assert_identical(cast_key_result$primary_key, c("1", "2"), paste(library, "castColumn did not convert a key column"))
+  assert_identical(data.table::key(cast_key_result), NULL, paste(library, "castColumn kept a stale data.table key"))
+}
 assert_identical(cast_table, cast_table_before, "castColumn mutated its source data.table")
 
 assert_error(

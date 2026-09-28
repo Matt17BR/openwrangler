@@ -195,7 +195,7 @@ export class RKernelMutationLifecycle {
           ? Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })))
           : isRCategoricalTransformStep(step)
             ? categoricalRetainedSchema(inputSchema, step)
-            : schemaAfterRStep(inputSchema, step, inputKeyColumnIds, inputRSchema);
+            : schemaAfterRStep(inputSchema, step, inputRSchema);
       if (step.kind === "pivotLonger") {
         assertRPivotLongerPreflight(step, inputSchema, inputRSchema, inputRows);
       }

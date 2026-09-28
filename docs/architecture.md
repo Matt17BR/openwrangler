@@ -2154,7 +2154,7 @@ Fill offers typed scalar, numeric median, double mean, most-common character/fac
 fallback columns. Grouped automatic methods ignore `NA`/`NaN`; all-missing groups and most-common ties stay missing.
 Directional Fill uses explicit stable sorting, restores original order and honors maximum missing-run length.
 Linear Fill fills native double targets and requires a complete, finite, unique ordinary numeric/Date/POSIXct
-coordinate; integer64 coordinates are refused. Native factor, temporal and integer64 storage is preserved. Active data-table keys cannot be modified in place.
+coordinate; integer64 coordinates are refused. Native factor, temporal and integer64 storage is preserved.
 
 Min-max scale preserves exact integer64 offsets until final double conversion; finite double ranges that overflow on
 subtraction use halved operands, while ordinary ranges retain subnormal differences. Constant finite ranges become
@@ -2176,11 +2176,14 @@ the live error codes and source-row labels. Other text operations retain their o
 
 Text operations accept character/factor input and preserve `NA`; transformed factors become character. Text Length
 counts Unicode characters and appends integer output. Split uses a literal delimiter and yields `NA` for an absent
-part. Strip uses whitespace or a literal character set. In-place text changes to a data-table key are refused; a new
-output column preserves the key and row order. Convert Type retains column identity, supports native character,
-integer, double, logical, Date and UTC POSIXct targets, and converts factors through labels. Failed parses become `NA`.
-Integer64-to-integer retains integer64 storage, and integer64 to Float rounds to the nearest double as the Python engines
-do. Other integer targets are 32-bit, so values beyond that range become `NA`. A keyed column must be cloned.
+part. Strip uses whitespace or a literal character set. Convert Type retains column identity, supports native
+character, integer, double, logical, Date and UTC POSIXct targets, and converts factors through labels. Failed parses
+become `NA`. Integer64-to-integer retains integer64 storage, and integer64 to Float rounds to the nearest double as the
+Python engines do. Other integer targets are 32-bit, so values beyond that range become `NA`.
+
+A step that writes a new output column preserves the data-table key and row order. Fill, Replace, Convert Type and the
+text, numeric and datetime steps may also change a key column in place; the key then keeps only the columns before it,
+as data.table's own `:=` does, and the host predicts that shortened key before it accepts the result page.
 
 Standalone generated plans run in a fresh `baseenv()`-parented implementation environment and validate the source
 before copying. Formula, Format Datetime and categorical helpers avoid caller-defined operator or S3 dispatch.
