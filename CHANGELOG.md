@@ -18,6 +18,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Large files open faster in Python · Pandas with Pandas 3. On an 11.7-million-row Parquet file, opening takes about 1 second instead of 1.2.
 - Scrolling, previews, Find and value search in Python · Pandas are much faster on large files with Pandas 2. On an 11.7-million-row Parquet file, each page loads in under 0.1 seconds instead of 0.4, Rename Column previews in 1.5 seconds instead of 2.4, Find takes 2.7 seconds instead of 18, and searching a text column's values takes 0.7 seconds instead of 10.
 - Sort Rows, Pivot longer, Dense Rank and Mark Duplicates preview faster on large files in Python · DuckDB, because row counts, dataset statistics and the check of each step result no longer sort every row. On an 11.7-million-row Parquet file, Sort Rows previews in 0.6 seconds instead of 1.5, Pivot longer in 2.6 seconds instead of 4.8, and dataset statistics after Sort Rows take 1.3 seconds instead of 1.9.
 - Opening and scrolling large files in Python · Polars is faster, and a sorted view no longer sorts the file again for every page. On an 11.7-million-row Parquet file, the file opens in about 0.1 seconds instead of 0.3, a page one million rows down loads in 0.08 seconds instead of 0.16, and each page of a sorted view after the second loads in about 0.2 seconds instead of 0.46.

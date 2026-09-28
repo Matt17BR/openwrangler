@@ -5,6 +5,7 @@ import os
 import sys
 from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
@@ -520,7 +521,7 @@ def _pandas_contiguous_text(frame: Any) -> Any:
     import pandas as pd
     import pyarrow as pa
 
-    result = frame
+    chunked: list[tuple[int, Any, Any]] = []
     for position in range(frame.shape[1]):
         dtype = frame.dtypes.iloc[position]
         if isinstance(dtype, pd.StringDtype):
@@ -532,12 +533,16 @@ def _pandas_contiguous_text(frame: Any) -> Any:
         ):
             continue
         array = frame.iloc[:, position].array.__arrow_array__()
-        if array.num_chunks <= 1:
-            continue
-        # Arrow concatenates every chunk of a text column before each row take.
-        if result is frame:
-            result = frame.copy(deep=False)
-        result.isetitem(position, pd.array(pa.chunked_array([array.combine_chunks()], type=array.type), dtype=dtype))
+        if array.num_chunks > 1:
+            chunked.append((position, dtype, array))
+    if not chunked:
+        return frame
+    # Arrow concatenates every chunk of a text column before each row take. It copies without holding the GIL.
+    with ThreadPoolExecutor(min(len(chunked), os.cpu_count() or 1)) as pool:
+        combined = list(pool.map(lambda item: item[2].combine_chunks(), chunked))
+    result = frame.copy(deep=False)
+    for (position, dtype, array), values in zip(chunked, combined, strict=True):
+        result.isetitem(position, pd.array(pa.chunked_array([values], type=array.type), dtype=dtype))
     return result
 
 
