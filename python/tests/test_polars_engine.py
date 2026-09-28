@@ -1051,15 +1051,15 @@ def test_polars_nested_temporal_file_session_keeps_native_generated_export_and_s
 @pytest.mark.parametrize(
     "dtype,tick,raw,text,portable",
     [
-        (pl.Duration("ns"), 10**17 + 1, "100000000.000000001", "1157d 9h 46m 40s 1ns", False),
+        (pl.Duration("ns"), 10**17 + 1, "100000000.000000001", "1157 days, 9:46:40.000000001", False),
         (pl.Datetime("ns"), 10**17 + 1, "1973-03-03T09:46:40.000000001", None, False),
-        (pl.Duration("us"), 100000001, 100.000001, "1m 40s 1µs", True),
-        (pl.Duration("us"), 1, "0.000001", "1µs", True),
-        (pl.Duration("ms"), -12345, -12.345, "-12s -345ms", True),
+        (pl.Duration("us"), 100000001, 100.000001, "0:01:40.000001", True),
+        (pl.Duration("us"), 1, "0.000001", "0:00:00.000001", True),
+        (pl.Duration("ms"), -12345, -12.345, "-1 day, 23:59:47.655000", True),
         (pl.Datetime("ms"), -12345, "1969-12-31T23:59:47.655000", None, True),
         (pl.Datetime("us", "Europe/Berlin"), 100000001, "1970-01-01T01:01:40.000001+01:00", None, True),
         (pl.Datetime("ns", "Europe/Amsterdam"), -5364662400000000000, "1800-01-01T00:17:30+00:17:30", None, False),
-        (pl.Duration("ns"), -(2**63), "-9223372036.854775808", "-106751d -23h -47m -16s -854775808ns", False),
+        (pl.Duration("ns"), -(2**63), "-9223372036.854775808", "-106752 days, 0:12:43.145224192", False),
         (pl.Datetime("ns"), -(2**63), "1677-09-21T00:12:43.145224192", None, False),
     ],
 )

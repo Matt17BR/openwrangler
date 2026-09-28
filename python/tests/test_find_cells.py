@@ -271,6 +271,85 @@ def test_duckdb_find_matches_page_displays(model: dict[str, Any]) -> None:
         connection.close()
 
 
+DURATION_TICKS = [0, 1, 1_500_000, -2_000_000, -1, 86_400_000_000, 90_061_500_000, -90_061_000_000, None, 1_500_000]
+DURATION_QUERIES = ["day", "DAYS", "1 day, 0:00:00", "0:00:01.5", "-", "23:59:58", "0:00:00", ":", "1d", "0 days"]
+
+
+@pytest.mark.parametrize("unit", ["us", "ns"])
+def test_python_engines_show_list_and_find_durations_alike(tmp_path: Path, unit: str) -> None:
+    scale = 1_000 if unit == "ns" else 1
+    ticks = [None if tick is None else tick * scale for tick in DURATION_TICKS]
+    path = tmp_path / "durations.parquet"
+    pq.write_table(pa.table({"d": pa.array(ticks, type=pa.duration(unit))}), path)
+    views: dict[str, tuple[DataFrameEngine, Any]] = {
+        "pandas": (PandasEngine(), pd.read_parquet(path)),
+        "pandas-arrow": (PandasEngine(), pd.read_parquet(path, dtype_backend="pyarrow")),
+        "polars": (PolarsEngine(), pl.read_parquet(path)),
+        "polars-lazy": (PolarsEngine(), pl.scan_parquet(path)),
+    }
+    duckdb_engine = DuckDBEngine()
+    if unit == "us":
+        # DuckDB intervals hold microseconds.
+        views["duckdb"] = (duckdb_engine, duckdb_engine.ensure_row_ids(duckdb_engine.read_file(str(path)), "durations"))
+    try:
+        seen = {}
+        for name, (engine, frame) in views.items():
+            view = engine.filter_view(frame, EMPTY)
+            seen[name] = (
+                [row["values"][0]["display"] for row in engine.page(view, 0, 20)["rows"]],
+                [(item["value"], item["count"]) for item in engine.column_values(view, "d")[0]],
+                [[item["value"] for item in engine.column_values(view, "d", text)[0]] for text in DURATION_QUERIES],
+                [
+                    engine.find_masks(view, [0], FindQuery(text, match_case, whole_cell))
+                    for text in DURATION_QUERIES
+                    for match_case in (False, True)
+                    for whole_cell in (False, True)
+                ],
+            )
+        pandas = seen.pop("pandas")
+        assert pandas[0][:8] == [
+            "0:00:00",
+            "0:00:00.000001",
+            "0:00:01.500000",
+            "-1 day, 23:59:58",
+            "-1 day, 23:59:59.999999",
+            "1 day, 0:00:00",
+            "1 day, 1:01:01.500000",
+            "-2 days, 22:58:59",
+        ]
+        assert pandas[1][0] == ("0:00:01.500000", 2)
+        for name, result in seen.items():
+            assert result == pandas, name
+    finally:
+        duckdb_engine.close()
+
+
+def test_duckdb_interval_text_counts_a_month_as_thirty_days() -> None:
+    intervals = ["14 months 3 days 04:05:06.789", "-1 month 1 microsecond", "2000000 years", "-36 hours"]
+    expected = [
+        dt.timedelta(days=423, hours=4, minutes=5, seconds=6, milliseconds=789),
+        dt.timedelta(days=-30, microseconds=1),
+        dt.timedelta(days=720_000_000),
+        dt.timedelta(hours=-36),
+    ]
+    engine = DuckDBEngine()
+    connection = duckdb.connect()
+    try:
+        rows = ", ".join(f"(INTERVAL '{interval}')" for interval in intervals)
+        view = engine.filter_view(engine.normalize(connection.sql(f"SELECT * FROM (VALUES {rows}) AS t(d)")), EMPTY)
+        displays = [row["values"][0]["display"] for row in engine.page(view, 0, 10)["rows"]]
+        assert displays == [str(value) for value in expected]
+        for position, display in enumerate(displays):
+            assert [item["value"] for item in engine.column_values(view, "d", display)[0]] == [display]
+            mask = engine.find_masks(view, [0], FindQuery(display, False, True))[0]
+            assert (
+                mask is not None
+                and bytes(mask) == "".join("1" if row == position else "0" for row in range(4)).encode()
+            )
+    finally:
+        connection.close()
+
+
 def write_people(tmp_path: Path) -> Path:
     path = tmp_path / "people.parquet"
     pq.write_table(

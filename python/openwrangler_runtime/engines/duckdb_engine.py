@@ -1501,11 +1501,11 @@ class DuckDBEngine(DataFrameEngine):
             if output is not None or map_cardinality
             else "value_count"
         )
-        order = label if column_type == "float" else f"CAST({identifier} AS VARCHAR)"
+        order = label if column_type in {"float", "duration"} else f"CAST({identifier} AS VARCHAR)"
         if raw_type == "TIMESTAMP_NS":
             order = identifier
         ranking = f"ORDER BY {count_name} DESC, {order} ASC LIMIT {int(limit) + 1}"
-        spell_groups = match is not None and (raw_type == "FLOAT" or column_type == "datetime")
+        spell_groups = match is not None and (raw_type == "FLOAT" or column_type in {"datetime", "duration"})
         if match is not None and not spell_groups:
             conditions.append(match)
         query = (
@@ -4046,8 +4046,35 @@ def _duckdb_float_text(identifier: str) -> str:
     return f"CASE WHEN {identifier} = 0 THEN CAST({wide} AS VARCHAR) ELSE {shortest(1, 9)} END"
 
 
+def _duckdb_interval_text(identifier: str) -> str:
+    """SQL text spelled like ``duration_display`` for the Python timedelta a DuckDB interval fetches as."""
+    # Fetching counts a month as 30 days; HUGEINT holds every interval's microseconds exactly.
+    total = (
+        f"((CAST(system.main.datepart('year', {identifier}) AS HUGEINT) * 12 "
+        f"+ system.main.datepart('month', {identifier})) * 30 + system.main.datepart('day', {identifier})) "
+        f"* 86400000000 + CAST(system.main.datepart('hour', {identifier}) AS HUGEINT) * 3600000000 "
+        f"+ system.main.datepart('minute', {identifier}) * 60000000 "
+        f"+ system.main.datepart('microsecond', {identifier})"
+    )
+    # DuckDB's % keeps the dividend's sign, so the clock starts from the floored day.
+    clock = f"((({total}) % 86400000000 + 86400000000) % 86400000000)"
+    days = f"((({total}) - {clock}) // 86400000000)"
+    seconds = f"({clock} // 1000000)"
+    fraction = f"({clock} % 1000000)"
+    return (
+        f"CASE WHEN {days} = 0 THEN '' WHEN {days} IN (1, -1) THEN CAST({days} AS VARCHAR) || ' day, ' "
+        f"ELSE CAST({days} AS VARCHAR) || ' days, ' END "
+        f"|| CAST({seconds} // 3600 AS VARCHAR) "
+        f"|| ':' || system.main.lpad(CAST({seconds} // 60 % 60 AS VARCHAR), 2, '0') "
+        f"|| ':' || system.main.lpad(CAST({seconds} % 60 AS VARCHAR), 2, '0') "
+        f"|| CASE WHEN {fraction} = 0 THEN '' ELSE '.' || system.main.lpad(CAST({fraction} AS VARCHAR), 6, '0') END"
+    )
+
+
 def _duckdb_display_text(identifier: str, raw_type: str) -> str:
     """SQL text spelled like the published cell display."""
+    if raw_type == "INTERVAL":
+        return _duckdb_interval_text(identifier)
     if raw_type == "TIMESTAMP_NS":
         return _duckdb_timestamp_ns_text(identifier)
     if raw_type in {"TIMESTAMP", "TIMESTAMP_MS", "TIMESTAMP_S"} or _duckdb_datetime_is_aware(raw_type):
@@ -4090,10 +4117,13 @@ _DUCKDB_FIND_DISTINCT_TYPES = frozenset(
         "TIMESTAMP_S",
         "TIMESTAMP_MS",
         "TIMESTAMP_NS",
+        "INTERVAL",
     }
 )
 # Displays of these types are ASCII, where lower() is the same ASCII folding and much cheaper than translate().
-_DUCKDB_FIND_ASCII_SEMANTIC_TYPES = frozenset({"integer", "float", "decimal", "boolean", "date", "datetime"})
+_DUCKDB_FIND_ASCII_SEMANTIC_TYPES = frozenset(
+    {"integer", "float", "decimal", "boolean", "date", "datetime", "duration"}
+)
 
 
 def _duckdb_find_text_match(identifier: str, raw_type: str, query: FindQuery) -> str:

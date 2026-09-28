@@ -453,12 +453,45 @@ def _polars_validate_pivot_wider(frame: Any, params: Mapping[str, Any]) -> tuple
 _POLARS_TIME_UNIT_DIGITS = {"ms": 3, "us": 6, "ns": 9}
 
 
+def _polars_duration_text(expression: Any, time_unit: str) -> Any:
+    """Native text spelled like ``duration_display``: Python's timedelta text, with nanoseconds when they remain."""
+    import polars as pl
+
+    scale = 10 ** _POLARS_TIME_UNIT_DIGITS[time_unit]
+    ticks = expression.cast(pl.Int64)
+    # Integer // and % floor like Python's divmod, so a negative duration counts whole days down.
+    days = ticks // (86_400 * scale)
+    remainder = ticks % (86_400 * scale)
+    seconds = remainder // scale
+    fraction = remainder % scale
+
+    def padded(value: Any, width: int) -> Any:
+        return value.cast(pl.String).str.zfill(width)
+
+    if scale == 1_000:
+        fraction_text = padded(fraction * 1_000, 6)
+    elif scale == 1_000_000:
+        fraction_text = padded(fraction, 6)
+    else:
+        fraction_text = pl.when(fraction % 1_000 == 0).then(padded(fraction // 1_000, 6)).otherwise(padded(fraction, 9))
+    return pl.concat_str(
+        pl.when(days == 0)
+        .then(pl.lit(""))
+        .otherwise(pl.format("{} {}, ", days, pl.when(days.abs() == 1).then(pl.lit("day")).otherwise(pl.lit("days")))),
+        (seconds // 3_600).cast(pl.String),
+        pl.lit(":"),
+        padded(seconds // 60 % 60, 2),
+        pl.lit(":"),
+        padded(seconds % 60, 2),
+        pl.when(fraction == 0).then(pl.lit("")).otherwise(pl.lit(".") + fraction_text),
+    )
+
+
 def _polars_query_text(expression: Any, dtype: Any) -> Any:
     import polars as pl
 
     if isinstance(dtype, pl.Duration):
-        # Polars' ISO duration formatter overflows at the signed Int64 minimum.
-        return expression.dt.to_string("polars")
+        return _polars_duration_text(expression, dtype.time_unit)
     if isinstance(dtype, pl.Datetime):
         format_text = f"%Y-%m-%dT%H:%M:%S%.{_POLARS_TIME_UNIT_DIGITS[dtype.time_unit]}f" + (
             "%::z" if dtype.time_zone else ""

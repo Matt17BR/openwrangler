@@ -392,7 +392,7 @@ describe("SummaryPanel", () => {
       fireEvent.click(unavailable);
       fireEvent.keyDown(unavailable, { key: "Enter" });
       expect(onApply).not.toHaveBeenCalled();
-      fireEvent.click(screen.getByRole("button", { name: /^Filter to 0 days 00:00:00.000001;/u }));
+      fireEvent.click(screen.getByRole("button", { name: /^Filter to 0:00:00.000001;/u }));
       expect(onApply.mock.lastCall?.[0].filters[0].valueFilter.selectedValues).toEqual([
         valueActionChoices[1].selectionValue
       ]);

@@ -3,13 +3,13 @@ import type { SessionMetadata, ValueCount } from "../shared/protocol";
 export const valueActionChoices: ValueCount[] = [
   { value: "1 nanoseconds", count: 2, selectionValue: null },
   {
-    value: "0 days 00:00:00.000001",
+    value: "0:00:00.000001",
     count: 1,
     selectionValue: {
       kind: "typedSelection",
       version: 1,
       columnType: "string",
-      cell: { kind: "duration", raw: "0.000001", display: "0 days 00:00:00.000001", isNull: false, isNaN: false }
+      cell: { kind: "duration", raw: "0.000001", display: "0:00:00.000001", isNull: false, isNaN: false }
     }
   },
   { value: "Berlin", count: 1 }
