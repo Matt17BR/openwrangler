@@ -37,6 +37,25 @@ from ..generated_helpers import select_generated_helpers
 from ..live_page_payload import LIVE_PAGE_TEXT_CHARACTER_LIMIT
 from ..lookup import check_lookup_columns, lookup_duplicate_message
 from ..operations import formula_scalar_value
+from ..parquet_durations import (
+    ARROW_BINARY,
+    ARROW_BOOL,
+    ARROW_DATE,
+    ARROW_SCHEMA_KEY,
+    ARROW_UTF8,
+    MAX_ARROW_SCHEMA_BYTES,
+    ArrowType,
+    arrow_decimal,
+    arrow_duration,
+    arrow_duration_units,
+    arrow_float,
+    arrow_integer,
+    arrow_list,
+    arrow_schema_metadata,
+    arrow_struct,
+    arrow_time,
+    arrow_timestamp,
+)
 from ..pivot_longer import (
     PivotLongerContractError,
     checked_pivot_longer_row_count,
@@ -803,13 +822,17 @@ class DuckDBEngine(DataFrameEngine):
                         self._empty_source_frame = frame
                     return frame
                 if extension == ".parquet":
-                    frame = _snapshot_relation_factory(lambda: connection.read_parquet(_literal_file_path(path)))
+                    durations = _parquet_duration_replacements(connection, path)
+
+                    def read_parquet(**options: Any) -> Any:
+                        relation = connection.read_parquet(_literal_file_path(path), **options)
+                        return relation.project(f"* REPLACE ({durations})") if durations else relation
+
+                    frame = _snapshot_relation_factory(read_parquet)
                     if any(name.casefold() == "file_row_number" for name in frame.column_names):
                         return frame
                     # A window row number serializes every later scan of the source.
-                    numbered = _snapshot_relation_factory(
-                        lambda: connection.read_parquet(_literal_file_path(path), file_row_number=True)
-                    )
+                    numbered = _snapshot_relation_factory(lambda: read_parquet(file_row_number=True))
                     return replace(frame, ordinal_sql=numbered.sql, ordinal="file_row_number")
                 if extension in {".jsonl", ".ndjson"}:
                     try:
@@ -3760,6 +3783,7 @@ def _write_relation_export(
 
     format_name = options["format"]
     relation: Any = None
+    metadata: str | None = None
     try:
         relation = connection.sql(sql)
         if format_name == "parquet":
@@ -3774,13 +3798,31 @@ def _write_relation_export(
             )
             utc_timetz_writer = False if release == (1, 5, 4) else True if release >= (1, 5, 5) else None
             expressions = []
+            arrow_fields: list[tuple[str, ArrowType | None]] = []
             changed = False
+            durations = False
             for name, dtype in zip(relation.columns, relation.types, strict=True):
                 column = _quote_ident(name)
+                arrow_fields.append((name, _parquet_arrow_type(dtype)))
                 if dtype.id in {"hugeint", "uhugeint"}:
                     # DuckDB's Parquet writer otherwise stores these integers as doubles.
                     expressions.append(f"CAST({column} AS DECIMAL(38,0)) AS {column}")
+                    arrow_fields[-1] = (name, arrow_decimal(38, 0))
                     changed = True
+                elif dtype.id == "interval":
+                    # Parquet INTERVAL refuses negative values and Pandas and Polars can't read it. Arrow writers store
+                    # a duration as INT64 in its unit and mark it in ARROW:schema; a month has no fixed length.
+                    months = (
+                        f"system.main.datepart('month', {column}) != 0 OR system.main.datepart('year', {column}) != 0"
+                    )
+                    expressions.append(
+                        f"CASE WHEN {months} THEN system.main.error('DuckDB Parquet export cannot preserve this "
+                        f"temporal value. Convert it explicitly or export CSV.') "
+                        f"ELSE system.main.epoch_us({column}) END AS {column}"
+                    )
+                    arrow_fields[-1] = (name, arrow_duration("us"))
+                    changed = True
+                    durations = True
                 elif dtype.id == "time with time zone":
                     if utc_timetz_writer is None:
                         raise EngineError("DuckDB Parquet TIMETZ export requires a recognized stable DuckDB version.")
@@ -3805,6 +3847,10 @@ def _write_relation_export(
                         expressions.append(column)
             if changed:
                 relation = relation.project(", ".join(expressions))
+                sql = f"SELECT {', '.join(expressions)} FROM ({sql}) AS ow_export"
+            known = [(name, arrow_type) for name, arrow_type in arrow_fields if arrow_type is not None]
+            if durations and len(known) == len(arrow_fields):
+                metadata = arrow_schema_metadata(known)
         if isinstance(path, ExportWriterPath):
             try:
                 from .duckdb_export_filesystem import registered_duckdb_export_writer
@@ -3816,7 +3862,9 @@ def _write_relation_export(
 
             with (
                 path.open_binary_writer() as writer,
-                registered_duckdb_export_writer(connection, writer, format_name) as destination,
+                registered_duckdb_export_writer(
+                    connection, writer, format_name, copy_statement=metadata is not None
+                ) as destination,
             ):
                 try:
                     if format_name == "csv":
@@ -3830,7 +3878,7 @@ def _write_relation_export(
                             header=options["header"],
                         )
                     else:
-                        relation.write_parquet(destination, use_tmp_file=False)
+                        _write_parquet(connection, relation, sql, destination, metadata)
                 finally:
                     relation = None
             return
@@ -3848,9 +3896,75 @@ def _write_relation_export(
                 header=options["header"],
             )
         else:
-            relation.write_parquet(path, use_tmp_file=False)
+            _write_parquet(connection, relation, sql, path, metadata)
     finally:
         relation = None
+
+
+def _write_parquet(connection: Any, relation: Any, sql: str, destination: str, metadata: str | None) -> None:
+    if metadata is None:
+        relation.write_parquet(destination, use_tmp_file=False)
+        return
+    connection.execute(
+        f"COPY ({sql}) TO {_sql_literal(destination)} (FORMAT parquet, USE_TMP_FILE false, "
+        f"KV_METADATA {{{_sql_literal(ARROW_SCHEMA_KEY.decode('ascii'))}: {_sql_literal(metadata)}}})"
+    )
+
+
+# DuckDB's Parquet writer stores these types as the Arrow type that pyarrow and Polars read back.
+_PARQUET_ARROW_TYPES: dict[str, ArrowType] = {
+    "boolean": ARROW_BOOL,
+    **{
+        name: arrow_integer(bits, signed)
+        for name, bits, signed in (
+            ("tinyint", 8, True),
+            ("smallint", 16, True),
+            ("integer", 32, True),
+            ("bigint", 64, True),
+            ("utinyint", 8, False),
+            ("usmallint", 16, False),
+            ("uinteger", 32, False),
+            ("ubigint", 64, False),
+        )
+    },
+    "float": arrow_float(32),
+    "double": arrow_float(64),
+    "enum": ARROW_UTF8,
+    "blob": ARROW_BINARY,
+    "date": ARROW_DATE,
+    "time": arrow_time("us"),
+    "time with time zone": arrow_time("us"),
+    "timestamp_s": arrow_timestamp("us"),
+    "timestamp": arrow_timestamp("us"),
+    "timestamp_ms": arrow_timestamp("ms"),
+    "timestamp_ns": arrow_timestamp("ns"),
+    "timestamp with time zone": arrow_timestamp("us", "UTC"),
+}
+
+
+def _parquet_arrow_type(dtype: Any) -> ArrowType | None:
+    """The Arrow type of DuckDB's Parquet column for ``dtype``, or ``None`` when its Arrow reading isn't known."""
+
+    from duckdb.sqltypes import DuckDBPyType
+
+    if dtype.id == "varchar":
+        # JSON shares the VARCHAR id and is stored as a JSON Parquet column.
+        return ARROW_UTF8 if str(dtype) == "VARCHAR" else None
+    if dtype.id == "decimal":
+        parameters = dict(dtype.children)
+        return arrow_decimal(int(parameters["precision"]), int(parameters["scale"]))
+    if dtype.id in {"list", "array"}:
+        child = _parquet_arrow_type(dtype.children[0][1])
+        return None if child is None else arrow_list(child)
+    if dtype.id == "struct":
+        fields = []
+        for name, child in dtype.children:
+            arrow_type = _parquet_arrow_type(child) if isinstance(child, DuckDBPyType) else None
+            if arrow_type is None:
+                return None
+            fields.append((str(name), arrow_type))
+        return arrow_struct(fields)
+    return _PARQUET_ARROW_TYPES.get(dtype.id)
 
 
 def _execute_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
@@ -4173,8 +4287,46 @@ def _duckdb_lookup_reader(path: str, file_format: str) -> str:
             "quote = '\"', comment = '', skip = 0)"
         )
     if file_format == "parquet":
-        return f"system.main.read_parquet({literal})"
+        reader = f"system.main.read_parquet({literal})"
+        connection = _connect()
+        try:
+            durations = _parquet_duration_replacements(connection, path)
+        finally:
+            connection.close()
+        return f"(SELECT * REPLACE ({durations}) FROM {reader})" if durations else reader
     return f"system.main.read_json({literal}, format = 'newline_delimited')"
+
+
+_DURATION_MICROSECONDS = {
+    "s": "system.main.to_microseconds({} * 1000000)",
+    "ms": "system.main.to_microseconds({} * 1000)",
+    "us": "system.main.to_microseconds({})",
+    "ns": "system.main.to_microseconds({} // 1000)",
+}
+
+
+def _parquet_duration_replacements(connection: Any, path: str) -> str:
+    """The ``* REPLACE`` list reading a Parquet file's Arrow Duration columns as INTERVAL, or ``""`` for none.
+
+    Arrow writers store durations as plain INT64 values. Nanoseconds truncate toward zero to microseconds, as DuckDB
+    casts TIMESTAMP_NS to TIMESTAMP.
+    """
+    literal = _sql_literal(_literal_file_path(path))
+    metadata = connection.execute(
+        f"SELECT value FROM system.main.parquet_kv_metadata({literal}) WHERE key = ? "
+        f"AND system.main.octet_length(value) <= {MAX_ARROW_SCHEMA_BYTES}",
+        [ARROW_SCHEMA_KEY],
+    ).fetchone()
+    if metadata is None:
+        return ""
+    described = connection.sql(f"SELECT * FROM system.main.read_parquet({literal}) LIMIT 0")
+    names = [str(name) for name in described.columns]
+    units = arrow_duration_units(bytes(metadata[0]), names)
+    return ", ".join(
+        f"{_DURATION_MICROSECONDS[units[name]].format(_quote_ident(name))} AS {_quote_ident(name)}"
+        for name, kind in zip(names, described.types, strict=True)
+        if name in units and str(kind) == "BIGINT"
+    )
 
 
 def _duckdb_lookup_columns(frame, columns, types, path, lookup_sql, keys, outputs, relation, rows, order=None):

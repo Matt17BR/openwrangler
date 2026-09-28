@@ -1279,8 +1279,7 @@ def test_duckdb_parquet_retains_other_native_types_and_same_spelling_names(tmp_p
 @pytest.mark.parametrize(
     "expression",
     [
-        "INTERVAL '1 microsecond'",
-        "to_microseconds(4294967296000::BIGINT)",
+        "INTERVAL '1 month 1 microsecond'",
         "[INTERVAL '1 microsecond', NULL]",
         "[INTERVAL '1 millisecond', INTERVAL '1001 microseconds']::INTERVAL[2]",
         '[struct_pack("_ow_nested_1" := [struct_pack("quote\' -> ""name" := INTERVAL \'1 microsecond\')])]',

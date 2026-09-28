@@ -4832,7 +4832,7 @@ def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
                 "UBIGINT",
                 "DECIMAL(10,4)",
                 "TIMESTAMP WITH TIME ZONE",
-                "INTERVAL",
+                "BIGINT",
                 "BLOB",
                 "INTEGER[]",
                 'STRUCT("label" VARCHAR, score INTEGER)',
@@ -4841,8 +4841,16 @@ def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
             exported_row = exported.fetchone()
             assert exported_row is not None
             assert exported_row[3].isoformat() == "2025-12-31T23:30:00+00:00"
+            assert exported_row[4] == 93_784_000_000
         finally:
             inspector.close()
+        reader = DuckDBEngine()
+        try:
+            assert [column["type"] for column in reader.schema(reader.read_file(str(exported_path)))] == list(
+                schema.values()
+            )
+        finally:
+            reader.close()
     finally:
         manager.close_session(session_id, 0)
 
@@ -6974,6 +6982,168 @@ def test_duckdb_grouped_integer_export_matches_generated_code_and_refuses_hidden
         manager.close_all()
 
 
+def test_duckdb_reads_arrow_parquet_durations_as_polars_and_pandas_do(tmp_path: Path) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    pl = pytest.importorskip("polars")
+    from openwrangler_runtime.engines.pandas_engine import PandasEngine
+    from openwrangler_runtime.engines.polars_engine import PolarsEngine
+
+    source = tmp_path / "durations.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "seconds": pa.array([-2, 0, 86_401, None], pa.duration("s")),
+                "millis": pa.array([-1, 1_500, 0, None], pa.duration("ms")),
+                "micros": pa.array([-86_400_000_001, 1, 0, None], pa.duration("us")),
+                "count": pa.array([1, 2, 3, None], pa.int64()),
+            }
+        ),
+        source,
+    )
+    nanos = tmp_path / "nanoseconds.parquet"
+    pq.write_table(pa.table({"nanos": pa.array([-1_501, 1_501, 2_000, None], pa.duration("ns"))}), nanos)
+
+    def cells(engine: DataFrameEngine, path: Path) -> tuple[list[str], list[list[tuple[str, Any]]]]:
+        try:
+            frame = engine.ensure_row_ids(engine.read_file(str(path)), "durations")
+            rows = engine.page(frame, 0, 10)["rows"]
+            return [column["type"] for column in engine.schema(frame)], [
+                [(value["kind"], value["raw"]) for value in row["values"]] for row in rows
+            ]
+        finally:
+            engine.close()
+
+    polars_written = tmp_path / "polars.parquet"
+    pl.read_parquet(source).write_parquet(polars_written)
+
+    duckdb_cells = cells(DuckDBEngine(), source)
+    assert duckdb_cells[0] == ["duration", "duration", "duration", "integer"]
+    assert duckdb_cells == cells(PolarsEngine(), source) == cells(PandasEngine(), source)
+    assert cells(DuckDBEngine(), polars_written) == duckdb_cells
+    # DuckDB intervals hold microseconds, so nanoseconds truncate toward zero.
+    assert cells(DuckDBEngine(), nanos)[1] == [
+        [("duration", "-0.000001")],
+        [("duration", "0.000001")],
+        [("duration", "0.000002")],
+        [("null", None)],
+    ]
+    lookup = duckdb.connect()
+    try:
+        reader = duckdb_runtime._duckdb_lookup_reader(str(source), "parquet")
+        assert [str(dtype) for dtype in lookup.sql(f"SELECT * FROM {reader}").types] == [
+            "INTERVAL",
+            "INTERVAL",
+            "INTERVAL",
+            "BIGINT",
+        ]
+    finally:
+        lookup.close()
+
+
+def test_duckdb_parquet_export_writes_durations_that_every_python_engine_reads(tmp_path: Path) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    pl = pytest.importorskip("polars")
+    pd = pytest.importorskip("pandas")
+
+    columns = {
+        "flag": "true",
+        "tiny": "-1::TINYINT",
+        "small": "-2::SMALLINT",
+        "whole": "-3::INTEGER",
+        "big": "-4::BIGINT",
+        "unsigned tiny": "1::UTINYINT",
+        "unsigned small": "2::USMALLINT",
+        "unsigned": "3::UINTEGER",
+        "unsigned big": "18446744073709551615::UBIGINT",
+        "wide": "-99999999999999999999999999999999999999::HUGEINT",
+        "ratio": "1.5::FLOAT",
+        "value": "2.25::DOUBLE",
+        "short decimal": "1.5::DECIMAL(4,1)",
+        "decimal": "12.345::DECIMAL(18,3)",
+        "long decimal": "1.0000000001::DECIMAL(38,10)",
+        "label": "'é'",
+        "choice": "'b'::ENUM('a', 'b')",
+        "payload": "'\\x01'::BLOB",
+        "day": "DATE '2020-01-02'",
+        "clock": "TIME '01:02:03.456789'",
+        "zoned clock": "TIMETZ '01:02:03+00'",
+        "moment": "TIMESTAMP '2020-01-02 03:04:05.678901'",
+        "second moment": "TIMESTAMP_S '2020-01-02 03:04:05'",
+        "milli moment": "TIMESTAMP_MS '2020-01-02 03:04:05.678'",
+        "nano moment": "TIMESTAMP_NS '2020-01-02 03:04:05.678901234'",
+        "instant": "TIMESTAMPTZ '2020-01-02 03:04:05+00'",
+        "numbers": "[1, NULL, 3]",
+        "pair": "[1, 2]::INTEGER[2]",
+        "record": "{'x': 1, 'tags': ['a', NULL]}",
+    }
+    elapsed = ["to_microseconds(-86400000001)", "INTERVAL 40 DAY + INTERVAL 5 SECOND", "NULL::INTERVAL"]
+    select = ", ".join(f"{expression} AS {duckdb_runtime._quote_ident(name)}" for name, expression in columns.items())
+    rows = " UNION ALL ".join(
+        f"SELECT {index} AS row, {select}, {value} AS elapsed" for index, value in enumerate(elapsed)
+    )
+    sql = f"SELECT * FROM ({rows}) ORDER BY row"
+    expected_micros = [-86_400_000_001, 40 * 86_400_000_000 + 5_000_000, None]
+    connection = duckdb.connect()
+    try:
+        exported = tmp_path / "durations.parquet"
+        duckdb_runtime._write_relation_export(connection, sql, str(exported), export_options("parquet"))
+        # The same export without durations is the reading every engine already agrees on.
+        plain = tmp_path / "plain.parquet"
+        duckdb_runtime._write_relation_export(
+            connection, f"SELECT * EXCLUDE (elapsed) FROM ({sql})", str(plain), export_options("parquet")
+        )
+        with pytest.raises(duckdb.InvalidInputException, match="cannot preserve this temporal value"):
+            duckdb_runtime._write_relation_export(
+                connection,
+                "SELECT INTERVAL 1 MONTH AS elapsed",
+                str(tmp_path / "months.parquet"),
+                export_options("parquet"),
+            )
+        uuid_export = tmp_path / "uuid.parquet"
+        duckdb_runtime._write_relation_export(
+            connection,
+            "SELECT uuid() AS id, to_microseconds(-1) AS elapsed",
+            str(uuid_export),
+            export_options("parquet"),
+        )
+    finally:
+        connection.close()
+
+    assert pq.read_schema(exported).remove_metadata() == pq.read_schema(plain).append(
+        pa.field("elapsed", pa.duration("us"))
+    )
+    arrow_table = pq.read_table(exported)
+    assert arrow_table.drop_columns(["elapsed"]).equals(pq.read_table(plain))
+    assert arrow_table["elapsed"].cast(pa.int64()).to_pylist() == expected_micros
+    for loaded in (pl.read_parquet(exported), pl.scan_parquet(exported).collect()):
+        assert loaded.drop("elapsed").equals(pl.read_parquet(plain))
+        assert loaded.schema["elapsed"] == pl.Duration("us")
+        assert loaded["elapsed"].dt.total_microseconds().to_list() == expected_micros
+    pandas_frame = pd.read_parquet(exported)
+    assert pandas_frame.drop(columns="elapsed").dtypes.equals(pd.read_parquet(plain).dtypes)
+    assert str(pandas_frame["elapsed"].dtype) == "timedelta64[us]"
+    assert [None if pd.isna(value) else value // pd.Timedelta(microseconds=1) for value in pandas_frame["elapsed"]] == (
+        expected_micros
+    )
+
+    engine = DuckDBEngine()
+    try:
+        frame = engine.read_file(str(exported))
+        relation = engine.normalize(frame)
+        assert engine.schema(frame)[-1]["type"] == "duration"
+        assert duckdb.sql(f"SELECT epoch_us(elapsed) FROM ({relation.sql})").fetchall() == [
+            (value,) for value in expected_micros
+        ]
+    finally:
+        engine.close()
+
+    # Without a known Arrow reading for every column, durations stay plain microsecond integers.
+    assert b"ARROW:schema" not in (pq.read_metadata(uuid_export).metadata or {})
+    assert pq.read_table(uuid_export)["elapsed"].to_pylist() == [-1]
+
+
 @pytest.mark.parametrize("invalid", ["interval", "map_key"])
 def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(tmp_path: Path, invalid: str) -> None:
     source = tmp_path / "temporal.csv"
@@ -7024,7 +7194,18 @@ def test_duckdb_temporal_export_matches_generated_code_and_refuses_hidden_loss(t
                     export_generated_native(
                         engine, generated, duckdb.default_connection(), writer, export_options("parquet")
                     )
-            loaded = duckdb.read_parquet(str(destination))
+            # Plain DuckDB reads the Arrow duration's stored microseconds; Open Wrangler reads the interval.
+            assert duckdb.read_parquet(str(destination)).project('"elapsed ""exact"""').fetchall() == [
+                (1_000_000,),
+                (1_000,),
+                (None,),
+            ]
+            reader = DuckDBEngine()
+            try:
+                exported_sql = reader.normalize(reader.read_file(str(destination))).sql
+            finally:
+                reader.close()
+            loaded = duckdb.sql(exported_sql)
             assert loaded.project(text_projection).fetchall() == [
                 (1, "00:00:01", "10:00:00+00", "9007199254740993"),
                 (2, "00:00:00.001", "10:00:00+00", "9007199254740993"),
