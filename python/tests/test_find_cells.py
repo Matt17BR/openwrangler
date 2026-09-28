@@ -141,6 +141,9 @@ def pandas_frame() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "text": texts,
+            "object_text": pd.Series(
+                ["Alpha", np.str_("beta"), np.nan, "ALPHA beta", pd.NA, "Café", "", "12.5"], dtype=object
+            ),
             "string": pd.array(texts, dtype="string"),
             "arrow_text": pd.array(texts, dtype=pd.ArrowDtype(pa.string())),
             "number": [1.5, -0.0, 0.0, np.nan, np.inf, -np.inf, 12.5, 1e-05],

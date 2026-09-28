@@ -18,6 +18,7 @@ All notable changes to Open Wrangler are documented here. Preview builds remain 
 
 ### Changed
 
+- Scrolling, previews, Find and value search in Python · Pandas are much faster on large files with Pandas 2. On an 11.7-million-row Parquet file, each page loads in under 0.1 seconds instead of 0.4, Rename Column previews in 1.5 seconds instead of 2.4, Find takes 2.7 seconds instead of 18, and searching a text column's values takes 0.7 seconds instead of 10.
 - Dataset statistics are faster on large files in Python · Pandas and Python · DuckDB. On an 11.7-million-row file they take about 2 seconds instead of 4.5 in Pandas, and about 1 second instead of 4.4 in DuckDB, where they no longer run on a single thread.
 - Drop Duplicates, Mark Duplicates, Dense Rank, Min-max Scale and Pivot longer are much faster on large files in Python · DuckDB. On an 11.7-million-row Parquet file, the first four preview in 0.3 to 1.7 seconds instead of 3.5 to 10, and Pivot longer in 3.3 seconds instead of 7.8.
 - Fill Missing Values with **Previous value** or **Next value** is much faster on large files in Python · Pandas and Python · DuckDB. On an 11.7-million-row Parquet file, the preview takes 1.5 seconds instead of 8 in Pandas and about 3 seconds instead of nearly 4 minutes in DuckDB. In DuckDB, pages after the step, and after a **Linear interpolation** step, load in under a second instead of repeating the fill.

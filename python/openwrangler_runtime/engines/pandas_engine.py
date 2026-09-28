@@ -697,11 +697,12 @@ class _PandasRowView:
         return self._index
 
     def rows(self, start: int, stop: int, columns: list[int]) -> Any:
+        # Pandas 2 copies every row of the selected columns when columns are selected first.
         if self._frame is not None:
-            return self._frame.iloc[start:stop, columns]
+            return self._frame.iloc[start:stop].iloc[:, columns]
         if self._window_source is None:
             self._window_source = _pandas_contiguous_text(self.source)
-        return _pandas_take_rows(self._window_source.iloc[:, columns], self._leading_positions(stop)[start:stop])
+        return _pandas_take_rows(self._window_source, self._leading_positions(stop)[start:stop]).iloc[:, columns]
 
     def position(self, row: int) -> int:
         """The source position of one row; a leading row of a lazily sorted view needs only a partial sort."""
@@ -1521,7 +1522,7 @@ class PandasEngine(DataFrameEngine):
         row_id_position = self._row_id_position(df)
         selected_positions = [*([row_id_position] if row_id_position is not None else []), *positions]
         sliced = (
-            df.iloc[offset : offset + limit, selected_positions]
+            df.iloc[offset : offset + limit].iloc[:, selected_positions]
             if view is None
             else view.rows(offset, offset + limit, selected_positions)
         )
@@ -1860,8 +1861,10 @@ class PandasEngine(DataFrameEngine):
         if search and not search_counted_labels:
             _pandas_require_nested_timestamp_boxing(series)
             labelled = series
-            if _pandas_counts_index_values(series.dtype):
-                # Each distinct value is spelled once rather than once per row.
+            if _pandas_counts_index_values(series.dtype) or (
+                pd.api.types.is_object_dtype(series.dtype) and pd.api.types.infer_dtype(series, skipna=True) == "string"
+            ):
+                # Each distinct value is spelled once rather than once per row; equal text objects spell alike.
                 value_counts = _pandas_value_counts(series, sort=False, duration=duration)
                 labelled = pd.Series(value_counts.index, copy=False)
             temporal_values = _pandas_arrow_temporal_array(labelled)
@@ -8993,11 +8996,12 @@ def _pandas_find_mask(series: Any, query: FindQuery) -> Any:
         return None
     values = _pandas_scalar_values(series)
     dtype = values.dtype
-    # Object columns can mix Python types, so only native storage has uniform spelling.
+    # Object columns can mix Python types, so only native storage and text objects have uniform spelling.
     objects = isinstance(dtype, np.dtype) and dtype.kind == "O"
-    native = not objects and not isinstance(dtype, pd.CategoricalDtype)
+    text = objects and pd.api.types.infer_dtype(values, skipna=True) == "string"
+    native = (not objects and not isinstance(dtype, pd.CategoricalDtype)) or text
     try:
-        if objects:
+        if objects and not text:
             # Equal objects of different types, such as 1, 1.0 and True, are spelled differently.
             keys = pd.Series([(type(value), value) for value in values.array], dtype=object)
             codes = pd.factorize(keys)[0]
