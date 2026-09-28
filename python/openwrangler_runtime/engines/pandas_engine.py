@@ -2313,17 +2313,33 @@ class PandasEngine(DataFrameEngine):
             encoded_parts = []
             for position, name in zip(positions, names, strict=True):
                 series = _pandas_scalar_values(df.iloc[:, position])
-                values = sorted(pd.unique(series[series.notna()]), key=str)
-                outputs = [(value, f"{name}{separator}{value}") for value in values if str(value)]
+                codes = None
+                if _pandas_factorizes_exactly(series):
+                    # Rows share a code exactly when they hold the same value. Labels come from `pd.unique` of a
+                    # Series, as below, because factorized datetimes are Timestamps, whose text differs.
+                    codes, uniques = series.array.factorize()
+                    distinct = list(pd.unique(pd.Series(uniques, copy=False)))
+                    labels = sorted(range(len(distinct)), key=lambda code: str(distinct[code]))
+                    outputs = [(code, f"{name}{separator}{distinct[code]}") for code in labels if str(distinct[code])]
+                else:
+                    values = sorted(pd.unique(series[series.notna()]), key=str)
+                    outputs = [(value, f"{name}{separator}{value}") for value in values if str(value)]
                 # Only overlapping existing names can collide; avoid rescanning prior outputs.
                 ensure_output_columns_available(
                     existing_names.intersection(name for _, name in outputs),
                     (name for _, name in outputs),
                     "One-hot encoding",
                 )
-                encoded_parts.extend(
-                    series.eq(value).fillna(False).astype("int8").rename(name) for value, name in outputs
-                )
+                if codes is None:
+                    encoded_parts.extend(
+                        series.eq(value).fillna(False).astype("int8").rename(name) for value, name in outputs
+                    )
+                else:
+                    for code, output in outputs:
+                        # Like the comparison, each part keeps the column's attrs and flags, but not its name.
+                        part = pd.Series((codes == code).astype(np.int8), index=series.index).__finalize__(series)
+                        part.name = output
+                        encoded_parts.append(part)
                 existing_names.update(name for _, name in outputs)
             encoded = _pandas_concat_columns(encoded_parts) if encoded_parts else pd.DataFrame(index=df.index)
             encoded = encoded.iloc[
@@ -5188,12 +5204,11 @@ def _pandas_string_values(series: Any) -> Any:
     return values.astype("string")
 
 
-def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
-    """Apply an elementwise ``transform`` once per distinct text, integer or timestamp value.
+def _pandas_factorizes_exactly(values: Any) -> bool:
+    """Whether equal ``values`` are identical, so factorizing them groups rows exactly.
 
-    These dtypes, and object columns holding only text, factorize exactly and keep each kind of missing value, so
-    every row takes its own value's result. Other dtypes, such as floats where ``-0.0`` equals ``0.0`` and objects
-    where ``1`` equals ``True``, and mostly distinct columns transform every row.
+    Text, integer and timestamp dtypes, and object columns holding only text, qualify. Floats, where ``-0.0`` equals
+    ``0.0``, and other objects, where ``1`` equals ``True``, don't.
     """
     import numpy as np
     import pandas as pd
@@ -5203,23 +5218,29 @@ def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
         import pyarrow as pa
 
         arrow_type = dtype.pyarrow_dtype
-        exact = any(
+        return any(
             check(arrow_type)
             for check in (pa.types.is_string, pa.types.is_large_string, pa.types.is_integer, pa.types.is_timestamp)
         )
-    else:
-        exact = (
-            isinstance(dtype, pd.StringDtype | pd.DatetimeTZDtype)
-            or pd.api.types.is_integer_dtype(dtype)
-            or (
-                isinstance(dtype, np.dtype)
-                and (
-                    dtype.kind == "M"
-                    or (dtype.kind == "O" and pd.api.types.infer_dtype(values, skipna=True) == "string")
-                )
-            )
+    return (
+        isinstance(dtype, pd.StringDtype | pd.DatetimeTZDtype)
+        or pd.api.types.is_integer_dtype(dtype)
+        or (
+            isinstance(dtype, np.dtype)
+            and (dtype.kind == "M" or (dtype.kind == "O" and pd.api.types.infer_dtype(values, skipna=True) == "string"))
         )
-    if exact:
+    )
+
+
+def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
+    """Apply an elementwise ``transform`` once per distinct value when ``values`` factorize exactly.
+
+    Factorizing keeps each kind of missing value, so every row takes its own value's result. Other dtypes and mostly
+    distinct columns transform every row.
+    """
+    import pandas as pd
+
+    if _pandas_factorizes_exactly(values):
         codes, uniques = values.array.factorize(use_na_sentinel=False)
         if 2 * len(uniques) <= len(values):
             result = transform(pd.Series(uniques, name=values.name)).take(codes)

@@ -1993,6 +1993,69 @@ def test_pandas_repeated_values_transform_once_with_every_row_results(
             assert engine.schema(distinct)[1]["type"] == "date"
 
 
+def one_hot_values(kind: str) -> Any:
+    import pyarrow as pa
+
+    dates = pd.to_datetime(["2026-01-02", None, "2026-01-01", "2026-01-02"])
+    return {
+        "object text": pd.Series(["b", None, "a", "", "b", np.nan, "a"], dtype=object),
+        "string": pd.Series(["b", None, "a", "", "b"], dtype="string"),
+        "pyarrow string": pd.Series(["b", None, "a", "", "b"], dtype="string[pyarrow]"),
+        "arrow large string": pd.Series(["b", None, "a", "b"], dtype=pd.ArrowDtype(pa.large_string())),
+        "int64": pd.Series([3, 1, 3, -2], dtype=np.int64),
+        "nullable int": pd.Series([3, None, 1, 3], dtype="Int64"),
+        "arrow uint8": pd.Series([3, None, 1, 3], dtype="uint8[pyarrow]"),
+        "datetime": pd.Series(dates),
+        "datetime seconds": pd.Series(dates.as_unit("s")),
+        "zoned": pd.Series(dates.tz_localize("Asia/Kolkata")),
+        "arrow timestamp": pd.Series(dates.tz_localize("UTC")).astype(pd.ArrowDtype(pa.timestamp("us", tz="UTC"))),
+        "categorical text": pd.Series(["b", None, "a", "b"], dtype="category"),
+        "float": pd.Series([2.0, -0.0, 0.0, None], dtype=np.float64),
+        "mixed object": pd.Series([1, True, 1.0, "a", None], dtype=object),
+    }[kind]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "object text",
+        "string",
+        "pyarrow string",
+        "arrow large string",
+        "int64",
+        "nullable int",
+        "arrow uint8",
+        "datetime",
+        "datetime seconds",
+        "zoned",
+        "arrow timestamp",
+        "categorical text",
+        "float",
+        "mixed object",
+    ],
+)
+def test_pandas_one_hot_factorized_labels_match_comparing_each_value(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"value": one_hot_values(kind)})
+    frame["row"] = range(len(frame))
+    schema = engine.schema(frame)
+    lineage = source_lineage(schema)
+    operation = bind_step(
+        validate_step(
+            {"id": "one-hot", "kind": "oneHotEncode", "params": {"columns": [lineage[0]], "dropOriginal": False}}
+        ),
+        schema,
+        lineage,
+    )
+
+    factorized = engine.apply_transform(frame, operation)
+    monkeypatch.setattr(pandas_engine_module, "_pandas_factorizes_exactly", lambda _values: False)
+    pd.testing.assert_frame_equal(factorized, engine.apply_transform(frame, operation))
+    assert factorized.shape[1] > 2
+
+
 @pytest.mark.parametrize(
     "missing,scalar_kind",
     [
