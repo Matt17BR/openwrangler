@@ -612,6 +612,10 @@ def _pandas_contiguous_text(frame: Any) -> Any:
 
 _PANDAS_LEADING_ROW_LIMIT = 16_384
 _PANDAS_PARALLEL_TAKE_CELLS = 4 * 1_024 * 1_024
+_PANDAS_PARALLEL_SORT_ROWS = 1_024 * 1_024
+_PANDAS_SORT_CHUNKS = 16
+# Arrow sorts integers whose largest and smallest values differ by at most this by counting them, faster than chunks.
+_ARROW_COUNTING_SORT_RANGE = 4_096
 
 
 class _PandasNumericOrder:
@@ -630,6 +634,9 @@ class _PandasNumericOrder:
         import pyarrow as pa
         import pyarrow.compute as pc
 
+        order = self._sorted_in_chunks()
+        if order is not None:
+            return order
         order = pc.call_function(
             "array_sort_indices",
             [pa.array(self.values, mask=self.missing)],
@@ -639,6 +646,39 @@ class _PandasNumericOrder:
             ),
         )
         return order.to_numpy().astype(np.intp, copy=False)
+
+    def _sorted_in_chunks(self) -> Any | None:
+        """Sort many rows in chunks on several threads, then merge the sorted chunks, or return None to sort at once.
+
+        NumPy sorts without holding the GIL, and its stable sort finds the sorted chunks as runs and only merges them.
+        """
+        import numpy as np
+
+        chunks = min(_PANDAS_SORT_CHUNKS, os.cpu_count() or 1)
+        if chunks < 2 or len(self.values) < _PANDAS_PARALLEL_SORT_ROWS:
+            return None
+        missing = self.missing
+        present = None if missing is None else np.flatnonzero(~missing)
+        keys = self.values if present is None else self.values[present]
+        if len(keys) == 0 or keys.dtype.kind != "f" and int(keys.max()) - int(keys.min()) <= _ARROW_COUNTING_SORT_RANGE:
+            return None
+        if not self.ascending:
+            # Both reverse the order exactly, so equal keys keep their row order as in an ascending sort.
+            keys = -keys if keys.dtype.kind == "f" else ~keys
+        bounds = np.linspace(0, len(keys), chunks + 1, dtype=np.intp)
+        with ThreadPoolExecutor(chunks) as pool:
+            runs = np.concatenate(
+                list(
+                    pool.map(
+                        lambda start, stop: np.argsort(keys[start:stop], kind="stable") + start, bounds[:-1], bounds[1:]
+                    )
+                )
+            )
+        order = runs[np.argsort(keys[runs], kind="stable")]
+        if missing is None or present is None:
+            return order
+        gaps = np.flatnonzero(missing)
+        return np.concatenate((gaps, present[order]) if self.nulls == "first" else (present[order], gaps))
 
     def leading(self, count: int) -> Any:
         import numpy as np

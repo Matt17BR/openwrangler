@@ -870,8 +870,10 @@ columns are combined into one chunk when a file opens, one column per thread. Te
 value once, and text sorts rank the distinct values instead of comparing every row: the Arrow dictionary, or the
 factorized values of an object column that holds only strings. A view sorted by one NumPy numeric, Boolean, datetime
 or duration column finds its first 16,384 rows with a partition, keeping every row tied with the boundary value so
-ties stay in source order. A later page or a read that needs every position sorts the column once with Arrow's stable
-sort. Multi-column sorts use the same stable sort for each such column. Sort Rows and the sort in Filter Rows order rows
+ties stay in source order. A later page or a read that needs every position sorts the column once with a stable sort.
+At least 1 Mi values are split into up to 16 parts that NumPy sorts on separate threads, and a final stable sort merges
+the sorted parts; Arrow sorts fewer values, and integers whose values span at most 4,096, which it counts faster.
+Multi-column sorts use the same stable sort for each such column. Sort Rows and the sort in Filter Rows order rows
 exactly as a view does: they sort by the last rule first, reorder that result stably by each earlier rule, and move
 the rows once at the end. Taking at least 4 Mi cells in a new order takes one column per thread, because that gather
 waits on memory; rows taken in source order use Pandas' own take.
