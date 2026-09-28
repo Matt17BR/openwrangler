@@ -1051,7 +1051,7 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
-    "@lezer/highlight": "^1.2.3",
+    "@lezer/highlight": "^1.2.4",
     "@vscode/codicons": "^0.0.45",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
@@ -1085,12 +1085,12 @@
     "pixelmatch": "^7.2.0",
     "playwright-core": "^1.63.0",
     "pngjs": "^7.0.0",
-    "prettier": "^3.9.8",
+    "prettier": "^3.9.9",
     "pyright": "^1.1.414",
     "saxes": "^6.0.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1",
-    "vite": "^8.3.0",
+    "vite": "^8.3.1",
     "vitest": "^5.0.2",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"
