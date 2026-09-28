@@ -537,8 +537,9 @@ def test_pandas_linear_interpolation_keeps_missing_and_nonfinite_anchors(dtype: 
     pd.testing.assert_frame_equal(frame, before)
 
 
-def test_pandas_linear_interpolation_preserves_arithmetic_error_class_and_cause() -> None:
-    frame = pd.DataFrame({"coordinate": list(map(Decimal, [0, 1, 3])), "value": [1.0, None, 1.0]})
+@pytest.mark.parametrize("coordinates", [list(map(Decimal, [0, 1, 3])), [0, 1, 3]])
+def test_pandas_linear_interpolation_preserves_arithmetic_error_class_and_cause(coordinates: list[Any]) -> None:
+    frame = pd.DataFrame({"coordinate": coordinates, "value": [1.0, None, 1.0]})
     before = frame.copy(deep=True)
     engine = PandasEngine()
     operation = interpolation_step(engine, frame)
@@ -554,6 +555,112 @@ def test_pandas_linear_interpolation_preserves_arithmetic_error_class_and_cause(
             assert type(error.value) is error_type
             assert isinstance(error.value.__cause__, Inexact)
     pd.testing.assert_frame_equal(frame, before)
+
+
+def native_coordinates(generator: Any, kind: str, size: int) -> Any:
+    import numpy as np
+
+    order = generator.permutation(size)
+    if kind == "int8":
+        return pd.Series(order - 20, dtype=np.int8)
+    if kind == "int64 beyond 2**53":
+        return pd.Series(order * 2**58 - 2**62, dtype=np.int64)
+    if kind in {"uint64", "uint64 beyond int64"}:
+        offset = 2**63 if kind == "uint64 beyond int64" else 5
+        return pd.Series(order.astype(np.uint64) * np.uint64(3) + np.uint64(offset))
+    if kind == "float64":
+        magnitudes = 10.0 ** generator.integers(-300, 300, size)
+        values = np.unique(np.concatenate([generator.normal(size=size) * magnitudes, [1.7e308, -1.7e308]]))
+        return pd.Series(generator.permutation(values)[:size])
+    if kind == "float32":
+        return pd.Series(order.astype(np.float32) / np.float32(3))
+    unit = kind.split()[-1]
+    base = {"ns": 1_700_000_000_000_000_000, "us": 1_700_000_000_000_000, "s": 1_700_000_000}[unit]
+    series = pd.Series((base + order * 997).astype(f"datetime64[{unit}]"))
+    return series.dt.tz_localize("Asia/Kolkata") if kind.startswith("zoned") else series
+
+
+def interpolation_targets(generator: Any, size: int) -> Any:
+    import numpy as np
+
+    pool = np.array([0.0, -0.0, 1.0, -3.5, 5e-324, -5e-324, 2.2250738585072014e-308, 1e308, -1e308, np.inf, -np.inf])
+    values = np.where(generator.random(size) < 0.5, generator.choice(pool, size), generator.normal(size=size) * 100)
+    values[generator.random(size) < generator.random()] = np.nan
+    return values
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "int8",
+        "int64 beyond 2**53",
+        "uint64",
+        "uint64 beyond int64",
+        "float64",
+        "float32",
+        "naive ns",
+        "naive us",
+        "naive s",
+        "zoned ns",
+        "zoned us",
+    ],
+)
+def test_pandas_native_linear_coordinates_match_the_per_value_path(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    from openwrangler_runtime.engines import pandas_engine
+
+    whole_arrays = 0
+    fill = pandas_engine._pandas_fill_float64_linear_gaps
+
+    def counted(*args: Any) -> Any:
+        nonlocal whole_arrays
+        whole_arrays += len(args[0]) > 0
+        return fill(*args)
+
+    monkeypatch.setattr(pandas_engine, "_pandas_fill_float64_linear_gaps", counted)
+    engine = PandasEngine()
+    generator = np.random.default_rng(sum(map(ord, kind)))
+    for _ in range(40):
+        size = int(generator.integers(0, 30))
+        frame = pd.DataFrame(
+            {"coordinate": native_coordinates(generator, kind, size), "value": interpolation_targets(generator, size)}
+        )
+        frame.index = pd.Index(generator.permutation(size) + 10, name="original")
+        step = interpolation_step(
+            engine, frame, max_gap=None if generator.random() < 0.4 else int(generator.integers(1, 5))
+        )
+        native, per_value = [
+            engine.apply_transform(candidate, step).iloc[:, 1]
+            for candidate in (frame, frame.astype({"coordinate": object}))
+        ]
+        pd.testing.assert_series_equal(native, per_value)
+        assert native.to_numpy().tobytes() == per_value.to_numpy().tobytes()
+    assert (whole_arrays > 0) is (kind != "uint64 beyond int64")
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [
+        pd.Series([0.0, float("nan"), 2.0]),
+        pd.Series([0.0, float("inf"), 2.0]),
+        pd.Series([-0.0, 0.0, 2.0]),
+        pd.Series([3, 1, 3]),
+        pd.Series(pd.to_datetime(["2026-01-01", None, "2026-01-03"])),
+        pd.Series(pd.to_datetime(["2026-01-03", "2026-01-01", "2026-01-03"]).tz_localize("UTC")),
+        pd.Series(pd.array(["2026-01-01", "NaT", "3000-01-01"], dtype="datetime64[s]")),
+        pd.Series(pd.array(["3000-01-01", "NaT", "2026-01-01"], dtype="datetime64[s]")),
+    ],
+)
+def test_pandas_native_linear_coordinates_reject_like_the_per_value_path(coordinates: Any) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame({"coordinate": coordinates, "value": [1.0, None, 3.0]})
+    messages = []
+    for candidate in (frame, frame.astype({"coordinate": object})):
+        with pytest.raises(EngineError) as error:
+            engine.apply_transform(candidate, interpolation_step(engine, candidate))
+        messages.append(str(error.value))
+    assert messages[0] == messages[1]
 
 
 @pytest.mark.parametrize("empty", [False, True])

@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import MAX_EMAX, MIN_EMIN, Decimal, DecimalException, localcontext
+from decimal import MAX_EMAX, MIN_EMIN, Decimal, DecimalException, Inexact, Rounded, getcontext, localcontext
 from functools import lru_cache
 from inspect import getsource
 from math import isfinite, isnan
@@ -63,6 +63,9 @@ from ._pandas_duration_helpers import _open_wrangler_duration_keys as _pandas_du
 from ._pandas_duration_helpers import _open_wrangler_duration_operand as _pandas_duration_operand
 from ._pandas_group_sum_helpers import _open_wrangler_native_int64_sum_is_safe as _pandas_native_int64_sum_is_safe
 from ._pandas_linear_fill_helpers import _open_wrangler_fill_linear_gaps as _pandas_fill_linear_gaps
+from ._pandas_linear_fill_helpers import (
+    _open_wrangler_linear_interpolation_weight as _pandas_linear_interpolation_weight,
+)
 from ._pandas_lookup_helpers import _open_wrangler_lookup_columns as _pandas_lookup_columns
 from ._pandas_lookup_helpers import _open_wrangler_read_lookup as _pandas_read_lookup
 from ._pandas_min_max_helpers import _open_wrangler_min_max_scale as _pandas_min_max_scale
@@ -7893,18 +7896,39 @@ def _pandas_fill_missing_linear_interpolation(
     series = _pandas_dictionary_values(original)
     if _pandas_semantic_type(series) != "float":
         raise EngineError("Linear interpolation requires a floating-point target column.")
-    coordinates = _pandas_linear_coordinate_values(frame.iloc[:, coordinate_position])
-    if len(set(coordinates)) != len(coordinates):
-        raise EngineError("Linear interpolation requires unique coordinate values.")
-    try:
-        order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise EngineError(f"Linear interpolation coordinates cannot be ordered: {error}") from error
+    native = _pandas_native_linear_coordinates(frame.iloc[:, coordinate_position])
+    if native is None:
+        coordinates = _pandas_linear_coordinate_values(frame.iloc[:, coordinate_position])
+        if len(set(coordinates)) != len(coordinates):
+            raise EngineError("Linear interpolation requires unique coordinate values.")
+        try:
+            order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise EngineError(f"Linear interpolation coordinates cannot be ordered: {error}") from error
+        ordered_coordinates: Any = [coordinates[int(position)] for position in order]
+        integral = whole_arrays = False
+    else:
+        native_coordinates, integral = native
+        order = np.argsort(native_coordinates, kind="stable")
+        ordered_coordinates = native_coordinates[order]
+        if bool((ordered_coordinates[1:] == ordered_coordinates[:-1]).any()):
+            raise EngineError("Linear interpolation requires unique coordinate values.")
+        # The helper divides integer coordinates in the ambient decimal context, so it honors that context's traps.
+        traps = getcontext().traps
+        whole_arrays = (
+            isinstance(series.dtype, np.dtype)
+            and series.dtype == np.float64
+            and not (integral and (traps[Inexact] or traps[Rounded]))
+        )
 
     ordered = series.iloc[order].reset_index(drop=True)
-    ordered_coordinates = [coordinates[int(position)] for position in order]
     ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
-    result = _pandas_fill_linear_gaps(ordered, ordered_coordinates, ordered_missing, max_gap, EngineError)
+    if whole_arrays:
+        result = _pandas_fill_float64_linear_gaps(ordered, ordered_coordinates, integral, ordered_missing, max_gap)
+    else:
+        if native is not None:
+            ordered_coordinates = ordered_coordinates.tolist()
+        result = _pandas_fill_linear_gaps(ordered, ordered_coordinates, ordered_missing, max_gap, EngineError)
     if result is None:
         return original.copy()
     try:
@@ -7955,6 +7979,119 @@ def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
             continue
         raise EngineError("Linear interpolation coordinates must contain only numeric, date, or datetime values.")
     return result
+
+
+def _pandas_native_linear_coordinates(series: Any) -> tuple[Any, bool] | None:
+    """Return NumPy integer, float or datetime coordinates as ``(values, integral)``.
+
+    The values equal ``_pandas_linear_coordinate_values``: exact integers, float64 values or nanoseconds since the
+    epoch. Other storage, and datetimes that may not fit in nanoseconds, return None for the per-value checks.
+    """
+
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        series = series.dt.tz_convert(None)
+    dtype = series.dtype
+    if not isinstance(dtype, np.dtype):
+        return None
+    values = series.to_numpy()
+    if dtype.kind == "i" or (dtype.kind == "u" and (len(values) == 0 or int(values.max()) <= np.iinfo(np.int64).max)):
+        return values.astype(np.int64, copy=False), True
+    if dtype.kind == "f":
+        values = values.astype(np.float64, copy=False)
+        if not bool(np.isfinite(values).all()):
+            raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+        return values, False
+    if dtype.kind != "M":
+        return None
+    unit, count = np.datetime_data(dtype)
+    scale = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}.get(unit)
+    if scale is None or count != 1:
+        return None
+    present = ~np.isnat(values)
+    ticks = values.view(np.int64)
+    if scale != 1 and bool(present.any()) and int(np.abs(ticks[present]).max()) > np.iinfo(np.int64).max // scale:
+        return None
+    if not bool(present.all()):
+        raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+    return ticks * scale, True
+
+
+def _pandas_fill_float64_linear_gaps(
+    ordered: Any,
+    coordinates: Any,
+    integral: bool,
+    missing: Any,
+    max_gap: int | None,
+) -> Any:
+    """Fill a float64 target like ``_pandas_fill_linear_gaps``, with the same arithmetic over whole arrays.
+
+    ``coordinates`` are the ordered NumPy coordinates, and ``integral`` says they are exact integers.
+    """
+
+    import numpy as np
+    import pandas as pd
+
+    values = ordered.to_numpy(dtype=np.float64, copy=True)
+    edges = np.diff(missing.astype(np.int8), prepend=0, append=0)
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)
+    kept = (starts > 0) & (ends < len(values))
+    if max_gap is not None:
+        kept &= ends - starts <= max_gap
+    starts, ends = starts[kept], ends[kept]
+    kept = np.isfinite(values[starts - 1]) & np.isfinite(values[ends])
+    starts, ends = starts[kept], ends[kept]
+    if len(starts) == 0:
+        return None
+    lengths = ends - starts
+    run = np.repeat(np.arange(len(starts)), lengths)
+    positions = np.arange(len(run)) + np.repeat(starts - (np.cumsum(lengths) - lengths), lengths)
+    left, right = values[starts - 1][run], values[ends][run]
+    current = coordinates[positions]
+    left_coordinate, right_coordinate = coordinates[starts - 1][run], coordinates[ends][run]
+    with np.errstate(all="ignore"):
+        if not integral:
+            denominator = right_coordinate - left_coordinate
+            weight = np.where(
+                np.isfinite(denominator),
+                (current - left_coordinate) / denominator,
+                (current / 2.0 - left_coordinate / 2.0) / (right_coordinate / 2.0 - left_coordinate / 2.0),
+            )
+        elif int(coordinates[-1]) - int(coordinates[0]) <= 2**53:
+            # Differences up to 2**53 are exact doubles, so one division rounds like the helper's exact quotient.
+            weight = (current - left_coordinate).astype(np.float64) / (right_coordinate - left_coordinate).astype(
+                np.float64
+            )
+        else:
+            weight = np.fromiter(
+                map(
+                    _pandas_linear_interpolation_weight,
+                    current.tolist(),
+                    left_coordinate.tolist(),
+                    right_coordinate.tolist(),
+                ),
+                dtype=np.float64,
+                count=len(run),
+            )
+        if not bool((np.isfinite(weight) & (weight >= 0.0) & (weight <= 1.0)).all()):
+            raise EngineError(
+                "Linear interpolation failed for the selected coordinates: "
+                "coordinate distance produced a non-finite interpolation weight"
+            )
+        tiny = 2.2250738585072014e-308
+        values[positions] = np.where(
+            (left == right) & (left != 0),
+            left,
+            np.where(
+                (weight == 0.5) & (np.abs(left) < tiny) & (np.abs(right) < tiny),
+                (left + right) / 2.0,
+                (1.0 - weight) * left + weight * right,
+            ),
+        )
+    return pd.Series(values, index=ordered.index, name=ordered.name)
 
 
 def _pandas_fill_missing_grouped_statistic(

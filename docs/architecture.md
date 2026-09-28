@@ -787,6 +787,10 @@ Python linear interpolation preserves equal finite nonzero anchors after validat
 At a binary64 weight of exactly one half, two zero or subnormal double anchors use their exact sum before the
 final division. Other unequal anchor pairs retain the convex weighted expression; arbitrary floating
 interpolation is not guaranteed to round exactly. Missing-value eligibility, coordinate checks and gap limits still apply.
+Pandas live execution fills a NumPy float64 target with NumPy integer, float or datetime coordinates over whole arrays,
+with the same weights, anchor checks and fill expressions as the helper that generated code and other column types
+use. Integer and datetime weights divide exact integers, which the helper does in the ambient decimal context, so
+that path uses the helper when the context traps inexact or rounded results.
 
 Round accepts finite integer decimal precision, including negative values for rounding to tens and larger units.
 Python engines round exact integers and Decimal values before floating conversion, using half-even ties. Ordinary
