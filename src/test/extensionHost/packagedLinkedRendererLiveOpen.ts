@@ -206,6 +206,7 @@ export function createPackagedLinkedRendererLiveOpen(
         cancel: false,
         exportCsv: true,
         exportParquet: true,
+        find: true,
         notebookInsert: true,
         supportedOperations: operationKinds
       });

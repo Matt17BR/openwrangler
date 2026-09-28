@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
-import type { SessionSource } from "../../shared/protocol";
+import { engineLabel, type SessionSource } from "../../shared/protocol";
 import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { assertExactBytes } from "./acceptanceSourceFixture";
 import type { TestApi } from "./extensionHostTestApi";
@@ -138,7 +138,9 @@ export function createLiveImportReconfiguration(
     action: Locator;
     receipt: Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }>;
   }> {
-    const expectedTabLabel = `Open Wrangler: ${expectedSourceLabel}`;
+    const confirmed = testing.sessionSnapshot(expectedSessionId)?.metadata;
+    assert.ok(confirmed, "The reconfigured session must remain open.");
+    const expectedTabLabel = `Open Wrangler: ${expectedSourceLabel} (${engineLabel(confirmed.backend, confirmed.rLibrary)})`;
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     await waitFor(
       () => {

@@ -414,6 +414,7 @@ export function createReleasedPySparkJupyterJourney({
         cancel: false,
         exportCsv: false,
         exportParquet: false,
+        find: false,
         notebookInsert: false,
         supportedOperations: []
       });
