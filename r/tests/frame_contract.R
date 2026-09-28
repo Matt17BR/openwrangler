@@ -9275,6 +9275,24 @@ mapped_identity_capture <- openwrangler_r_frame_contract$capture_frame(
   source_row_positions = mapped_identity_result$sourcePositions
 )
 assert_identical(mapped_identity_capture$rowOriginKind, "mapped", "a reordered capture lost its row mapping")
+# Base R selects rows exactly as `[.data.frame` does, including row names and the order of attributes.
+for (row_names in list(c(NA_integer_, -4L), c("w", "x", "y", "z"))) {
+  selected_source <- structure(
+    list(value = c(40L, 20L, 30L, 10L), label = letters[1:4], items = list(1:2, NULL, 3L, integer())),
+    class = "data.frame",
+    row.names = row_names
+  )
+  selected_capture <- openwrangler_r_frame_contract$capture_frame(selected_source)
+  selected_result <- openwrangler_r_frame_contract$transform_rows(
+    selected_capture,
+    view_query(sorts = list(sort_rule("r:c:0", "value", "asc", "last")))
+  )
+  assert_true(
+    identical(selected_result$frame, selected_capture$snapshot[c(4L, 2L, 3L, 1L), , drop = FALSE],
+      attrib.as.set = FALSE),
+    "base R row selection differed from `[.data.frame`"
+  )
+}
 assert_identical(
   mapped_identity_capture$rowOrigins,
   c(4L, 2L, 3L, 1L),
@@ -9562,6 +9580,27 @@ for (rules in list(
         paste(vapply(rules, function(rule) rule$column$name, ""), collapse = ", "))
     )
   }
+}
+
+# A sorted capture keeps its source schema, and a clock column that differs from the source's selected rows is still
+# validated.
+ordering_sort <- view_query(sorts = list(ordering_rule("civil", "desc", "first")))
+for (library in c("base", "dplyr", "data.table", "collapse")) {
+  sorted <- openwrangler_r_frame_contract$transform_rows(ordering_capture, ordering_sort, library)
+  capture_sorted <- function(frame) {
+    openwrangler_r_frame_contract$capture_frame(frame, nullability_source = ordering_capture,
+      source_positions = seq_along(ordering_frame), source_row_positions = sorted$sourcePositions)
+  }
+  assert_identical(
+    capture_sorted(sorted$frame)$descriptor$schema,
+    ordering_capture$descriptor$schema,
+    sprintf("a %s sort changed the captured schema", library)
+  )
+  forged_civil <- unclass(sorted$frame$civil)
+  forged_civil$upper[[ordering_rows]] <- NA_real_
+  forged_sorted <- sorted$frame
+  forged_sorted$civil <- structure(forged_civil, class = class(sorted$frame$civil))
+  assert_error(capture_sorted(forged_sorted), "invalid clock timestamp storage")
 }
 
 names(large_source$frame)[1L] <- "renamed_order_key"

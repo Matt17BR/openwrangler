@@ -4563,6 +4563,16 @@ openwrangler_r_frame_contract <- local({
           .subset2(validated_frame, position)
         }
       })
+      # A row selection holds its source columns' values at the selected rows. Selecting those rows again costs less
+      # than rescanning clock and plain list values. The mapping itself is validated below.
+      if (!is.null(source_row_positions) && is.numeric(source_row_positions) && !anyNA(source_row_positions)) {
+        limits <- range(source_row_positions, 1)
+        if (limits[[1L]] >= 1 && limits[[2L]] <= nullability_source$descriptor$shape$rows) {
+          validated_columns <- lapply(validated_columns, function(column) {
+            if (clock_is_column(column) || (is.list(column) && !is.object(column))) column[source_row_positions] else column
+          })
+        }
+      }
     }
     inspected <- inspect_frame(
       snapshot,
@@ -7263,7 +7273,13 @@ openwrangler_r_frame_contract <- local({
       abort("operation-output-too-large", "Pivot longer would exceed the portable 2,147,483,647-row limit")
     }
 
-    snapshot <- isolated_snapshot(value, inspected$flavor)
+    # Base R builds every result column as a new vector, so it reads a plain captured frame without a private copy.
+    # The library helpers and data.table may change a frame by reference.
+    snapshot <- if (identical(library, "base") && !identical(inspected$flavor, "r.data.table")) {
+      value
+    } else {
+      isolated_snapshot(value, inspected$flavor)
+    }
     retained_positions <- setdiff(seq_along(schema), positions)
     if (!identical(library, "base")) {
       result <- library_pivot_longer(snapshot, retained_positions, positions, label_name, value_name, library)
@@ -11000,6 +11016,24 @@ openwrangler_r_frame_contract <- local({
     list(inspected = inspected, positions = positions)
   }
 
+  # Selects rows of a plain data.frame exactly as `[.data.frame` does. Distinct positions keep distinct row names, so it
+  # skips the hash of every row name that `[.data.frame` spends on making repeated ones unique.
+  plain_frame_rows <- function(value, positions) {
+    if (!identical(oldClass(value), "data.frame") || any(vapply(unclass(value), function(column) {
+      !is.null(dim(column))
+    }, logical(1L)))) {
+      return(value[positions, , drop = FALSE])
+    }
+    # `[.data.frame` sets row names and then the class after the other attributes.
+    result_attributes <- attributes(value)
+    row_names <- result_attributes$row.names[positions]
+    result_attributes$row.names <- NULL
+    result_attributes$class <- NULL
+    result <- lapply(unclass(value), function(column) column[positions])
+    attributes(result) <- c(result_attributes, list(row.names = row_names, class = "data.frame"))
+    result
+  }
+
   subset_rows_at <- function(value, inspected, row_positions, library = "base") {
     row_count <- inspected$descriptor$shape$rows
     if (invalid_row_positions(row_positions, row_count)) {
@@ -11013,7 +11047,7 @@ openwrangler_r_frame_contract <- local({
     } else if (identical(inspected$flavor, "r.data.table")) {
       value[row_positions]
     } else {
-      value[row_positions, , drop = FALSE]
+      plain_frame_rows(value, row_positions)
     }
     list(frame = result, sourcePositions = row_positions)
   }
@@ -11971,7 +12005,7 @@ openwrangler_r_frame_contract <- local({
       if (length(view$resolved$sorts) != 0L) data.table::setkey(subset, NULL)
       subset
     } else {
-      frame[source_positions, , drop = FALSE]
+      plain_frame_rows(frame, source_positions)
     }
     list(
       frame = result,
