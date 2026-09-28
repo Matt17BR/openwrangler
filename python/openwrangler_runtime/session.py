@@ -506,7 +506,10 @@ class SessionManager:
                 frame = cast("DuckDBEngine", engine).capture_notebook_source(
                     frame, duckdb_connection, row_id_token=f"{session_id}:source"
                 )
-            frame = engine.ensure_row_ids(frame, f"{session_id}:source")
+            # A file frame was just read, so nothing outside the session holds it.
+            frame = engine.ensure_row_ids(
+                frame, f"{session_id}:source", owned=clone_from is None and source_kind == "file"
+            )
             filter_model = {"logic": "and", "filters": [], "sort": []}
             source_shape = engine.shape(frame)
             source_schema = engine.schema(frame)

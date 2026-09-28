@@ -2600,3 +2600,99 @@ def test_pandas_transforms_never_write_into_their_input() -> None:
         engine.apply_transform(frame, operation)
         pd.testing.assert_frame_equal(frame, expected, obj=f"{kind} input")
         assert [list(value) if isinstance(value, list) else value for value in source["items"]] == nested, kind
+
+
+def test_pandas_schema_reuses_object_column_facts_only_for_the_same_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = PandasEngine()
+    frame = pd.DataFrame(
+        {"text": pd.Series([None, "a", "b"], dtype=object), "count": pd.Series([1, 2, 3], dtype=object)}
+    )
+    scanned: list[str] = []
+    native = pandas_engine_module._pandas_has_missing
+
+    def counted(series: Any) -> bool:
+        scanned.append(str(series.name))
+        return native(series)
+
+    monkeypatch.setattr(pandas_engine_module, "_pandas_has_missing", counted)
+
+    def facts(value: Any) -> list[tuple[str, bool]]:
+        return [(column["type"], column["nullable"]) for column in engine.schema(value)]
+
+    assert facts(frame) == [("string", True), ("integer", False)]
+    renamed = frame.copy(deep=False)
+    renamed.columns = ["label", "number"]
+    assert facts(renamed) == [("string", True), ("integer", False)]
+    assert scanned == ["text", "count"]
+    assert facts(frame.iloc[1:]) == [("string", False), ("integer", False)]
+    replaced = frame.copy(deep=False)
+    replaced.isetitem(1, pd.Series(["x", None, "z"], dtype=object))
+    assert facts(replaced) == [("string", True), ("string", True)]
+    assert scanned == ["text", "count", "text", "count", "count"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "plain",
+        "duplicate",
+        "multiindex",
+        "integer-labels",
+        "unnamed",
+        "repeated-index",
+        "no-columns",
+        "no-rows",
+        "frame",
+        "shared-attrs",
+        "unique-labels",
+    ],
+)
+def test_pandas_column_appends_match_concat_and_share_existing_columns(case: str) -> None:
+    index = pd.Index(["r", "r", "s"]) if case == "repeated-index" else pd.RangeIndex(3)
+    frame = pd.DataFrame(
+        {
+            "text": pd.Series(["a", None, "c"], dtype=object, index=index),
+            "number": pd.Series([1.5, 2.5, None], index=index),
+        }
+    )
+    added: list[Any] = [
+        pd.Series(["x", "y", None], dtype=object, index=index, name="copy"),
+        pd.Series(pd.Categorical(["p", None, "p"]), index=index, name="kind"),
+        pd.Series(pd.array([1, None, 3], dtype="Int64"), index=index, name="count"),
+    ]
+    frame.attrs = {"source": "kept"}
+    if case == "duplicate":
+        added.append(added[0].rename("text"))
+    elif case == "multiindex":
+        frame.columns = pd.MultiIndex.from_tuples([("text", "a"), ("number", "b")])
+    elif case == "integer-labels":
+        frame.columns = [0, 1]
+        added = [part.rename(position) for position, part in enumerate(added, start=1)]
+    elif case == "unnamed":
+        added[0] = added[0].rename(None)
+    elif case == "no-columns":
+        frame = frame.iloc[:, []]
+    elif case == "no-rows":
+        frame, added = frame.iloc[:0], [part.iloc[:0] for part in added]
+    elif case == "frame":
+        added = [pd.concat(added[:2], axis=1)]
+    elif case == "shared-attrs":
+        for part in added:
+            part.attrs = {"source": "kept"}
+    elif case == "unique-labels":
+        frame = frame.set_flags(allows_duplicate_labels=False)
+    before = [part.copy(deep=True) for part in [frame, *added]]
+    actual = pandas_engine_module._pandas_concat_columns([frame, *added])
+    expected = pd.concat([frame, *added], axis=1)
+    pd.testing.assert_frame_equal(actual, expected)
+    assert type(actual.columns) is type(expected.columns)
+    assert actual.attrs == expected.attrs
+    assert actual.flags == expected.flags
+    for part, original in zip([frame, *added], before, strict=True):
+        if isinstance(part, pd.DataFrame):
+            pd.testing.assert_frame_equal(part, original)
+        else:
+            pd.testing.assert_series_equal(part, original)
+    # Added frames, and frames that refuse duplicate labels, go through concat, which may consolidate columns.
+    if frame.size and case not in {"frame", "unique-labels"}:
+        assert np.shares_memory(actual.iloc[:, 0].to_numpy(), frame.iloc[:, 0].to_numpy())

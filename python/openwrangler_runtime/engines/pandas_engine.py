@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import os
 import sys
+import weakref
 from base64 import b64encode
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -139,6 +140,7 @@ _MAX_ROW_AXIS_VALUE_NODES = 1_024
 _MAX_ROW_AXIS_DECIMAL_STORAGE_BYTES = 4 * 1_024
 _MAX_ROW_AXIS_DECIMAL_DIGITS = 8 * 1_024
 _ROW_AXIS_SEPARATOR = " · "
+_MAX_OBJECT_COLUMN_FACTS = 4_096
 _JSON_CHARACTER_ESCAPES = {
     "\b": "\\b",
     "\t": "\\t",
@@ -1507,18 +1509,52 @@ class PandasEngine(DataFrameEngine):
 
     def schema(self, frame: Any) -> list[dict[str, Any]]:
         df = self.normalize(frame)
-        return [
-            {
-                "id": f"c:{position}",
-                "name": str(column),
-                "position": position,
-                "rawType": str(dtype),
-                "type": _pandas_semantic_type(df.iloc[:, frame_position]),
-                "nullable": _pandas_has_missing(df.iloc[:, frame_position]),
-            }
-            for position, frame_position in enumerate(self._visible_positions(df))
-            for column, dtype in [(df.columns[frame_position], df.dtypes.iloc[frame_position])]
-        ]
+        schema = []
+        for position, frame_position in enumerate(self._visible_positions(df)):
+            series = df.iloc[:, frame_position]
+            semantic_type, nullable = (
+                self._object_column_facts(series)
+                if series.dtype == object
+                else (_pandas_semantic_type(series), _pandas_has_missing(series))
+            )
+            schema.append(
+                {
+                    "id": f"c:{position}",
+                    "name": str(df.columns[frame_position]),
+                    "position": position,
+                    "rawType": str(df.dtypes.iloc[frame_position]),
+                    "type": semantic_type,
+                    "nullable": nullable,
+                }
+            )
+        return schema
+
+    def _object_column_facts(self, series: Any) -> tuple[str, bool]:
+        """Return an object column's semantic type and whether it has missing values.
+
+        Finding them visits every value, so they are kept for the array that owns the column's values. Session arrays
+        are never written in place, so the facts hold for as long as that array lives.
+        """
+        import numpy as np
+
+        values = series.to_numpy()
+        owner = values
+        while isinstance(owner.base, np.ndarray):
+            owner = owner.base
+        key = (id(owner), values.__array_interface__["data"][0], len(values), values.strides[0])
+        known = vars(self).get("_object_facts")
+        if known is None:
+            known = vars(self).setdefault("_object_facts", {})
+        cached = known.get(key)
+        if cached is not None and cached[0]() is owner:
+            return cached[1]
+        facts = (_pandas_semantic_type(series), _pandas_has_missing(series))
+        if len(known) >= _MAX_OBJECT_COLUMN_FACTS:
+            for stale in [item for item, (reference, _) in list(known.items()) if reference() is None]:
+                known.pop(stale, None)
+        if len(known) < _MAX_OBJECT_COLUMN_FACTS:
+            known[key] = (weakref.ref(owner), facts)
+        return facts
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         return self.normalize(self.filter_view(frame, model))
@@ -6407,11 +6443,26 @@ def _pandas_append_result(df: Any, result: Any, name: str) -> Any:
 def _pandas_concat_columns(objects: Any) -> Any:
     import pandas as pd
 
-    # Without Copy-on-Write, concat copies every input column unless told not to. With it, the
-    # copy keyword is deprecated and unchanged columns are already shared lazily.
+    # With Copy-on-Write, concat shares unchanged columns lazily and its copy keyword is deprecated.
     if _pandas_copy_on_write():
         return pd.concat(objects, axis=1)
-    return pd.concat(objects, axis=1, copy=False)
+    frame, *added = objects
+    if (
+        not isinstance(frame, pd.DataFrame)
+        or not frame.flags.allows_duplicate_labels
+        or not all(isinstance(part, pd.Series) and part.index.equals(frame.index) for part in added)
+    ):
+        return pd.concat(objects, axis=1, copy=False)
+    # Without it, concat consolidates its result and so copies every column sharing a dtype with an added one.
+    # Inserting leaves the existing columns alone, and concatenating the empty parts labels the columns and keeps
+    # attrs as concat does.
+    empty = pd.concat([part.iloc[:0] for part in objects], axis=1)
+    result = frame.copy(deep=False)
+    for part in added:
+        result.insert(result.shape[1], part.name, part, allow_duplicates=True)
+    result.columns = empty.columns
+    result.attrs = empty.attrs
+    return result
 
 
 def _pandas_by_example_expression(
