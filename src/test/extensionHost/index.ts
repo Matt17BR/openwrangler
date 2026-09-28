@@ -176,6 +176,7 @@ import { createPackagedLinkedRendererLiveOpen } from "./packagedLinkedRendererLi
 import { createPackagedRendererProvenanceJourneys } from "./packagedRendererProvenanceJourney";
 import { createPackagedSessionPanelLifecycle } from "./packagedSessionPanelLifecycle";
 import { createPackagedFileLaunchSurfaces } from "./packagedFileLaunchSurfaces";
+import { exercisePackagedDefaultEditors } from "./packagedDefaultEditors";
 import { createLiveImportReconfiguration } from "./liveImportReconfiguration";
 import { exerciseReleasedRCategoricalEditingJourney } from "./releasedRCategoricalEditing";
 import { exerciseReleasedRLowercaseOperation } from "./releasedRLowercaseOperation";
@@ -756,6 +757,7 @@ export async function run(): Promise<void> {
   );
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
+  const activeOpenWranglerEditor = "activeCustomEditorId =~ /^openWrangler\\.(viewer|textDataViewer)$/";
   const rDocumentPredicate =
     "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
   const rTitlePredicate =
@@ -795,8 +797,7 @@ export async function run(): Promise<void> {
     contributions.menus?.["editor/title"]?.some(
       (item) =>
         item.command === "openWrangler.openFile" &&
-        item.when ===
-          `${fileResourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)" &&
+        item.when === `${fileResourcePredicate} && !(${activeOpenWranglerEditor})` &&
         item.group === "navigation@1"
     ),
     "Supported source editors must expose the Open Wrangler title action."
@@ -806,7 +807,7 @@ export async function run(): Promise<void> {
       (item) =>
         item.command === "openWrangler.changeImportOptions" &&
         item.when ===
-          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+          `openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || ${activeOpenWranglerEditor})` &&
         item.group === "navigation@2"
     ),
     "Configurable Open Wrangler file editors must expose the Change Import Options title action."
@@ -829,8 +830,7 @@ export async function run(): Promise<void> {
     contributions.menus?.["editor/title/context"]?.some(
       (item) =>
         item.command === "openWrangler.openFile" &&
-        item.when ===
-          `${fileResourcePredicate} && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)` &&
+        item.when === `${fileResourcePredicate} && !(${activeOpenWranglerEditor})` &&
         item.group === "navigation@50"
     ),
     "Supported source tabs must expose Open in Open Wrangler in their context menu."
@@ -840,7 +840,7 @@ export async function run(): Promise<void> {
       (item) =>
         item.command === "openWrangler.changeImportOptions" &&
         item.when ===
-          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+          `openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || ${activeOpenWranglerEditor})` &&
         item.group === "navigation@51"
     ),
     "Configurable Open Wrangler tabs must expose Change Import Options in their context menu."
@@ -904,43 +904,43 @@ export async function run(): Promise<void> {
         command: "openWrangler.applyStep",
         key: "ctrl+enter",
         mac: "cmd+enter",
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
+        when: `${activeOpenWranglerEditor} && openWrangler.hasDraft`
       },
       {
         command: "openWrangler.discardStep",
         key: "escape",
         mac: undefined,
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.hasDraft"
+        when: `${activeOpenWranglerEditor} && openWrangler.hasDraft`
       },
       {
         command: "openWrangler.editLatestStep",
         key: "ctrl+shift+e",
         mac: "cmd+shift+e",
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        when: `${activeOpenWranglerEditor} && openWrangler.canChangePlan`
       },
       {
         command: "openWrangler.undoStep",
         key: "ctrl+alt+z",
         mac: "cmd+alt+z",
-        when: "activeCustomEditorId == openWrangler.viewer && openWrangler.canChangePlan"
+        when: `${activeOpenWranglerEditor} && openWrangler.canChangePlan`
       },
       {
         command: "openWrangler.goToRow",
         key: "ctrl+g",
         mac: undefined,
-        when: "activeCustomEditorId == openWrangler.viewer"
+        when: activeOpenWranglerEditor
       },
       {
         command: "openWrangler.find",
         key: "ctrl+f",
         mac: "cmd+f",
-        when: "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+        when: `${activeOpenWranglerEditor} && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
       },
       {
         command: "openWrangler.replace",
         key: "ctrl+h",
         mac: "cmd+alt+f",
-        when: "activeCustomEditorId == openWrangler.viewer && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+        when: `${activeOpenWranglerEditor} && !editorTextFocus && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
       }
     ]
   );
@@ -983,6 +983,12 @@ export async function run(): Promise<void> {
     await dispatchPlatformSmokeJourney(phaseSelection, {
       dailyCore: async () => {
         await exercisePackagedDailyCore(extensionApi, extension, firstUseFixture);
+        recordAcceptanceProgress("platform-smoke:default-editors");
+        await exercisePackagedDefaultEditors(await extensionApi.getTestingApi(), workspace, testPython, {
+          recordAcceptanceProgress,
+          waitFor,
+          sessionOpenTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS
+        });
         recordAcceptanceProgress("platform-smoke:complete");
         console.log("Open Wrangler daily preview smoke passed.");
       },
@@ -1006,6 +1012,12 @@ export async function run(): Promise<void> {
       standard: async () => {
         const testing = await extensionApi.getTestingApi();
         await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture, testPython);
+        recordAcceptanceProgress("platform-smoke:default-editors");
+        await exercisePackagedDefaultEditors(testing, workspace, testPython, {
+          recordAcceptanceProgress,
+          waitFor,
+          sessionOpenTimeoutMs: SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS
+        });
         recordAcceptanceProgress("platform-smoke:excel-dependency-install");
         await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
         if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
@@ -16582,14 +16594,11 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     for (const fixture of fixtures) {
       const extension = path.extname(fixture.uri.fsPath).slice(1).toLowerCase();
       const checkpoint = `verify:file-inputs:${fixture.backend}:${extension}`;
+      // Reopen Editor With offers the text data editor for delimited and JSON Lines files.
+      const viewType = ["parquet", "xlsx"].includes(extension) ? "openWrangler.viewer" : "openWrangler.textDataViewer";
       recordAcceptanceProgress(`${checkpoint}:open`);
       await config.update("defaultBackend", fixture.backend, vscode.ConfigurationTarget.Global);
-      await vscode.commands.executeCommand(
-        "vscode.openWith",
-        fixture.uri,
-        "openWrangler.viewer",
-        vscode.ViewColumn.One
-      );
+      await vscode.commands.executeCommand("vscode.openWith", fixture.uri, viewType, vscode.ViewColumn.One);
       await waitFor(
         () => {
           const active = testing.activeSession();
@@ -16597,7 +16606,9 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
             active?.metadata.source.path === fixture.uri.fsPath &&
             active.metadata.backend === fixture.backend &&
             active.metadata.shape.rows === fixture.shape.rows &&
-            active.metadata.shape.columns === fixture.shape.columns
+            active.metadata.shape.columns === fixture.shape.columns &&
+            findExactCustomEditorTab<vscode.Tab>(vscode.window.tabGroups.all, viewType, fixture.uri.toString()) !==
+              undefined
           );
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,

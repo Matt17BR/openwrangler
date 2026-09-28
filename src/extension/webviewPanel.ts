@@ -64,6 +64,7 @@ import {
 import { createSecureNonce } from "./secureNonce";
 import { revealSideBar } from "./sideBarReveal";
 import { decodeWebviewMessage } from "./webviewMessage";
+import { escapeHtml } from "./escapeHtml";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
@@ -2688,17 +2689,8 @@ function serializeBootstrapAttributes(
     ["data-filter-mode", settings.filterMode],
     ["data-can-change-import-options", settings.canChangeImportOptions]
   ]
-    .map(([name, value]) => `${name}="${escapeHtmlAttribute(String(value))}"`)
+    .map(([name, value]) => `${name}="${escapeHtml(String(value))}"`)
     .join(" ");
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 function panelRuntimeCleanupOptions(): BridgeRequestOptions {

@@ -109,11 +109,26 @@ export async function run(): Promise<void> {
     undefined,
     "The blocked PySpark Variables action must not create a coordinator, session, or runtime."
   );
+  recordAcceptanceProgress("restricted:default-editor");
+  const parquet = vscode.Uri.joinPath(workspace.uri, "fixtures", "r-file-int32-sentinel.parquet");
+  await vscode.commands.executeCommand("vscode.open", parquet, { preview: false });
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (input instanceof vscode.TabInputText && input.uri.toString() === parquet.toString()) break;
+    if (Date.now() > deadline) throw new Error("Restricted Mode must open a Parquet file in the text editor.");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(
+    vscode.extensions.getExtension("matt17br.openwrangler")?.isActive ?? false,
+    false,
+    "Opening a Parquet file must not activate Open Wrangler in Restricted Mode."
+  );
   recordAcceptanceProgress("restricted:activation-blocked");
   assert.equal(
     vscode.window.tabGroups.all
       .flatMap((group) => group.tabs)
-      .some((tab) => tab.input instanceof vscode.TabInputCustom && tab.input.viewType === "openWrangler.viewer"),
+      .some((tab) => tab.input instanceof vscode.TabInputCustom && tab.input.viewType.startsWith("openWrangler.")),
     false,
     "Restricted Mode must not create an Open Wrangler dataframe session tab."
   );

@@ -63,6 +63,12 @@ async function generateReference() {
         ])
       ),
       "",
+      "## File editors",
+      "",
+      "A `default` editor opens matching files unless a `workbench.editorAssociations` entry selects another editor. An `option` editor appears in **Reopen Editor With...**.",
+      "",
+      table(["Editor ID", "File patterns", "Priority"], customEditorRows(packageJson.contributes.customEditors)),
+      "",
       "## Settings",
       "",
       table(
@@ -108,6 +114,19 @@ async function generateReference() {
     ].join("\n")}\n`,
     { parser: "markdown" }
   );
+}
+
+function customEditorRows(editors) {
+  return editors.map((editor) => {
+    if (!["default", "option"].includes(editor.priority)) {
+      throw new Error(`Custom editor ${editor.viewType} must declare a default or option priority.`);
+    }
+    return [
+      code(editor.viewType),
+      editor.selector.map((selector) => code(selector.filenamePattern)).join(", "),
+      code(editor.priority)
+    ];
+  });
 }
 
 function messageKinds(schema, unionName) {
@@ -164,7 +183,7 @@ function parameterList(parameters) {
 }
 
 function code(value) {
-  return `\`${String(value).replaceAll("`", "\\`")}\``;
+  return `\`${String(value).replaceAll("`", "\\`").replaceAll("|", "\\|")}\``;
 }
 
 function escapeCell(value) {

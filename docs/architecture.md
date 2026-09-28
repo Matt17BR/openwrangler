@@ -2611,6 +2611,13 @@ Open Wrangler never overwrites source data. Readers validate supported schemes, 
 options before runtime startup. Lazy readers revalidate the source around each read. Transformations operate on
 session-owned state, not the source variable or source file.
 
+One provider backs two custom editors: `openWrangler.viewer` is the default for Parquet and Excel files, and
+`openWrangler.textDataViewer` is an option for CSV, TSV and JSON Lines, whose default stays the text editor. A default
+editor also resolves each side of a diff. For a resource outside `file` and `vscode-remote`, such as a Git version, it
+shows a static notice with scripts disabled instead of disposing the panel, which would close the whole diff. The
+extension doesn't support untrusted workspaces, so in Restricted Mode VS Code keeps its own editor and no runtime
+starts.
+
 Data export and generated-script export require a separate destination. The public script command always uses VS Code's
 Save dialog and chooses a Python or R suffix from the active session. Only the extension host chooses or commits the
 user destination.
@@ -2707,9 +2714,9 @@ the whole column to fit in a narrower pane.
 
 ## Package and release identity
 
-The extension identity is `Matt17BR.openwrangler`; its commands and settings use `openWrangler.*`, the custom editor is
-`openWrangler.viewer`, the Python package is `openwrangler_runtime`, and notebook output uses
-`application/vnd.openwrangler.viewer.v2+json`. The bundled runtime version in
+The extension identity is `Matt17BR.openwrangler`; its commands and settings use `openWrangler.*`, the custom editors
+are `openWrangler.viewer` and `openWrangler.textDataViewer`, the Python package is `openwrangler_runtime`, and notebook
+output uses `application/vnd.openwrangler.viewer.v2+json`. The bundled runtime version in
 `python/openwrangler_runtime/version.py` is PEP 440-equivalent to `package.json` and drives the initialize handshake.
 
 A release candidate is exactly one `openwrangler.vsix`, `openwrangler.vsix.sha256`, and
