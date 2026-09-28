@@ -269,6 +269,10 @@ class DuckDBSqlPlan:
     unordered_row_id_order: bool = False
     # Over ``unordered_sql``, numbers each private row ID by its zero-based position in this sorted view.
     sorted_order_sql: str | None = None
+    # A committed step's rows without its final sort, for reads that depend on neither row order nor its ties.
+    unordered_rows_sql: str | None = None
+    # ``ordinal_sql`` without its final sort.
+    unordered_ordinal_sql: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -895,7 +899,7 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(f"DuckDB could not open {path}: {error}") from error
 
     def shape(self, frame: Any) -> SessionDataShape:
-        row_count = int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
+        row_count = int(self._terminal_scalar(_unordered_rows(frame), "SELECT system.main.count(*) FROM ow") or 0)
         return {"rows": row_count, "columns": len(self._visible_columns(frame))}
 
     def validate_transformation_result(self, frame: Any, *, operation_kind: str | None = None) -> None:
@@ -903,7 +907,9 @@ class DuckDBEngine(DataFrameEngine):
         if operation_kind in _STRUCTURAL_TRANSFORM_KINDS:
             return
         columns = ", ".join("ow." + _quote_ident(column) for column in self._columns(frame))
-        self._terminal_scalar(frame, f"SELECT system.main.bit_xor(system.main.hash({columns})) FROM ow")
+        self._terminal_scalar(
+            _unordered_rows(frame), f"SELECT system.main.bit_xor(system.main.hash({columns})) FROM ow"
+        )
 
     def validate_column_addressability(self, frame: Any) -> None:
         """DuckDB SQL identifiers cannot distinguish names by case alone."""
@@ -938,13 +944,13 @@ class DuckDBEngine(DataFrameEngine):
                 assert frame.checkpoint is not None
                 ordinal_name = frame.checkpoint.ordinal
             ordinal = _quote_ident(ordinal_name)
+            numbering = f"SELECT * EXCLUDE ({ordinal}), {ordinal} AS {_quote_ident(row_id)} FROM "
             return replace(
-                self._relation_from_sql(
-                    f"SELECT * EXCLUDE ({ordinal}), {ordinal} AS {_quote_ident(row_id)} "
-                    f"FROM ({frame.ordinal_sql}) AS captured",
-                    checkpoint=frame.checkpoint,
-                ),
+                self._relation_from_sql(f"{numbering}({frame.ordinal_sql}) AS captured", checkpoint=frame.checkpoint),
                 row_id_order=True,
+                unordered_rows_sql=None
+                if frame.unordered_ordinal_sql is None
+                else f"{numbering}({frame.unordered_ordinal_sql}) AS captured",
             )
         numbered = self._relation(
             frame, f'SELECT *, system.main."-"(row_number() OVER (), 1) AS {_quote_ident(row_id)} FROM ow'
@@ -1116,7 +1122,7 @@ class DuckDBEngine(DataFrameEngine):
             for index, column in enumerate(column for column in selected_columns if projections[column][1])
         }
         row_count = (
-            int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
+            int(self._terminal_scalar(_unordered_rows(frame), "SELECT system.main.count(*) FROM ow") or 0)
             if total_rows is None
             else total_rows
         )
@@ -1428,12 +1434,12 @@ class DuckDBEngine(DataFrameEngine):
         identifier = _quote_ident(column)
         valid = _valid_predicate(identifier, raw_types[column])
         result = self._terminal_scalar(
-            _unordered_view(frame), f"SELECT system.main.count(*) FILTER (WHERE NOT ({valid})) FROM ow"
+            _unordered_rows(frame), f"SELECT system.main.count(*) FILTER (WHERE NOT ({valid})) FROM ow"
         )
         return int(result or 0)
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
-        frame = _unordered_view(self.normalize(frame))
+        frame = _unordered_rows(self.normalize(frame))
         visible = self._visible_columns(frame)
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         if not visible:
@@ -1593,7 +1599,7 @@ class DuckDBEngine(DataFrameEngine):
         masks: list[Any | None] = [None] * len(positions)
         if not matches:
             return masks
-        total = int(self._terminal_scalar(_unordered_view(frame), "SELECT system.main.count(*) FROM ow") or 0)
+        total = int(self._terminal_scalar(_unordered_rows(frame), "SELECT system.main.count(*) FROM ow") or 0)
         if total == 0:
             return masks
         position = _quote_ident(_unique_internal(self._columns(frame), "__ow_find_position"))
@@ -1628,7 +1634,11 @@ class DuckDBEngine(DataFrameEngine):
         params = step["params"]
         if kind == "sortRows":
             rules = [{**rule, "column": bound_column_name(rule["column"], kind)} for rule in params["rules"]]
-            return self.apply_filter_model(frame, {"filters": [], "sort": rules})
+            plan = self.apply_filter_model(frame, {"filters": [], "sort": rules})
+            if not isinstance(plan, DuckDBSqlPlan):
+                return plan
+            # Profiles still read the sorted rows, where the new order breaks ties between equal counts.
+            return replace(plan, unordered_rows_sql=_unordered_rows(frame).sql)
         if kind == "filterRows":
             return self.apply_filter_model(frame, _bound_duckdb_filter_model(params["filterModel"]))
         if kind == "conditionalColumn":
@@ -1779,7 +1789,7 @@ class DuckDBEngine(DataFrameEngine):
             ):
                 identifier = _quote_ident(row_id)
                 row_count, first_id, last_id = self._terminal_rows(
-                    _unordered_view(source_plan),
+                    _unordered_rows(source_plan),
                     f"SELECT system.main.count(*), min({identifier}), max({identifier}) FROM ow",
                 )[0]
                 stride = 0 if last_id is None else int(last_id) + 1
@@ -1809,7 +1819,7 @@ class DuckDBEngine(DataFrameEngine):
                 # so the result sorts once and needs no numbering window before or after the pivot.
                 ordinal_name = _unique_internal(reserved, "__ow_pivot_row")
                 ordinal = _quote_ident(ordinal_name)
-                ordered = (
+                rows = (
                     "SELECT * FROM ("
                     + " UNION ALL ".join(
                         "SELECT "
@@ -1823,10 +1833,17 @@ class DuckDBEngine(DataFrameEngine):
                         + " FROM ow"
                         for index, pair in enumerate(label_value)
                     )
-                    + f") ORDER BY {ordinal}"
+                    + ")"
                 )
+                ordered = f"{rows} ORDER BY {ordinal}"
                 plan = self._relation(frame, f"SELECT * EXCLUDE ({ordinal}) FROM ({ordered})")
-                return replace(plan, ordinal_sql=_compose_sql(source_plan.sql, ordered), ordinal=ordinal_name)
+                return replace(
+                    plan,
+                    ordinal_sql=_compose_sql(source_plan.sql, ordered),
+                    ordinal=ordinal_name,
+                    unordered_rows_sql=_compose_sql(source_plan.sql, f"SELECT * EXCLUDE ({ordinal}) FROM ({rows})"),
+                    unordered_ordinal_sql=_compose_sql(source_plan.sql, rows),
+                )
             source_order = _unique_internal(reserved, "__ow_pivot_source_order")
             pivot_order = _unique_internal([*reserved, source_order], "__ow_pivot_selected_order")
             # The private row identity belongs to the source capture, so it may
@@ -3166,13 +3183,14 @@ class DuckDBEngine(DataFrameEngine):
                     )
                 )
                 connection.execute(f"DETACH {alias}")
-            plan = self._relation_from_sql(
-                _compose_sql(
-                    source.sql,
-                    f"SELECT {projection} FROM ow JOIN {alias}.main.step AS step "
-                    f"ON ow.{identifier} = step.{identifier} ORDER BY step.{position}",
+            joined = (
+                f"SELECT {projection} FROM ow JOIN {alias}.main.step AS step ON ow.{identifier} = step.{identifier}"
+            )
+            plan = replace(
+                self._relation_from_sql(
+                    _compose_sql(source.sql, f"{joined} ORDER BY step.{position}"), checkpoint=checkpoint
                 ),
-                checkpoint=checkpoint,
+                unordered_rows_sql=_compose_sql(source.sql, joined),
             )
             with self._lifecycle_lock:
                 if self._closed:
@@ -5386,8 +5404,18 @@ def _unordered_view(frame: Any) -> Any:
             row_id_order=frame.unordered_row_id_order,
             unordered_row_id_order=False,
             sorted_order_sql=None,
+            unordered_rows_sql=None,
         )
     return replace(frame, sql=unordered_sql, unordered_sql=None)
+
+
+def _unordered_rows(frame: Any) -> Any:
+    """Counts and checks, which ignore row order and its ties, also skip a committed step's final sort."""
+    frame = _unordered_view(frame)
+    rows_sql = getattr(frame, "unordered_rows_sql", None)
+    if rows_sql is None:
+        return frame
+    return replace(frame, sql=rows_sql, row_id_order=False, sorted_order_sql=None, unordered_rows_sql=None)
 
 
 def _predicate_expression(identifier: str, predicate: Mapping[str, Any], column_type: str | None) -> str:

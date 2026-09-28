@@ -1371,7 +1371,10 @@ snapshots from `rowid`, unless the source already has a column of that name. A w
 later scan. Table row IDs can have gaps after deletes; only their order and uniqueness matter. When row IDs follow source order, viewing sorts
 break ties by row ID; other sorts keep a window tie-break. Counts, profiles, statistics and value choices read the
 filtered relation without its sort. Top-value ties use the row ID when it follows source order and a window position
-otherwise.
+otherwise. A committed Sort Rows, a Pivot longer that numbers its rows from their IDs, and a step that stores window
+results also keep their rows without the final sort. Row counts, dataset statistics and the check that evaluates each
+step result read those rows. Profiles and value choices still read the sorted rows, whose order breaks ties between equal
+counts.
 
 Arrow writers, including Pandas, Polars and R, store a Duration as INT64 in its unit and record the unit only in the
 file's `ARROW:schema` metadata, which DuckDB ignores. Parquet and lookup reads decode that metadata without Arrow and
