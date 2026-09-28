@@ -71,6 +71,7 @@ from .base import (
     decimal_at_scale,
     decode_fill_replacement,
     duration_seconds_raw,
+    ensure_encoded_result_fits,
     ensure_output_columns_available,
     exact_decimal_median,
     exact_integer_median,
@@ -2497,6 +2498,7 @@ class PolarsEngine(DataFrameEngine):
             ]
             generated.sort(key=lambda item: item[2])
             base = eager.drop(_ow_polars_columns(eager, columns)) if params.get("dropOriginal", True) else eager
+            ensure_encoded_result_fits(len(self._visible_columns(base)) + len(generated), "One-hot encoding")
             ensure_output_columns_available(base.columns, [name for _, _, name in generated], "One-hot encoding")
             if not generated:
                 return base
@@ -2526,6 +2528,7 @@ class PolarsEngine(DataFrameEngine):
             )
             generated_names = [f"{params.get('prefix', f'{column}_')}{label}" for label in labels]
             base = eager.drop(_ow_polars_columns(eager, [column])) if params.get("dropOriginal", False) else eager
+            ensure_encoded_result_fits(len(self._visible_columns(base)) + len(labels), "Multi-label binarization")
             ensure_output_columns_available(base.columns, generated_names, "Multi-label binarization")
             if not labels:
                 return base

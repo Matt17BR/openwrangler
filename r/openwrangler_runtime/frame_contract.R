@@ -6443,7 +6443,13 @@ openwrangler_r_frame_contract <- local({
         if (length(generated) >= maximum_generated) {
           abort(
             "operation-output-too-large",
-            sprintf("oneHotEncode may produce at most %d R columns", maximum_columns)
+            sprintf(
+              paste(
+                "One-hot encoding would give the result more than %s columns, the most every engine supports.",
+                "Choose columns with fewer distinct values."
+              ),
+              format(maximum_columns, big.mark = ",")
+            )
           )
         }
         generated[[length(generated) + 1L]] <- list(
@@ -6544,7 +6550,13 @@ openwrangler_r_frame_contract <- local({
       if (length(labels) > maximum_generated) {
         abort(
           "operation-output-too-large",
-          sprintf("multiLabelBinarize may produce at most %d R columns", maximum_columns)
+          sprintf(
+            paste(
+              "Multi-label binarization would give the result more than %s columns, the most every engine supports.",
+              "Choose a column or delimiter with fewer distinct labels."
+            ),
+            format(maximum_columns, big.mark = ",")
+          )
         )
       }
     }

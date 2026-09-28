@@ -90,6 +90,7 @@ from .base import (
     datetime_visualization,
     decimal_at_scale,
     decode_fill_replacement,
+    ensure_encoded_result_fits,
     ensure_output_columns_available,
     exact_decimal_median,
     exact_integer_median,
@@ -3594,6 +3595,8 @@ class DuckDBEngine(DataFrameEngine):
         base_columns = [
             column for column in self._columns(frame) if not params.get("dropOriginal", True) or column not in columns
         ]
+        visible = sum(not column.startswith(INTERNAL_ROW_ID_PREFIX) for column in base_columns)
+        ensure_encoded_result_fits(visible + len(generated), "One-hot encoding")
         ensure_output_columns_available(base_columns, (name for _, _, name in generated), "One-hot encoding")
         projections = [_quote_ident(column) for column in base_columns]
         projections.extend(
@@ -3624,6 +3627,8 @@ class DuckDBEngine(DataFrameEngine):
             name for name in self._columns(frame) if not params.get("dropOriginal", False) or name != column
         ]
         generated_names = [f"{prefix}{label}" for label in labels]
+        visible = sum(not name.startswith(INTERNAL_ROW_ID_PREFIX) for name in base_columns)
+        ensure_encoded_result_fits(visible + len(labels), "Multi-label binarization")
         ensure_output_columns_available(base_columns, generated_names, "Multi-label binarization")
         projections = [_quote_ident(name) for name in base_columns]
         projections.extend(

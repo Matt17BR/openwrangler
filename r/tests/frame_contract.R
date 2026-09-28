@@ -10603,7 +10603,17 @@ assert_error(
     "group",
     drop_original = TRUE
   ),
-  "may produce at most 2048 R columns"
+  "One-hot encoding would give the result more than 2,048 columns"
+)
+assert_error(
+  openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    wide_categorical,
+    1L,
+    "group",
+    "|",
+    drop_original = TRUE
+  ),
+  "Multi-label binarization would give the result more than 2,048 columns"
 )
 large_category_count <- openwrangler_r_frame_contract$limits$columns
 large_category_rows <- 8193L

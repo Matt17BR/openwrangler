@@ -633,6 +633,10 @@ report the first colliding column; earlier selected columns may already have bee
 factorizes text, integer and datetime columns once and builds each indicator from the codes, because those values are
 equal exactly when their codes are; other columns compare the column with each category.
 Generated Pandas One-hot names use the live scalar formatting, so compiled plans bind to the same output columns.
+Every live engine refuses a One-hot or Multi-label result with more than 2,048 visible columns, R's frame limit,
+before building any indicator. Pandas Multi-label counts its labels from a literal split first, because
+`str.get_dummies` compares each label with every value. Generated R code checks the same limit; generated Python code
+does not yet.
 
 Live and generated Custom Code share a compiler that places parsed user statements inside a fixed function template.
 This preserves string values, comments and valid indentation. Python's parser owns line endings and syntax; user-code
