@@ -143,6 +143,8 @@ def rows(frame: Any) -> list[tuple[Any, ...]]:
             }
         )
         try:
+            if frame.checkpoint is not None:
+                frame.checkpoint.attach(connection)
             return list(connection.execute(frame.sql).fetchall())
         finally:
             connection.close()
@@ -1112,6 +1114,84 @@ def test_duckdb_directional_fill_preserves_case_variant_internal_name_columns() 
         assert normalized_rows(generated) == expected
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("reordered", [False, True])
+def test_duckdb_row_id_fills_store_values_that_match_the_fallback(reordered: bool) -> None:
+    engine = DuckDBEngine()
+    sort = {
+        "id": "sort",
+        "kind": "sortRows",
+        "params": {"rules": [{"column": bound_ref("c:source:0", "row", 0), "direction": "desc", "nulls": "last"}]},
+    }
+    operations = [
+        directional_step("forward"),
+        directional_step("backward", max_gap=None),
+        fill_step(
+            bound_ref("c:source:3", "value", 3),
+            {"kind": "linearInterpolation", "coordinate": bound_ref("c:source:0", "row", 0), "maxGap": 1},
+        ),
+    ]
+    stored: list[Path] = []
+    try:
+        plain = directional_frame(engine)
+        source = engine.ensure_row_ids(plain, "fill")
+        if reordered:
+            plain = engine.apply_transform(plain, sort)
+            source = engine.apply_transform(source, sort)
+        assert source.row_id_order is not reordered
+        source_ids = [row[-1] for row in rows(source)]
+        for operation in operations:
+            live = engine.apply_transform(source, operation)
+            assert live.checkpoint is not None
+            assert live.row_id_order is source.row_id_order
+            assert live.columns == source.columns
+            assert [row[:-1] for row in normalized_rows(live)] == normalized_rows(
+                engine.apply_transform(plain, operation)
+            )
+            assert [row[-1] for row in rows(live)] == source_ids
+            stored.append(Path(live.checkpoint.temporary.name))
+
+        chained = engine.apply_transform(engine.apply_transform(source, operations[0]), operations[1])
+        expected = engine.apply_transform(engine.apply_transform(plain, operations[0]), operations[1])
+        assert [row[:-1] for row in normalized_rows(chained)] == normalized_rows(expected)
+        assert chained.checkpoint is not None
+        assert chained.checkpoint.parent is not None
+        stored.extend(Path(checkpoint.temporary.name) for checkpoint in (chained.checkpoint, chained.checkpoint.parent))
+    finally:
+        engine.close()
+    assert not any(path.exists() for path in stored)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_pandas_directional_runs_match_a_run_by_run_reference(seed: int) -> None:
+    import numpy as np
+
+    from openwrangler_runtime.engines._pandas_directional_fill_helpers import _open_wrangler_fill_directional_gaps
+
+    generator = np.random.default_rng(seed)
+    for _ in range(200):
+        size = int(generator.integers(0, 30))
+        missing = generator.random(size) < generator.random()
+        for direction in ("forward", "backward"):
+            for max_gap in (None, 1, 2, 5):
+                expected = list(range(size))
+                cursor = 0
+                while cursor < size:
+                    if not missing[cursor]:
+                        cursor += 1
+                        continue
+                    start = cursor
+                    while cursor < size and missing[cursor]:
+                        cursor += 1
+                    anchor = start - 1 if direction == "forward" else cursor
+                    if (max_gap is None or cursor - start <= max_gap) and 0 <= anchor < size:
+                        expected[start:cursor] = [anchor] * (cursor - start)
+                kept = _open_wrangler_fill_directional_gaps(missing, direction, max_gap)
+                if expected == list(range(size)):
+                    assert kept is None
+                else:
+                    assert kept is not None and kept.tolist() == expected
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

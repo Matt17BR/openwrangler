@@ -7568,19 +7568,15 @@ def _pandas_fill_missing_directional(
 
     original = series
     series = _pandas_scalar_values(series)
-    ordered = series.iloc[order].reset_index(drop=True)
-    ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
-    ordered_temporal = _pandas_arrow_temporal_array(ordered)
-    result = _open_wrangler_fill_directional_gaps(
-        ordered, ordered_missing, ordered_temporal, direction, max_gap, EngineError
-    )
-    if result is None:
+    ordered_missing = (_null_mask(series) | _nan_mask(series)).to_numpy(dtype=bool)[order]
+    kept = _open_wrangler_fill_directional_gaps(ordered_missing, direction, max_gap)
+    if kept is None:
         return original.copy()
     inverse = np.empty(len(order), dtype=np.int64)
     inverse[order] = np.arange(len(order), dtype=np.int64)
-    restored = result.iloc[inverse].copy()
+    # Taking from the column's own storage keeps its dtype and exact values, such as Arrow extrema.
+    restored = series.take(order[kept][inverse])
     restored.index = series.index
-    restored.name = series.name
     return restored
 
 
@@ -8489,22 +8485,17 @@ def _generated_pandas_fill_directional_helpers() -> list[str]:
         "        order = order[relative_order]",
         "    original = series",
         "    series = _open_wrangler_scalar_values(series)",
-        "    ordered = series.iloc[order].reset_index(drop=True)",
         (
-            "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
-            "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+            "    ordered_missing = (_open_wrangler_mask(series, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(series, _open_wrangler_is_nan)).to_numpy(dtype=bool)[order]"
         ),
-        "    ordered_temporal = _open_wrangler_arrow_temporal_array(ordered)",
-        "    result = _open_wrangler_fill_directional_gaps(",
-        "        ordered, ordered_missing, ordered_temporal, direction, max_gap, ValueError",
-        "    )",
-        "    if result is None:",
+        "    kept = _open_wrangler_fill_directional_gaps(ordered_missing, direction, max_gap)",
+        "    if kept is None:",
         "        return original.copy()",
         "    inverse = np.empty(len(order), dtype=np.int64)",
         "    inverse[order] = np.arange(len(order), dtype=np.int64)",
-        "    restored = result.iloc[inverse].copy()",
+        "    restored = series.take(order[kept][inverse])",
         "    restored.index = series.index",
-        "    restored.name = series.name",
         "    return restored",
         "",
         "",

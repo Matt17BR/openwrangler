@@ -194,6 +194,8 @@ class _DuckDBCheckpoint:
     temporary: TemporaryDirectory[str]
     alias: str
     ordinal: str
+    # Stored fill results join the input plan's rows, so reads also attach its checkpoint.
+    parent: _DuckDBCheckpoint | None = None
     closed: bool = False
 
     @property
@@ -203,6 +205,8 @@ class _DuckDBCheckpoint:
     def attach(self, connection: Any) -> None:
         if self.closed:
             raise EngineError("The captured DuckDB result is closed.")
+        if self.parent is not None:
+            self.parent.attach(connection)
         connection.execute(f"ATTACH {_sql_literal(self.path)} AS {_quote_ident(self.alias)} (READ_ONLY, TYPE DUCKDB)")
 
     def close(self) -> None:
@@ -2950,30 +2954,107 @@ class DuckDBEngine(DataFrameEngine):
             )
         gap_size = f"coalesce({following}, {total} + 1) - coalesce({previous}, 0) - 1"
         eligible = f"NOT ({valid}) AND {candidate} IS NOT NULL"
+        gap_windows = ""
         if max_gap is not None:
             eligible += f" AND ({gap_size}) <= {int(max_gap)}"
+            # A descending running minimum is the following anchor; DuckDB evaluates a frame that
+            # reaches the end of a large window far more slowly.
+            gap_windows = (
+                f"max(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY "
+                f"{calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
+                f"min(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY {calculation} DESC "
+                f"ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {following}, "
+                f"count(*) OVER () AS {total}, "
+            )
         replacement = f"CASE WHEN {eligible} THEN {candidate} ELSE {target_identifier} END"
-        temporary_names = [
-            original_name,
-            calculation_name,
-            previous_name,
-            next_name,
-            total_name,
-            candidate_name,
-        ]
-        query = (
-            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+        temporary_names = [calculation_name, candidate_name]
+        if max_gap is not None:
+            temporary_names += [previous_name, next_name, total_name]
+        stages = (
             f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation} "
             "FROM numbered), "
-            f"context AS (SELECT *, max(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY "
-            f"{calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
-            f"min(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY {calculation} "
-            f"ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
-            f"count(*) OVER () AS {total}, {candidate_expression} AS {candidate} FROM ordered) "
-            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
-            f"{replacement} AS {target_identifier}) FROM context ORDER BY {original}"
+            f"filled AS (SELECT *, {gap_windows}{candidate_expression} AS {candidate} FROM ordered)"
         )
-        return self._relation(frame, query)
+        return self._restored_order_fill(
+            frame,
+            target,
+            [rule["column"] for rule in order_rules],
+            original_name,
+            stages,
+            replacement,
+            temporary_names,
+        )
+
+    def _restored_order_fill(
+        self,
+        frame: Any,
+        target: str,
+        inputs: Sequence[str],
+        original_name: str,
+        stages: str,
+        replacement: str,
+        temporary_names: Sequence[str],
+    ) -> Any:
+        """Fill ``target`` with window ``stages`` that sort every row, keeping the input row order.
+
+        ``stages`` are the CTEs after ``numbered``, which numbers input rows as ``original_name``; the last is
+        ``filled``. File sessions run the stages once over only the private row ID and ``inputs`` and store each
+        row's filled value in a private checkpoint. Reads join those values back to the input rows by ID instead
+        of sorting every column again.
+        """
+
+        source = self.normalize(frame)
+        original = _quote_ident(original_name)
+        target_identifier = _quote_ident(target)
+        row_id = self._row_id_column(source)
+        if row_id is None or not isinstance(source, DuckDBSqlPlan) or self._database_connection is not None:
+            return self._relation(
+                source,
+                f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), {stages} "
+                f"SELECT * EXCLUDE ({_identifier_list([original_name, *temporary_names])}) REPLACE ("
+                f"{replacement} AS {target_identifier}) FROM filled ORDER BY {original}",
+            )
+        identifier = _quote_ident(row_id)
+        narrow = _identifier_list(list(dict.fromkeys([row_id, target, *inputs])))
+        # Rows already read in row-ID order need no window to number them.
+        numbering = identifier if source.row_id_order else "row_number() OVER ()"
+        checkpoint = _DuckDBCheckpoint(
+            TemporaryDirectory(prefix="open-wrangler-duckdb-fill-"),
+            "__open_wrangler_fill_" + uuid4().hex,
+            original_name,
+            source.checkpoint,
+        )
+        accepted = False
+        try:
+            alias = _quote_ident(checkpoint.alias)
+            with self._terminal_connection(source) as (connection, source_sql):
+                connection.execute(f"ATTACH {_sql_literal(checkpoint.path)} AS {alias} (TYPE DUCKDB)")
+                connection.execute(
+                    f"CREATE TABLE {alias}.main.step AS "
+                    + _compose_sql(
+                        source_sql,
+                        f"WITH numbered AS (SELECT {narrow}, {numbering} AS {original} FROM ow), {stages} "
+                        f"SELECT {identifier}, {original}, {replacement} AS {target_identifier} FROM filled",
+                    )
+                )
+                connection.execute(f"DETACH {alias}")
+            plan = self._relation_from_sql(
+                _compose_sql(
+                    source.sql,
+                    f"SELECT ow.* REPLACE (step.{target_identifier} AS {target_identifier}) FROM ow "
+                    f"JOIN {alias}.main.step AS step ON ow.{identifier} = step.{identifier} ORDER BY step.{original}",
+                ),
+                checkpoint=checkpoint,
+            )
+            with self._lifecycle_lock:
+                if self._closed:
+                    raise EngineError("The DuckDB engine is closed.")
+                self._checkpoints.add(checkpoint)
+            accepted = True
+            return replace(plan, row_id_order=source.row_id_order)
+        finally:
+            if not accepted:
+                checkpoint.close()
 
     def _fill_missing_linear_interpolation(
         self,
@@ -3123,22 +3204,22 @@ class DuckDBEngine(DataFrameEngine):
             f"ELSE (1.0 - {weight}) * {left_value} + {weight} * {right_value} END"
         )
         replacement = f"CASE WHEN {eligible} THEN CAST({interpolated} AS {target_type}) ELSE {target_identifier} END"
-        query = (
-            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+        temporary_names.remove(original_name)
+        stages = (
             f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation}, "
             f"{numeric_coordinate} AS {numeric} FROM numbered), "
             f"context AS (SELECT *, max(CASE WHEN {target_present} THEN {calculation} END) OVER "
             f"(ORDER BY {calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
             f"min(CASE WHEN {target_present} THEN {calculation} END) OVER "
-            f"(ORDER BY {calculation} ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
+            f"(ORDER BY {calculation} DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {following}, "
             f"{left_value_expression} AS {left_value}, {right_value_expression} AS {right_value}, "
             f"{left_coordinate_expression} AS {left_coordinate}, "
             f"{right_coordinate_expression} AS {right_coordinate} FROM ordered), "
-            f"weighted AS (SELECT *, {weight_expression} AS {weight} FROM context) "
-            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
-            f"{replacement} AS {target_identifier}) FROM weighted ORDER BY {original}"
+            f"filled AS (SELECT *, {weight_expression} AS {weight} FROM context)"
         )
-        return self._relation(frame, query)
+        return self._restored_order_fill(
+            frame, target, [coordinate], original_name, stages, replacement, temporary_names
+        )
 
     def _fill_missing_grouped_statistic(
         self,
@@ -6271,26 +6352,24 @@ def _ow_fill_missing_directional(df, target, order_rules, direction, max_gap):
         )
     gap_size = "coalesce(" + following + ", " + total + " + 1) - coalesce(" + previous + ", 0) - 1"
     eligible = "NOT (" + valid + ") AND " + candidate + " IS NOT NULL"
+    gap_windows = ""
+    temporary_names = [original_name, calculation_name, candidate_name]
     if max_gap is not None:
         eligible += " AND (" + gap_size + ") <= " + str(int(max_gap))
+        gap_windows = (
+            "max(CASE WHEN " + valid + " THEN " + calculation + " END) OVER (ORDER BY " + calculation
+            + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS " + previous
+            + ", min(CASE WHEN " + valid + " THEN " + calculation + " END) OVER (ORDER BY " + calculation
+            + " DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS " + following
+            + ", count(*) OVER () AS " + total + ", "
+        )
+        temporary_names += [previous_name, next_name, total_name]
     replacement = "CASE WHEN " + eligible + " THEN " + candidate + " ELSE " + target_identifier + " END"
-    temporary_names = [
-        original_name,
-        calculation_name,
-        previous_name,
-        next_name,
-        total_name,
-        candidate_name,
-    ]
     query = (
         "WITH numbered AS (SELECT *, row_number() OVER () AS " + original + " FROM ow), "
         "ordered AS (SELECT *, row_number() OVER (ORDER BY " + calculation_order + ") AS "
         + calculation + " FROM numbered), "
-        "context AS (SELECT *, max(CASE WHEN " + valid + " THEN " + calculation
-        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
-        + previous + ", min(CASE WHEN " + valid + " THEN " + calculation
-        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
-        + following + ", count(*) OVER () AS " + total + ", " + candidate_expression + " AS " + candidate
+        "context AS (SELECT *, " + gap_windows + candidate_expression + " AS " + candidate
         + " FROM ordered) SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
         + replacement + " AS " + target_identifier + ") FROM context ORDER BY " + original
     )
@@ -6452,7 +6531,7 @@ def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
         "context AS (SELECT *, max(CASE WHEN " + target_present + " THEN " + calculation
         + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
         + previous + ", min(CASE WHEN " + target_present + " THEN " + calculation
-        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
+        + " END) OVER (ORDER BY " + calculation + " DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
         + following + ", " + left_value_expression + " AS " + left_value + ", "
         + right_value_expression + " AS " + right_value + ", "
         + left_coordinate_expression + " AS " + left_coordinate + ", "
