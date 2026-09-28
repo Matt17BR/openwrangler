@@ -168,14 +168,9 @@ th:hover .columnResizeHandle,
   display: none;
 }
 
+/* Placed from script: Chromium 150 (VS Code 1.139) stops painting anchor-positioned menus after deep grid scrolls. */
 .columnMenuContent {
   position: fixed;
-  position-area: bottom span-right;
-  position-try-fallbacks:
-    flip-inline,
-    flip-block,
-    flip-inline flip-block;
-  position-visibility: anchors-visible;
   inset: auto;
   margin: 0;
   width: max-content;

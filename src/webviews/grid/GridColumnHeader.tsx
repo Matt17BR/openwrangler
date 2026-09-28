@@ -4,6 +4,7 @@ import type { SortDirection, SortRule } from "../../shared/filterModel";
 import { supportsTypedViewComparison, viewColumnNameUnavailableReason } from "../../shared/filterModel";
 import type { ColumnSchema } from "../../shared/protocol";
 import { columnTypePresentation } from "../columnTypes";
+import { trackColumnMenuPosition } from "./columnMenuPosition";
 import type { BeginColumnResize } from "./useColumnResizeLifecycle";
 
 export function GridColumnHeader({
@@ -77,11 +78,14 @@ export function GridColumnHeader({
   const clipboardOperationGenerationRef = useRef(0);
   const pendingClipboardOperationCountRef = useRef(0);
   const mountedRef = useRef(true);
+  const stopMenuTrackingRef = useRef<(() => void) | undefined>(undefined);
   const [clipboardOperationState, setClipboardOperationState] = useState({ generation: 0, pending: 0 });
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      stopMenuTrackingRef.current?.();
+      stopMenuTrackingRef.current = undefined;
     };
   }, []);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
@@ -125,8 +129,15 @@ export function GridColumnHeader({
     if (!menu) return;
     if (menu.open !== open) menuGenerationRef.current += 1;
     menu.open = open;
-    if (open) menuContentRef.current?.showPopover({ source: menu.querySelector("summary")! });
-    else menuContentRef.current?.hidePopover();
+    stopMenuTrackingRef.current?.();
+    stopMenuTrackingRef.current = undefined;
+    const content = menuContentRef.current;
+    if (!content) return;
+    if (open) {
+      const summary = menu.querySelector("summary")!;
+      content.showPopover({ source: summary });
+      stopMenuTrackingRef.current = trackColumnMenuPosition(content, summary);
+    } else content.hidePopover();
   };
   const closeMenu = () => setMenuOpen(false);
   const runMenuAction = (action: () => void) => {
