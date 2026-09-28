@@ -1922,7 +1922,7 @@ def test_pandas_object_date_inference_checks_each_distinct_value_once(monkeypatc
         assert len(checked) <= len(values)
 
 
-@pytest.mark.parametrize("text_dtype", ["str", "string", "arrow"])
+@pytest.mark.parametrize("text_dtype", ["str", "string", "arrow", "object"])
 def test_pandas_repeated_values_transform_once_with_every_row_results(
     monkeypatch: pytest.MonkeyPatch, text_dtype: str
 ) -> None:
@@ -1935,7 +1935,7 @@ def test_pandas_repeated_values_transform_once_with_every_row_results(
     frame = pd.DataFrame(
         {
             "text": pd.Series(
-                ["a-1 x", None, "B-2", "a-1 x", "Ä-ß", None, "B-2", "a-1 x", "", "a-1 x"] * 2, dtype=dtype
+                ["a-1 x", None, "B-2", "a-1 x", "Ä-ß", float("nan"), "B-2", "a-1 x", "", pd.NA] * 2, dtype=dtype
             ),
             "stamp": stamps,
             "zoned": stamps.tz_localize("Europe/Rome"),

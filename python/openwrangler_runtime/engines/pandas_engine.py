@@ -5063,8 +5063,9 @@ def _pandas_string_values(series: Any) -> Any:
 def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
     """Apply an elementwise ``transform`` once per distinct text, integer or timestamp value.
 
-    These dtypes factorize exactly, keeping each missing value, so every row takes its own value's result. Other
-    dtypes, such as floats where ``-0.0`` equals ``0.0``, and mostly distinct columns transform every row.
+    These dtypes, and object columns holding only text, factorize exactly and keep each kind of missing value, so
+    every row takes its own value's result. Other dtypes, such as floats where ``-0.0`` equals ``0.0`` and objects
+    where ``1`` equals ``True``, and mostly distinct columns transform every row.
     """
     import numpy as np
     import pandas as pd
@@ -5082,7 +5083,13 @@ def _pandas_each_distinct(values: Any, transform: Callable[[Any], Any]) -> Any:
         exact = (
             isinstance(dtype, pd.StringDtype | pd.DatetimeTZDtype)
             or pd.api.types.is_integer_dtype(dtype)
-            or (isinstance(dtype, np.dtype) and dtype.kind == "M")
+            or (
+                isinstance(dtype, np.dtype)
+                and (
+                    dtype.kind == "M"
+                    or (dtype.kind == "O" and pd.api.types.infer_dtype(values, skipna=True) == "string")
+                )
+            )
         )
     if exact:
         codes, uniques = values.array.factorize(use_na_sentinel=False)
