@@ -1883,8 +1883,11 @@ Python engines: doubles show Python's shortest round-trip repr, years before 100
 Python ISO text without a zero fraction, with nanoseconds only when nonzero. POSIXct and UTC clock values are instants
 and carry their offset in the display zone, including offset seconds for historical local mean time; a null or empty
 zone displays in UTC while preserving that original metadata. Parquet timestamps keep their Arrow time zone when R
-recognizes it. Durations show the shortest number and R's unit, such as `90 secs`. Missing, logical and infinite
-cells keep R's `NA`, `TRUE`/`FALSE` and `Inf` tokens. Default POSIXct display and Convert Type to text round
+recognizes it. Durations show the Python engines' timedelta text, built from their seconds with microseconds
+whenever those read back as the same double, and profile as categories. A duration of 2^53 seconds or more, about
+285 million years, is refused like an infinite one, because a double can't hold its clock. Missing, logical and
+infinite cells keep
+R's `NA`, `TRUE`/`FALSE` and `Inf` tokens. Default POSIXct display and Convert Type to text round
 fractional seconds to six decimal places before formatting the calendar portion; Convert Type uses UTC with `Z`.
 Raw values and source metadata remain unchanged. Explicit Format Datetime keeps native R directives, including `%OS6`
 truncation. One Hot keeps its existing double and truncated timestamp labels because they are persistent column names
@@ -2372,8 +2375,8 @@ Every Python engine displays a duration as Python's `timedelta` does, such as `-
 finer than microseconds grows three digits at a time, so remaining nanoseconds show nine digits. Pages, profiles,
 value choices and their ranking, value search and Find use this one text; native engine spellings, such as Pandas
 `0 days 00:00:00` or Polars `1m 40s`, are not search aliases. DuckDB builds the text in SQL from interval parts,
-counting a month as 30 days. R keeps difftime text with its unit, such as `90 secs`, and CSV export keeps each
-engine's native text.
+counting a month as 30 days. R builds the same text from difftime seconds. CSV export writes this text in every
+engine, while Parquet keeps durations; the shared `fixtures/duration-text-contract.json` checks the grid and CSV.
 
 Python duration scalars use exact seconds at this boundary. Ordinary numeric seconds remain numeric when their
 decimal representation preserves the value within the portable microsecond filter syntax; other values use exact

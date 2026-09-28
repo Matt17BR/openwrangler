@@ -649,7 +649,7 @@ describe("canonical R kernel bridge", () => {
     const durationCell: RFrameCell = {
       kind: "duration",
       raw: "90",
-      display: "90 secs",
+      display: "0:01:30",
       isNull: false,
       isNaN: false
     };

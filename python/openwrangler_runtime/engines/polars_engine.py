@@ -1189,6 +1189,13 @@ class PolarsEngine(DataFrameEngine):
                             "regardless of their values or row count. Choose comma, tab, semicolon or pipe "
                             "with a double-quote character."
                         )
+            durations = [
+                _polars_duration_text(pl.nth(position), dtype.time_unit).alias(name)
+                for position, (name, dtype) in enumerate(schema.items())
+                if isinstance(dtype, pl.Duration)
+            ]
+            if durations:
+                frame = frame.with_columns(durations)
         with (
             path.open_binary_writer()
             if isinstance(path, ExportWriterPath)

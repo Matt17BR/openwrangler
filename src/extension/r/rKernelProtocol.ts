@@ -3086,6 +3086,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       if (
         summary.type === "boolean" ||
         summary.type === "string" ||
+        summary.type === "duration" ||
         summary.type === "date" ||
         summary.type === "datetime"
       ) {
@@ -3094,7 +3095,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       continue;
     }
     if (visualization.kind === "numeric") {
-      if (summary.type !== "integer" && summary.type !== "float" && summary.type !== "duration") {
+      if (summary.type !== "integer" && summary.type !== "float") {
         fail(`${label} has a numeric visualization for the wrong column type.`);
       }
       let binCount = 0;
@@ -3118,7 +3119,7 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       const categoryCount =
         visualization.categories.reduce((count, entry) => count + entry.count, 0) + visualization.otherCount;
       if (
-        summary.type !== "string" ||
+        (summary.type !== "string" && summary.type !== "duration") ||
         categoryValues.size !== visualization.categories.length ||
         visualization.categories.length !==
           Math.min(R_FRAME_CONTRACT_LIMITS.chartCategories, summary.topValues.length) ||

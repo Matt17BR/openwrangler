@@ -219,7 +219,7 @@ export function rKernelFrameContract(
     rKernelTestCell("integer", "9223372036854775807", "9223372036854775807"),
     rKernelTestCell("date", "2026-08-05", "2026-08-05"),
     rKernelTestCell("datetime", "1785945600", "2026-08-05T12:00:00Z"),
-    rKernelTestCell("duration", "90", "90 secs"),
+    rKernelTestCell("duration", "90", "0:01:30"),
     { kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false },
     { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false },
     { kind: "infinity", raw: null, display: "Inf", isNull: false, isNaN: false, sign: 1 }

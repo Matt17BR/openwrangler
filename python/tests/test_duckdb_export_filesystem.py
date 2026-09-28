@@ -293,6 +293,8 @@ def test_relation_is_released_before_filesystem_unregisters(tmp_path: Path) -> N
     relation_reference: weakref.ReferenceType[Any] | None = None
 
     class Relation:
+        types: tuple[Any, ...] = ()
+
         def __init__(self, connection: Connection) -> None:
             self.connection = connection
 
