@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -95,8 +96,10 @@ def lookup_step(
 def generated(engine: DataFrameEngine, frame: Any, step: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
     exec(compile(engine.compile_plan([step]), "<lookup-columns>", "exec"), namespace, namespace)
-    # Generated DuckDB code receives the user's relation, not the engine's replayable plan.
-    return namespace["clean_data"](duckdb.sql(frame.sql) if isinstance(frame, DuckDBSqlPlan) else frame)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        # Generated DuckDB code receives the user's relation, not the engine's replayable plan.
+        return namespace["clean_data"](duckdb.sql(frame.sql) if isinstance(frame, DuckDBSqlPlan) else frame)
 
 
 def both(engine: DataFrameEngine, frame: Any, step: dict[str, Any]) -> list[Any]:

@@ -47,7 +47,11 @@ def _open_wrangler_replace_matches(series, semantic_type, pattern, replacement, 
         except (TypeError, ValueError, ArithmeticError):
             codes, uniques = np.arange(len(values)), list(values)
     else:
-        codes, found = pd.factorize(selected.array, use_na_sentinel=True)
+        values = selected.array
+        # Pandas 2 warns when factorizing its NumPy array wrapper.
+        if isinstance(values, pd.arrays.NumpyExtensionArray):
+            values = values.to_numpy()
+        codes, found = pd.factorize(values, use_na_sentinel=True)
         uniques = list(found)
 
     widths = {np.dtype("float32"): np.float32, np.dtype("float16"): np.float16}

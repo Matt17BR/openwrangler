@@ -5,6 +5,7 @@ import decimal
 import json
 import random
 import re
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -152,7 +153,9 @@ def bind(engine: DataFrameEngine, frame: Any, names: Sequence[str], **params: An
 def generated(engine: DataFrameEngine, frame: Any, step: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
     exec(compile(engine.compile_plan([step]), "<replace-matches>", "exec"), namespace, namespace)
-    return namespace["clean_data"](frame)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        return namespace["clean_data"](frame)
 
 
 def both(engine: DataFrameEngine, frame: Any, step: dict[str, Any]) -> list[Any]:

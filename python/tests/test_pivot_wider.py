@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -106,8 +107,6 @@ def test_pandas_mixed_numeric_pivot_retains_each_joint_groups_first_identifier_r
 
 @pytest.mark.parametrize("names", [["x", "x"], ["x", "y"]])
 def test_pandas_pivot_preserves_distinct_fractional_sparse_identifiers(names: list[str]) -> None:
-    import warnings
-
     import numpy as np
 
     with warnings.catch_warnings(record=True) as caught:
@@ -185,7 +184,9 @@ def rows(frame: Any) -> list[tuple[Any, ...]]:
 def execute_generated(engine: Any, frame: Any, step: dict[str, Any]) -> Any:
     namespace: dict[str, Any] = {}
     exec(engine.compile_plan([step]), namespace, namespace)
-    return namespace["clean_data"](frame)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        return namespace["clean_data"](frame)
 
 
 @pytest.mark.parametrize(

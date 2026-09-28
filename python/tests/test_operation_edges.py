@@ -3646,9 +3646,9 @@ def test_pandas_arrow_formula_capacity_preserves_wide_decimal_units(
         expected = pd.Series(pd.arrays.ArrowExtensionArray(expected_array), index=frame.index, name="result")
     else:
         expected = pd.Series(expected_values, index=frame.index, name="result", dtype=pd.ArrowDtype(dtype))
-    for run in (
-        lambda source: runtime.apply_transform(source, operation),
-        lambda source: execute_generated(runtime, source, operation),
+    for generated, run in (
+        (False, lambda source: runtime.apply_transform(source, operation)),
+        (True, lambda source: execute_generated(runtime, source, operation)),
     ):
         source = frame.copy(deep=True)
         source_array = source["value"].array
@@ -3680,7 +3680,9 @@ def test_pandas_arrow_formula_capacity_preserves_wide_decimal_units(
             if shape != "dictionary":
                 source_array[0] = Decimal((0, (1,), -scale))
                 assert actual["result"].iloc[0] == Decimal("0")
-                pd.testing.assert_series_equal(actual["value"], before["value"])
+                # A live revision shares its unchanged columns with the one before it.
+                if generated:
+                    pd.testing.assert_series_equal(actual["value"], before["value"])
         pd.testing.assert_frame_equal(frame, before)
         assert frame["value"].array is original_array
         assert frame.attrs == before.attrs

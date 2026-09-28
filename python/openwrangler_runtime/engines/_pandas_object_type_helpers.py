@@ -32,7 +32,7 @@ def _open_wrangler_object_semantic_type(series, is_missing_scalar, is_integer_sc
         if inferred == "date":
             # Inferred dates hold only hashable dates, datetimes and missing markers, which never
             # compare equal across those families, so the distinct values decide the same type.
-            values = pd.unique(values)
+            values = values.unique()
         values = [value for value in values if not is_missing_scalar(value)]
         if values and all(isinstance(value, bool) for value in values):
             return "boolean"
