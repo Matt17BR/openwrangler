@@ -154,7 +154,7 @@ export function releasedRCategoricalGeneratedCall(expected: ReleasedRCategorical
     `storageMode = ${JSON.stringify(expected.sourceStorageMode)}, classes = ${sourceClasses}, ` +
     `timezone = ${sourceTimezone}, units = ${sourceUnits})), ${operationArguments}, ` +
     `${expected.dropOriginal ? "TRUE" : "FALSE"}, ` +
-    `2048L, 1024L, 8192L, 16777216L, 67108864L, 8L, 1024L, 512L, .ow_result_ids, ` +
+    `2048L, 1024L, 8192L, 16777216L, 8L, 1024L, 512L, .ow_result_ids, ` +
     `${JSON.stringify(expected.stepId)})`
   );
 }

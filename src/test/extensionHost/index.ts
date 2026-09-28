@@ -1391,7 +1391,15 @@ function assertViewingDuckDbRelationCapabilities(capabilities: SessionMetadata["
   const { supportedOperations = [], ...flags } = capabilities;
   assert.deepEqual(
     flags,
-    { editable: false, lazy: false, cancel: false, exportCsv: false, exportParquet: false, notebookInsert: true },
+    {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      find: true,
+      notebookInsert: true
+    },
     context
   );
   assert.equal(supportedOperations.includes("sortRows"), true, context);
@@ -16394,7 +16402,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
             (tab) =>
               !previousTabs.has(tab) &&
               isOpenWranglerSessionTab(tab) &&
-              tab.label === 'Open Wrangler: "selected schema"."$(add)" (sample.duckdb)'
+              tab.label === 'Open Wrangler: "selected schema"."$(add)" (sample.duckdb) (Python · DuckDB)'
           );
       const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Open DuckDB Table" }).last();
       const failures: unknown[] = [];

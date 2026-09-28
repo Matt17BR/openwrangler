@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { Frame, Locator, Page } from "playwright-core";
+import { engineLabel } from "../../shared/protocol";
 import { assertExactBytes } from "./acceptanceSourceFixture";
 import { consumeLayoutCommittedRendererValue } from "./acknowledgedRenderer";
 import { dismissStaleWorkbenchHover } from "./cleanedDataExport";
@@ -388,7 +389,10 @@ export function createPackagedFileLaunchSurfaces(
           () => {
             const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
             return Boolean(
-              tab && isOpenWranglerSessionTab(tab) && tab.label === `Open Wrangler: ${active.metadata.source.label}`
+              tab &&
+              isOpenWranglerSessionTab(tab) &&
+              tab.label ===
+                `Open Wrangler: ${active.metadata.source.label} (${engineLabel(active.metadata.backend, active.metadata.rLibrary)})`
             );
           },
           10_000,
