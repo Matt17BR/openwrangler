@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from glob import escape as escape_glob
 from inspect import getsource
-from math import frexp, inf, isfinite, isinf, isnan, ldexp, nextafter
+from math import copysign, frexp, inf, isfinite, isinf, isnan, ldexp, nextafter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from textwrap import indent
@@ -1595,8 +1595,13 @@ class DuckDBEngine(DataFrameEngine):
         matches = {}
         for index, position in enumerate(positions):
             column = visible[position]
-            if query.could_match(_semantic_type(types[column])):
-                matches[index] = _duckdb_find_match(_quote_ident(column), types[column], query)
+            match = (
+                _duckdb_find_match(_quote_ident(column), types[column], query)
+                if query.could_match(_semantic_type(types[column]))
+                else None
+            )
+            if match is not None:
+                matches[index] = match
         masks: list[Any | None] = [None] * len(positions)
         if not matches:
             return masks
@@ -4399,8 +4404,20 @@ def _duckdb_find_text_match(identifier: str, raw_type: str, query: FindQuery) ->
     return f"({_valid_predicate(identifier, raw_type)} AND {match})"
 
 
-def _duckdb_find_match(identifier: str, raw_type: str, query: FindQuery) -> str:
-    """SQL marking the rows of ``ow`` whose displayed cell text matches ``query``."""
+def _duckdb_find_match(identifier: str, raw_type: str, query: FindQuery) -> str | None:
+    """SQL marking the rows of ``ow`` whose displayed cell text matches ``query``, or None when no row can match."""
+    semantic_type = _semantic_type(raw_type)
+    if query.whole_cell and (semantic_type == "integer" or raw_type.strip().upper() == "DOUBLE"):
+        number = query.whole_cell_number(semantic_type)
+        if number is None:
+            return None
+        # TRY_CAST gives NULL for an integer outside the column's type, which no row equals.
+        match = f"{identifier} = TRY_CAST({_sql_literal(repr(number))} AS {raw_type})"
+        if isinstance(number, float) and number == 0:
+            # Equality merges signed zeros, which the grid spells as 0.0 and -0.0.
+            sign = f"system.main.signbit({identifier})"
+            match = f"({match} AND {sign if copysign(1.0, number) < 0 else f'NOT {sign}'})"
+        return match
     if not (
         raw_type in _DUCKDB_FIND_DISTINCT_TYPES
         or raw_type.startswith("DECIMAL(")

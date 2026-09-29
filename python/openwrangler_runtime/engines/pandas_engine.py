@@ -9489,6 +9489,12 @@ def _pandas_find_mask(series: Any, query: FindQuery) -> Any:
     objects = isinstance(dtype, np.dtype) and dtype.kind == "O"
     text = objects and pd.api.types.infer_dtype(values, skipna=True) == "string"
     native = (not objects and not isinstance(dtype, pd.CategoricalDtype)) or text
+    if (
+        query.whole_cell
+        and native
+        and (column_type == "integer" or (column_type == "float" and _pandas_narrow_float_type(dtype) is None))
+    ):
+        return _pandas_whole_number_mask(values, query.whole_cell_number(column_type))
     try:
         if objects and not text:
             # Equal objects of different types, such as 1, 1.0 and True, are spelled differently.
@@ -9526,6 +9532,21 @@ def _pandas_find_mask(series: Any, query: FindQuery) -> Any:
         zeros = row_numbers == 0
         positive, negative = query.label_matches(["0.0", "-0.0"])
         mask[zeros] = np.where(np.signbit(row_numbers[zeros]), negative, positive)
+    return mask
+
+
+def _pandas_whole_number_mask(values: Any, number: int | float | None) -> Any:
+    """Mark the rows of a native integer or binary64 column equal to ``number``, keeping -0.0 apart from 0.0."""
+    import numpy as np
+
+    dtype = values.dtype
+    storage = np.dtype(getattr(dtype, "numpy_dtype", getattr(dtype, "subtype", dtype)))
+    if number is None or (storage.kind in "iu" and not np.iinfo(storage).min <= number <= np.iinfo(storage).max):
+        return None
+    # Arrow compares Python integers as int64, so the number takes the column's own storage type.
+    mask = (values == storage.type(number)).to_numpy(dtype=bool, na_value=False)
+    if storage.kind == "f" and number == 0:
+        mask = mask & (np.signbit(values.to_numpy(dtype=float, na_value=np.nan)) == np.signbit(number))
     return mask
 
 
