@@ -1764,8 +1764,7 @@ bounded binary R requests through the supervisor; stdin closure, target exit or 
 including descendants. A blocked child writer cannot block lease-loss detection. Cleanup removes the private root only
 after the supervisor reports the exact job-empty token and closes. Forced supervisor termination without that receipt
 preserves the root and reports unconfirmed cleanup. The supervisor compiles its bundled C# owner through Windows
-PowerShell `Add-Type`, after loading its built-in Utility module directly from `$PSHOME` so inherited module search
-paths do not delay startup. Policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
+PowerShell `Add-Type`; policy or compilation failure stops opening with a diagnostic. An initial startup failure keeps
 its cause through cleanup; only an established runtime publishes invalidation. This file path does not enable
 Windows document or terminal execution. PowerShell’s temporary compiler runs before the R Job Object exists.
 Abrupt helper termination during compilation does not establish compiler-child containment; the host reports
@@ -1808,9 +1807,7 @@ Source and destination identity checks still protect the input from exports.
 
 Parquet input uses Arrow 23.0.1.1 or newer for one data read. `nanoparquet` 0.5.1 or newer validates physical and
 logical footer metadata before that read. It admits flat Boolean, text, floating-point, signed integer and Date
-columns, with reader-preserved factor metadata. When the first row group has 65,536 to 1,048,576 rows, plain text
-columns whose first-group dictionary is at most an eighth of that group's rows are read as dictionary codes, so each
-repeated string is decoded once, then expanded to the same character vector. Stored dictionaries still load as
+columns, with reader-preserved factor metadata. Text columns load as character vectors and stored dictionaries as
 factors. Every column converts eagerly instead of through Arrow's lazy vectors, so later full scans read ordinary R
 memory. Integer64 input also requires `bit64`. Modern `INT` and
 [legacy integer annotations](https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-integer-convertedtype)
@@ -1836,7 +1833,6 @@ adjusted values display in UTC. Clock millisecond/microsecond values must be wit
 matching the display and filter parser; direct notebook columns use the same bound. Reader-preserved durations retain
 the below-2^51 tick bound and a consistent
 seconds/milliseconds/microseconds/nanoseconds scale, checked against Arrow arrays without a second data read.
-Text columns become ordinary character vectors once, because Arrow's lazy strings rebuild every value on each scan.
 
 JSONL/NDJSON input uses `jsonlite` and admits flat object records with one scalar type per column. Missing keys and
 JSON null become missing values; field order follows first occurrence. Blank lines are skipped. Numeric token text
@@ -1918,21 +1914,14 @@ row-identity and diff checks. Live and generated input/output validation accept 
 
 Standalone captures own an isolated snapshot, using `data.table::copy()` for data tables. Live viewing instead retains
 the verified variable binding, reads its current values, and refuses changed shape, schema, class or row-name mode.
-The first editing draft of a notebook variable isolates the original with `data.table::copy()` for data tables. Other
-frames copy each atomic column and its attributes directly, without dispatching caller S3 methods; list and other object
-columns are copied through R serialization. A managed file frame exists only inside Open Wrangler's R process, so its
-first draft shares the loaded vectors. Captured frames are never modified in place. An operation result built from
-captured or new vectors is captured without a second copy; Custom Code results, captures that restore element names,
-and data.tables whose columns carry element names, which `data.table::copy` drops, are copied again. Rename, Clone,
-Drop, Select, Look Up Columns, row selections and the steps that replace or add whole columns, such as Fill Missing
-Values, Convert Type, Formula Column, Format Datetime, One-hot Encode, Multi-label Binarize and the text and number
-steps, share their input's other column vectors. A data.table input, or a `data.table` library run over columns
-with element names, still copies first because data.table changes its container and strips element names by
-reference. A derived capture skips rescanning clock, factor and nested columns identical to its already validated
-source column; after a row selection, clock and list columns are compared with the source column's selected rows. A
-row-preserving result inherits the source's validated row identities. A Custom Code result also skips those rescans
-for each column identical to the captured source column whose identity it keeps, and skips its output text and value
-checks when such a column is flat; nested columns still charge the operation budget.
+The first editing draft of a notebook variable isolates the original without dispatching caller S3 methods: data
+tables use `data.table::copy()`, atomic columns are copied with their attributes, and list and other object columns
+are copied through R serialization. A managed file frame exists only inside Open Wrangler's R process, so its first
+draft shares the loaded vectors. Captured frames are never modified in place. Operation results share their input's
+unchanged column vectors, except where data.table would change them or strip element names by reference; Custom Code
+results are copied again. Validating a derived capture skips columns identical to an already validated source
+column, though nested columns still charge the operation budget. A row-preserving result inherits the source's
+validated row identities.
 Committed and draft results remain separate, and targets use stable IDs plus captured names. Ordinary cleaning drops
 inert column-element names according to native data-table copy semantics; the explicit retention exceptions are
 described below.
@@ -1978,57 +1967,32 @@ value selections, stable ties and per-key missing placement share the cleaning F
 may retain a compatible data-table key; explicit sorting clears the data-table key. `NA` and
 `NaN` remain distinct. Null filter logic is invalid, not a default AND; picker search is a required nullable field.
 Optional value-filter search must be text when present. Invalid viewing requests leave an existing draft usable.
-Native R combines masks incrementally, avoiding lists of every condition and column mask while still evaluating every condition.
 Date value selections and profile keys group positive and negative zero as the same epoch day without changing
 source storage. POSIXct and difftime keys retain their existing signed-zero identities.
-The shared integer64 ordering helper uses canonical decimal text from the verified native converter, then stable radix ordering
-by sign, digit width and digits. It preserves exact values without per-row decimal normalization or comparison.
+Integer64 sorts compare exact values.
 Live cache integrity and sort-cache freshness checks compare floating-point storage exactly and retain normal
 attribute checks. This distinguishes integer64 values and missing sentinels that R's default `identical()` comparison
 treats as equal.
 
-Base R, dplyr, data.table and collapse share these viewing calculations. Library selection changes supported cleaning
-verbs and generated code. The [performance review](https://github.com/Matt17BR/openwrangler/issues/1622) records the
-measurements and alternatives behind the current decisions; opening a source with each library checks compatibility,
-not comparative package speed.
-
-| Calculation     | Current decision                                                                                                                                                                                                                                                                                                                        |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Filters         | Keep typed native masks and physical row positions. Direct numeric comparisons, incremental mask combination and bounded text-fold reuse remove measured work while preserving the common predicate rules.                                                                                                                              |
-| Sorts           | Keep stable native radix, exact integer64 and vctrs clock ordering, with bounded managed-file order reuse. Alternative integer64 ranking calls either failed exact-range controls or required additional method ownership and copies. Existing selected-package cleaning adapters are unaffected.                                       |
-| Column profiles | Keep the complete result shared by headers and drawers. Opening a drawer reuses its completed header summary without another request. [Drawer-only attribution](https://github.com/Matt17BR/openwrangler/issues/1622#issuecomment-5738658327) measured the extra reductions without demonstrating a net benefit from partial summaries. |
-
-Exact mean uses bounded vectorized accumulation to preserve numerical cancellation, subnormal and rounding behavior.
-Error-free extraction first reduces each chunk to a few exact partial sums; only those and any remainders too small for
-extraction enter the limb accumulator.
-Partial summaries would add completeness tracking, loading and upgrade states, cancellation and view restoration
-rules, and could repeat shared scanning when the drawer opens.
-
-These choices have costs: text-fold reuse can slow unique-text inputs and increase temporary heap use; sorted reuse
-adds source-order recovery and can retain extra pending-profile vectors. Initial filters and sorts remain synchronous,
-and sort changes reset UI profiling. The measurements do not establish that shared code is fastest for every input.
+Base R, dplyr, data.table and collapse share these viewing calculations; library selection changes only the
+cleaning verbs and generated code. The [performance review](https://github.com/Matt17BR/openwrangler/issues/1622)
+records the measurements and alternatives behind the current filter, sort and profile decisions. Column profiles
+compute one complete result shared by headers and drawers, so opening a drawer reuses its header summary. Partial
+summaries were not adopted because they would add completeness, loading, cancellation and view-restoration states.
+Initial filters and sorts remain synchronous, and sort changes reset UI profiling.
 
 R view sorts build one stable radix order across all rules; it must match each library's committed Sort Rows order.
-Each managed file agent can retain one row selection, shared by established-session pages, profiles and
-value queries. Reuse requires the same capture and resolved filter, after the usual source and schema validation.
-The entry holds one integer position vector, in source order or the last requested sort order. An unfiltered sorted
-view keeps its full order there rather than in the 32 MiB sort cache, which copies the sort columns to detect
-in-place notebook changes. Pages with the same resolved sort rules reuse that order. Sort changes start from
-physical capture order so ties remain stable.
-Unsorted pages, profiles and value queries recover source order without replacing the cached sort; that recovery
-adds work and allocates another vector. Pending profiles may each retain a recovered vector until completion.
-The positions, filter key and sort rules together may occupy at most 64 MiB. A filter miss releases the old entry
-before scanning; oversized selections remain usable without retention. Once filter membership is retained, a failed
-sort or over-budget sort metadata leaves that entry intact. This bound excludes the session-owned frame and
-pending-profile vectors.
-A page or profile without filters releases an entry built for another filter, and one without filters or sorts
-releases any entry. An auxiliary value lookup with no remaining filters bypasses the
-cache, preserving the grid's existing selection and order; a nonempty lookup uses the usual replacement rules.
-Source-reaching edits or replay, session close and agent disposal also release it before execution or cleanup can
-fail. Initial opening, inspection and mutation responses do not populate it; later reads may reuse a published active draft.
-Live notebooks, R terminals and managed documents keep the 32 MiB sort cache. Initial and
-uncached filtering and sorting still run synchronously. Reuse does not promise a net improvement for every query
-sequence: changing sort also resets UI profiling, and each new profile may need source-order recovery.
+Each managed file agent can retain one row selection for the same capture and resolved filter, shared by
+established-session pages, profiles and value queries. It holds positions in source order or in the last requested
+sort order, and sort changes start from physical capture order so ties remain stable. Unsorted pages, profiles and
+value queries recover source order without replacing a cached sort. The positions, filter key and sort rules
+together may occupy at most 64 MiB, excluding the session-owned frame and pending-profile vectors; larger selections
+remain usable without retention. A page or profile without filters releases an entry built for another
+filter, and one without filters or sorts releases any entry. An auxiliary value lookup with no remaining filters
+bypasses the entry, preserving the grid's selection and order. Source-reaching edits or replay, session close and
+agent disposal release it before execution or cleanup can fail. Initial opening, inspection and mutation responses do
+not populate it; later reads may reuse a published active draft. Live notebooks, R terminals and managed documents
+instead keep a 32 MiB sort cache, which copies the sort columns to detect in-place notebook changes.
 
 R header profiles honor `openWrangler.insightsOnOpen`.
 The existing post-mutation quiet period still gives immediate Undo and Redo priority over background profiles.
@@ -2057,38 +2021,25 @@ Their filters support `isNull` and `isNotNull`; value selection and nested sorti
 retain ordinary filters, sorts and profiles. Dataset duplicate counts are unavailable while any nested column remains.
 These outer counts do not re-infer leaf prototypes; page and editing boundaries retain their own validation.
 
-Column and missing-value statistics scan in bounded chunks. Large column summaries and dataset missing-value scans
-verify bit64 registrations once per uninterrupted advance and retain those native handles only within that advance.
-Each chunk still undergoes type, attribute and value checks; a later advance verifies the registrations again.
-Numeric histograms count every finite value into at most
-20 bins; integer64 chart positions retain their double projection while typed extrema remain exact.
-Integer64 extrema use the package's native range reduction without sorting every value. Integer and integer64 chunks
-whose values stay below 2^53 in magnitude add exact double high and low parts, folded into decimal text once per 2^26
-values. Wider integer64 chunks reduce bounded native quotient/remainder batches, combining only their totals in decimal
-text. This preserves cancellation and sums beyond the integer64 range without per-row decimal arithmetic.
-Text profiles and character comparison keys share UTF-8 normalization in batches of at most 65,536 present values.
-ASCII-insensitive contains predicates and value search fold repeated normalized strings once per batch of at most
-65,536 values, then restore their original positions. The full folded vector remains allocated. Duplicate lookup adds
-work for unique text and can increase temporary heap use. Scalar searches keep the direct conversion path.
+Column and missing-value statistics scan in bounded chunks, and every chunk undergoes type, attribute and value
+checks. Numeric histograms count every finite value into at most 20 bins; integer64 chart positions retain their
+double projection while typed extrema remain exact. Integer and integer64 sums are exact, including cancellation and
+sums beyond the integer64 range. Text profiles, character comparison keys, case-insensitive contains predicates and
+value search share UTF-8 normalization.
 Factor comparison keys reuse normalized descriptor levels on a temporary projection; generated code normalizes the
 current step's temporary factor levels before expanding its codes. Both retain native invalid-code refusal and leave
 source levels, ordering and encodings unchanged. Live and generated Filter Rows and Conditional Column use normalized
 text for comparisons, including Latin-1 and unmarked valid UTF-8 under the C locale, while preserving missing positions.
-Small character profiles reuse their validated category keys for text statistics. Exceptional encodings or potentially
-oversized values retain ordered scalar refusal and the original row labels.
-After the chunked scan, one whole-view pass counts every present value by native identity, so distinct counts, top
-values, categorical charts, numeric medians and histogram bins are exact at every size. Identities group exactly as
-displayed values: signed zeros merge except in date-time and duration columns, missing values stay apart from NaN,
-and integer64 values compare as exact doubles below 2^53 and as decimal text above it. Whole numbers within the 32-bit
-range group as integers, and a range spanning at most a quarter as many values as rows is counted directly instead of
-hashed; both keep first-occurrence order. Histogram bins come from the distinct values and their counts. Only the
-reported values are formatted. Dataset
-duplicate counts are exact too: each column refines the candidate row groups in its own time-sliced advance and drops
-rows that are already unique. Value discovery counts the whole view the same way and formats only candidates that can
-reach the requested limit; a search formats each distinct value once. These passes allocate native hash tables
-proportional to the view's rows and cannot be interrupted by IRkernel once dispatched. Numeric summaries with no
-finite statistics retain an empty numeric object and omit the histogram. Dataset-statistics counts and their filtered
-row total come from the same request.
+Exceptional encodings or potentially oversized values retain ordered scalar refusal and the original row labels.
+
+Distinct counts, top values, categorical charts, numeric medians and histogram bins are exact at every size, because
+one whole-view pass counts every present value by native identity. Identities group exactly as displayed values:
+signed zeros merge except in date-time and duration columns, missing values stay apart from NaN, and integer64 values
+compare exactly. Dataset duplicate counts are exact too: each column refines the candidate row groups in its own
+time-sliced advance. Value discovery counts the whole view the same way, and a search formats each distinct value
+once. These passes allocate native hash tables proportional to the view's rows and cannot be interrupted by IRkernel
+once dispatched. Numeric summaries with no finite statistics retain an empty numeric object and omit the histogram.
+Dataset-statistics counts and their filtered row total come from the same request.
 
 Numeric filter operands and typed temporal payloads retain their finite native R value while binding. Ordinary integer, Date,
 floating, datetime and duration predicates compare native values directly, without formatting source rows as text.
@@ -2113,35 +2064,30 @@ CSV and Parquet export refuse remaining List or Struct columns before creating a
 and drop the parent, or Explode a typed List, to produce an exportable scalar frame.
 
 Native R CSV export writes validated UTF-8 bytes with LF record separators, independent of the current locale.
-It prepares character values and factor levels in a temporary frame. Duration columns use plain numeric storage in
-that frame so fractional values retain a decimal point under caller `OutDec` settings; their stored-unit magnitudes,
-source storage and other non-text columns remain unchanged. Duration storage is checked in slices of at most 65,536
-values; NaN is refused before artifact creation because the numeric writer would otherwise turn it into missing.
-Missing durations and existing infinity tokens remain unchanged. Invalid text is also refused before creating the
-artifact; export does not apply the page cell-size limit.
-All text and native-formatted Date, POSIXct and integer64 fields are quoted. R's native writer leaves ordinary
-numeric and logical values unquoted, so CSV export conservatively restricts delimiters by column type. With any
-non-missing values, integer columns refuse `-0123456789`, double and duration columns refuse `.0123456789e+-Inf`,
-and logical columns refuse `TRUEFALSE` (each character is a separate delimiter). This includes combinations whose
-current values do not contain the delimiter. Comma, tab, semicolon, pipe and other non-conflicting delimiters remain
-available. Only matching type/delimiter combinations require a presence scan, in slices of at most 65,536 values;
-zero-row and all-missing columns remain supported. Plain numeric NaN retains its empty CSV field, while duration
-NaN retains the refusal above. A delimiter refusal precedes artifact creation and does not change source or session
-state. Export does not convert ordinary numeric columns to text or change caller formatting options.
-POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places. Immediately
-before writing, the exporter inspects that text in slices of at most 65,536 fields. Only fields ending in invalid
-`:60` seconds are reformatted after carrying their original absolute time to the next whole second. The corrected
-subset retains the column class and time zone, so date and DST transitions follow native R calendar rules; source
-attributes and unaffected text remain unchanged. Formatting stays inside the writer's error handler and failed-artifact
-cleanup. Native text can contain only a date at midnight and omits both the time-zone name and offset.
+It prepares character values and factor levels in a temporary frame. Durations are written as the grid's timedelta
+text, and missing durations as empty fields. NaN, infinite durations and durations of 2^53 seconds or more are
+refused before artifact creation, like invalid text. Export does not apply the page cell-size limit.
+All text, duration and native-formatted Date, POSIXct and integer64 fields are quoted. R's native writer leaves
+ordinary numeric and logical values unquoted, so CSV export conservatively restricts delimiters by column type. With
+any non-missing values, integer columns refuse `-0123456789`, double columns refuse `.0123456789e+-Inf`, and logical
+columns refuse `TRUEFALSE` (each character is a separate delimiter). This includes combinations whose current values
+do not contain the delimiter. Comma, tab, semicolon, pipe and other non-conflicting delimiters remain available, and
+zero-row and all-missing columns remain supported. Plain numeric NaN retains its empty CSV field. A delimiter refusal
+precedes artifact creation and does not change source or session state. Export does not convert ordinary numeric
+columns to text or change caller formatting options.
+POSIXct columns retain native R text formatting, which rounds fractional seconds to six decimal places. Fields
+that rounding leaves with invalid `:60` seconds are reformatted after carrying their original absolute time to the
+next whole second, keeping the column class and time zone, so date and DST transitions follow native R calendar
+rules. Source attributes and unaffected text remain unchanged. Native text can contain only a date at midnight and
+omits both the time-zone name and offset.
 An explicit column time zone is used; a missing or empty zone uses the R process's
 time zone, unlike the grid's UTC default. CSV therefore does not guarantee exact timestamp preservation or record
 the zone needed to interpret the exported local time. The R CSV format choice displays these limits before export.
 Clock columns instead export their exact ISO text, with `Z` for sys time and no offset for naive time.
 
 Native R Parquet export uses Arrow and retains microseconds for POSIXct and nanoseconds for difftime.
-Before writing, it scans both types in slices of at most 65,536 values and refuses NaN, infinity, signed 64-bit
-overflow or precision loss. Duration values must round-trip between their declared units and seconds.
+Before writing, it refuses NaN, infinity, signed 64-bit overflow or precision loss in either type. Duration values
+must round-trip between their declared units and seconds.
 The check reconstructs seconds from the writer's integer ticks independently of reader rounding. Some reader-created
 floating values therefore fail even if that reader previously reproduced them.
 Duration output uses an explicit nanosecond type because Arrow's default whole-second conversion truncates fractions.
