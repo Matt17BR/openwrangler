@@ -886,6 +886,27 @@ class FindQuery:
             return characters <= _FIND_DATETIME_CHARACTERS
         return column_type not in FIND_SKIPPED_COLUMN_TYPES
 
+    def whole_cell_number(self, column_type: str) -> int | float | None:
+        """The integer or binary64 float whose displayed text is the whole query, or None when no value's is.
+
+        Integers display their decimal digits and binary64 floats their shortest repr, so a whole-cell query names at
+        most one value. NaN never matches.
+        """
+        needle = self.needle()
+        try:
+            number: int | float = int(needle) if column_type == "integer" else float(needle)
+        except (ValueError, OverflowError):
+            return None
+        if isinstance(number, int):
+            label = str(number)
+        elif isnan(number):
+            return None
+        elif isinf(number):
+            label = ("-" if number < 0 else "") + ("Infinity" if self.match_case else "infinity")
+        else:
+            label = repr(number)
+        return number if label == needle else None
+
     def label_matches(self, labels: Iterable[str | None], *, datetime: bool = False) -> list[bool]:
         """Match displayed labels; None marks a missing value, which never matches."""
         needle = self.needle(datetime=datetime)

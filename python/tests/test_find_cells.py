@@ -63,6 +63,26 @@ QUERIES = [
     "b",
     "2024",
     "5",
+    # Whole-cell numbers compare as numbers only when the query is their exact displayed text.
+    "0",
+    "-12",
+    "125",
+    "+12",
+    "012",
+    "1_2",
+    " 12",
+    "\u0661\u0662",
+    "-0.0",
+    "1e-05",
+    "1E-05",
+    "1e+16",
+    "1.0",
+    "-Infinity",
+    "INFINITY",
+    "nan",
+    "300",
+    "18446744073709551615",
+    "99999999999999999999",
 ]
 
 

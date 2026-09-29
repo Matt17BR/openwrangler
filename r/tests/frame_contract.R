@@ -7602,6 +7602,7 @@ local({
       "2024-10-01 00:05:00", "2026-01-01 12:00:00"), tz = "Europe/Berlin"),
     elapsed = as.difftime(c(1, NA, 3, -0, 0, 1.5), units = "hours"),
     wide = bit64::as.integer64(c("9223372036854775806", NA, "-12", "12", "0", "1")),
+    ratio = c(1e16, -1e-05, NA, -0, 12, 2^53),
     check.names = FALSE
   )
   frame$items <- list(1:2, NULL, 3L, 4L, 5L, 6L)
@@ -7618,7 +7619,10 @@ local({
   )
   fold <- function(value) chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", value)
   queries <- c("1", "12", "alpha", "ALPHA", "-0", "0.0", "Inf", "inf", "TRUE", "true", "2024-10-01 00:05",
-    "2024-10-01T00:05", "T00", "caf\u00e9", "a", "1.5", "e", "NaN", "00:05", "+02:00", "1:30:00", "b", "-12")
+    "2024-10-01T00:05", "T00", "caf\u00e9", "a", "1.5", "e", "NaN", "00:05", "+02:00", "1:30:00", "b", "-12",
+    # Whole-cell numbers compare as numbers only when the query is their exact displayed text.
+    "0", "-0.0", "12.0", "+12", "012", " 12", "125", "1e+16", "1E+16", "-1e-05", "-Inf", "INF",
+    "9007199254740992.0", "9223372036854775806", "9223372036854775807", "99999999999999999999")
   for (view in views) {
     rows <- fc$materialize_view_page(capture, view, 0L, 100L, 0L, 100L)$page$rows
     for (text in queries) for (match_case in c(FALSE, TRUE)) for (whole_cell in c(FALSE, TRUE)) {

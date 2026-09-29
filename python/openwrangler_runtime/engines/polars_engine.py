@@ -9,7 +9,7 @@ from decimal import Decimal
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import getsource, signature
-from math import isfinite
+from math import copysign, isfinite
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from textwrap import indent
@@ -805,6 +805,19 @@ def _polars_find_match(frame: Any, column: str, dtype: Any, query: FindQuery) ->
     import polars as pl
 
     value = _ow_polars_col(frame, column)
+    if query.whole_cell and (dtype.is_integer() or dtype == pl.Float64):
+        number = query.whole_cell_number("integer" if dtype.is_integer() else "float")
+        if number is None:
+            return None
+        if dtype.is_integer():
+            lowest, highest = pl.select(dtype.min().alias("lowest"), dtype.max().alias("highest")).row(0)
+            return (value == pl.lit(number, dtype=dtype)).fill_null(False) if lowest <= number <= highest else None
+        match = value == number
+        if number == 0:
+            # Equality merges signed zeros, which the grid spells as 0.0 and -0.0.
+            negative_zero = (pl.lit(1.0) / value) < 0
+            match = match & (negative_zero if copysign(1.0, number) < 0 else ~negative_zero)
+        return match.fill_null(False)
     # Spelling each distinct value once is much cheaper than spelling every row, especially for floats.
     distinct = frame.select(value.alias("value")).unique()
     if isinstance(distinct, pl.LazyFrame):

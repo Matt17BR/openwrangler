@@ -12497,9 +12497,52 @@ openwrangler_r_frame_contract <- local({
     abort("internal-error", "unknown R column kind")
   }
 
+  # The number whose display is a whole-cell query's text. Displays are exact and distinct, so at most one value's is.
+  # NA means no value of this kind displays the text, and NULL that only the displayed values can tell.
+  find_whole_number <- function(query, kind) {
+    needle <- if (query$matchCase) query$text else ascii_fold(query$text)
+    if (kind != "double") {
+      if (!grepl("^-?(0|[1-9][0-9]*)$", needle) || identical(needle, "-0")) return(NA_real_)
+      number <- as.numeric(needle)
+      # Larger integer64 values have no exact double to compare with.
+      return(if (kind == "integer" || abs(number) < 2^53) number else NULL)
+    }
+    # R's parser is not correctly rounded, so the parsed number's own display decides the match.
+    number <- suppressWarnings(as.numeric(needle))
+    if (!is.na(number)) {
+      shown <- find_value_displays(number, list(kind = "double"), 1L)
+      if (!query$matchCase) shown <- ascii_fold(shown)
+      if (identical(shown, needle)) return(number)
+    }
+    # Finite doubles display a decimal point or an exponent, and infinities display as Inf.
+    if (grepl("[.e]|[Ii]nf", needle)) NULL else NA_real_
+  }
+
+  # Marks the rows equal to number, keeping -0.0 apart from 0.0 as the grid does.
+  find_number_mask <- function(column, kind, number, integer64_bindings) {
+    values <- if (kind == "integer64") {
+      # Values beyond 2^53 lose precision but stay beyond the number, which is below it.
+      suppressWarnings(integer64_as_double(column, integer64_bindings %||% ensure_integer64_bindings()))
+    } else {
+      unclass(column)
+    }
+    rows <- which(values == number)
+    if (kind == "double" && number == 0) rows <- rows[(1 / values[rows] < 0) == (1 / number < 0)]
+    if (length(rows) == 0L) return(NULL)
+    mask <- logical(length(values))
+    mask[rows] <- TRUE
+    mask
+  }
+
   # Labels one display per distinct value; missing values and NaN never match.
   find_column_mask <- function(column, semantics, column_type, query, integer64_bindings = NULL) {
     if (nested_kind(semantics) || !find_could_match(query$text, column_type)) return(NULL)
+    if (query$wholeCell && semantics$kind %in% c("integer", "integer64", "double")) {
+      number <- find_whole_number(query, semantics$kind)
+      if (!is.null(number)) {
+        return(if (is.na(number)) NULL else find_number_mask(column, semantics$kind, number, integer64_bindings))
+      }
+    }
     present <- profile_present_indices(column, semantics, integer64_bindings)
     if (length(present) == 0L) return(NULL)
     identities <- if (semantics$kind == "character") {
