@@ -12536,7 +12536,6 @@ openwrangler_r_frame_contract <- local({
 
   # Labels one display per distinct value; missing values and NaN never match.
   find_column_mask <- function(column, semantics, column_type, query, integer64_bindings = NULL) {
-    if (nested_kind(semantics) || !find_could_match(query$text, column_type)) return(NULL)
     if (query$wholeCell && semantics$kind %in% c("integer", "integer64", "double")) {
       number <- find_whole_number(query, semantics$kind)
       if (!is.null(number)) {
@@ -12692,11 +12691,16 @@ openwrangler_r_frame_contract <- local({
       bits <- list()
       for (position in positions) {
         column_descriptor <- descriptor$schema[[position]]
+        semantics <- column_descriptor$semantics
+        if (nested_kind(semantics) || !find_could_match(query$text, column_descriptor$type)) next
         column <- frame[[position]]
-        if (!is.null(view$rows)) column <- column[view$rows]
-        validate_profile_column(column, column_descriptor$semantics, "find column", integer64_bindings)
-        mask <- find_column_mask(column, column_descriptor$semantics, column_descriptor$type, query, integer64_bindings)
+        # A view with every row only reorders them, so the source's matches are reordered instead of its values.
+        reorder <- !is.null(view$rows) && length(view$rows) == length(column)
+        if (!is.null(view$rows) && !reorder) column <- column[view$rows]
+        validate_profile_column(column, semantics, "find column", integer64_bindings)
+        mask <- find_column_mask(column, semantics, column_descriptor$type, query, integer64_bindings)
         if (is.null(mask)) next
+        if (reorder) mask <- mask[view$rows]
         matched <- c(matched, position)
         bits[[length(bits) + 1L]] <- find_pack(mask)
       }
