@@ -15,14 +15,6 @@ interaction adds no distinct coverage. Include execution and maintenance cost wh
 Use the existing Playwright action timeout inside the longer harness guard; `Promise.race` alone can leave a pending
 click able to dispatch after the caller times out.
 
-Successful editor phases report elapsed time at result observation and after process shutdown, output closure and
-result validation. Both use the phase's existing start clock, before launch. Outer dependency preparation, Docker work
-and profile cleanup fall outside these measurements.
-
-The acceptance Python preflight probes the selected interpreter and the profile's imports once, with a 15-second limit.
-An unsupported version or unavailable dependency has its own prerequisite error. A timeout or unexpected probe
-failure is reported separately; child output and raw process errors remain excluded from diagnostics.
-
 Run local released-Jupyter invocations one at a time on each host, waiting for cleanup before starting the next.
 The [pinned Jupyter launcher](https://github.com/microsoft/vscode-jupyter/blob/fc61dfe2fd70a3d62d3ce0fef580757e7d64b81c/src/kernels/raw/launcher/kernelLauncher.node.ts)
 checks ports before the kernel binds them and tracks selections only within one extension host. Separate profiles
@@ -90,23 +82,14 @@ Keep the shared resolution cutoff fixed when applying a targeted security update
 admit only the required newer releases. Verify clean regeneration with `npm run lock:remote-jupyter:check` and audit
 both environments with `npm run audit:remote-jupyter`. These fixtures are not bundled with the extension.
 
-`test:scripts` runs the explicit Node test selection in [`package.json`](../package.json). The
-[packaging owner](../scripts/package-current-channel.test.mjs) and
-[archive owner](../scripts/vsix-archive.test.mjs) check source bindings, corruption refusal and owned cleanup.
-The [R dependency-lock owner](../scripts/r-dependency-lock.test.mjs) checks the actual prepare CLI, cache identity,
-archive validation and refusal before output publication with a controlled R receipt; it does not install packages.
-The [CI proof owner](../scripts/ci-docs-only.test.mjs) checks path admission with real Git histories and executes
-the required result-job guards. Representative CLI cases verify the exported decisions without repeating every path check.
-Its exact scope and omission rules belong in [CI](ci.md#pull-requests), not individual test descriptions here.
+`test:scripts` runs the explicit Node test selection in [`package.json`](../package.json), including the packaging,
+archive, R dependency-lock, CI proof and release-publication owners. The R dependency-lock owner uses a controlled R
+receipt and does not install packages. [CI](ci.md#pull-requests) owns the skip rules the CI proof owner checks, and
+[Releasing](releasing.md) owns artifact and publication authority. `docs:check` permits incomplete capabilities in
+the stable-channel source ledger while validating its canonical entries; the canonical artifact owners still refuse
+stable qualification with an incomplete required ledger.
 
-The [daily-preview owner](../scripts/daily-preview-artifact.test.mjs) checks source decisions and actual change-note
-ranges. The [candidate-tag](../scripts/prepare-stable-candidate-tag.test.mjs) and
-[tag-publisher](../scripts/push-stable-release-tag.test.mjs) owners check prospective stable admission and exact historical
-tag recovery. The [publisher owner](../scripts/publish-github-stable-release.test.mjs) checks attribution, published-baseline
-selection, frozen retry inputs and exact body/asset agreement. Publication retries must reuse the first attempt's
-inputs rather than rediscovering release or PR metadata. Follow [Releasing](releasing.md) for artifact and publication
-authority. `docs:check` permits incomplete capabilities in the stable-channel source ledger while validating its
-canonical entries; the canonical artifact owners still refuse stable qualification with an incomplete required ledger.
+### Browser acceptance
 
 For rendered webview UI, interactions, styles, browser fixtures, their generated content or screenshot changes, run
 local browser acceptance. Install `python[dev]` through
@@ -121,217 +104,24 @@ On supported Linux hosts missing browser libraries, first run
 `npx --no-install playwright-core install-deps chromium`. The suite builds the webview, regenerates browser fixtures,
 compares checked-in screenshots, and runs browser interaction and accessibility checks. It is local-only: `npm test`,
 `check:pr`, hosted CI, scheduled workflows and release workflows do not invoke it. jsdom controls do not qualify native
-layout or popup placement. The [Chromium interaction owner](../scripts/test-webview-accessibility.mjs) uses explicit
-viewports and actual keyboard, pointer and focus behavior; Code Preview readiness observes the published editor and
-visible code, because virtualized offscreen text need not exist in the DOM.
-Its existing interaction owner checks inspection scope above the editor at wide, narrow and short sizes, with scope
-excluded from the code document and the editor still reachable by keyboard.
-The grid owner checks that hovered row labels hide horizontally scrolled cell text and filter controls with translucent
-theme colors, while exposed cell menus and keyboard focus remain usable in dark, light and forced colors.
-The column-header owner opens column menus in the 100,000,000-row terminal-range harness at half and full height, with
-and without horizontal scroll. Each menu must sit at its actions button, be placed without CSS anchor positioning and
-change the screenshot pixels beneath it. VS Code 1.139's Chromium 150 lays out anchor-positioned menus there without
-painting them, which hit tests cannot detect; the pinned Chromium paints them.
-The drawer workflow also checks that closing the panel profiles newly exposed partial columns without another
-window resize or grid scroll.
-Draft-preview, summary-family and by-example screenshots check the exact rendered column count and wait for completed
-profiles in every visible or partially visible column within the existing capture deadline. Offscreen rendering
-overscan can stay unprofiled. A virtual-time advance alone does not establish that asynchronous profile batches have rendered.
-Find screenshots open the bar from the grid footer, type and step through the real controls from DOM observation
-rather than timers, and wait for exactly one current match and the remaining highlighted matches in dark and high
-contrast.
-Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
-invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
-The existing operation-form browser owner checks that Group By controls fit without sideways scrolling and remain
-fully visible during Tab navigation at 1280px, 800px and 620px with the catalog expanded or collapsed. It also checks
-header controls at 360px, retained catalog search and scroll, physical form inputs, and keyboard navigation through
-disclosure and failed preview. Busy forms retain keyboard scrolling without focusing a hidden catalog.
-The filter keyboard owner also checks selected-column/profile agreement and hit visibility of the focused cell and
-header with the panel open at 1280px, 800px, 621px, 620px and a short 320px viewport. A column wider than the available
-data lane must expose that lane; the panel must not cover the grid, and its short-layout controls retain Tab/Escape access.
-The inspection workflow checks Enter on the paused-filter disclosure, retained disabled rules and focus on entry and
-return. Focus moves from a filter control being hidden to the disclosure and leaves unrelated controls alone.
-The mode-help owner checks compact toolbar containment with a long source label, keyboard disclosure and Spark's
-viewing-only ordering help, while retaining its blocked mode transition and projection-gated Undo checks.
-Dependency recovery checks long error text, readable actions and separate loading status at narrow widths and 200% zoom;
-ordinary refresh keeps the grid viewport and selection in place. The existing App component owner covers initial and
-retained-grid confirmation, cancellation, installation failure and successful reopen.
+layout or popup placement.
 
-Use the existing owners to choose a focused source check:
+The [Chromium interaction owner](../scripts/test-webview-accessibility.mjs) uses explicit viewports and actual
+keyboard, pointer and focus behavior for the grid, column menus, operation forms, filter panel, inspection, mode help
+and dependency recovery. Keep these constraints when changing browser checks:
 
-- **Applied-step inspection:** [Python inspection](../python/tests/test_step_inspection.py) and
-  [native R transport](../src/test/rKernelTransport.cross.test.ts) check retained Custom input/output pairs, host diffs,
-  failed publication and cleanup. Ordinary deterministic inspection remains uncached.
-- **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx),
-  [filter summaries](../src/test/filterSummary.component.test.tsx) and the response validator own exact, unavailable
-  and raw-compatible selections. Native value production belongs in the typed-cell and engine owners below;
-  selection metadata must preserve their profile and lazy-query bounds.
-- **Publication, recovery and persistence:** [response commitment](../src/test/sessionResponseCommitter.unit.test.ts),
-  [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
-  [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts) and
-  [panel publication](../src/test/webviewPanel.unit.test.ts) own confirmed state, stale responses, failed saves,
-  replay and retirement. [Plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts) own viewing-state
-  restoration. Initial restoration must stop dispatch and fallback when its opening owner retires.
-  Native R plan reuse also uses the existing real managed-process owner: two separate source-pinned file delegates
-  replay a reordered Rename, Formula and Floor plan through the coordinator, then execute generated R in a fresh
-  process. It checks target values, original state/source preservation and independent close on minimum/current R.
-  File-plan reuse uses coordinator persistence, the [persistence store](../src/test/sessionPersistenceStore.unit.test.ts)
-  and [file commands](../src/test/fileOpen.unit.test.ts) for private target publication, captured picker ownership,
-  engine/import settings and failure restoration. Native operation semantics stay in their engine owners.
-  The same persistence owners check R-file replay and Reset through a fresh verified delegate, including failed
-  storage, stale choices and candidate cleanup. Live R sources remain excluded from workspace persistence.
-  See [protocol and publication](architecture.md#protocol-and-publication) for the live contract.
-- **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
-  [operation forms](../src/test/operationBuilder.component.test.tsx),
-  [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx) and
-  [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx) own drafts, request correlation and
-  query caches. The R opening preference is checked both enabled and disabled; immediate Undo and Redo retain
-  the non-cancellable profiling quiet-period assertions. The existing installed R grid journey also waits for its
-  visible score header profile without enabling it manually. [Grid clipboard](../src/test/gridClipboard.unit.test.ts) and
-  [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx) own focus and acknowledgement ordering.
-  Browser acceptance supplies native layout and interaction evidence.
-- **Python dependency admission:** [native package provenance](../src/test/pythonDependencyPep440.unit.test.ts)
-  checks the real version and file-origin guard through discovery.
-  [Guard checks](../python/tests/test_dependency_guard_exact_version.py) own availability and journal isolation;
-  [process ownership](../src/test/dependencyInstaller.unit.test.ts) and
-  [probe caching](../src/test/pythonDependencyState.unit.test.ts) own termination, settlement and stale results.
-- **R file dependency repair:** [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) own strict
-  structured requirements; the [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks native
-  missing-package facts and a read-only repair probe without core packages or file-data access.
-  [Bridge controls](../src/test/rKernelBridge.unit.test.ts) and
-  [coordinator controls](../src/test/sessionCoordinator.unit.test.ts) own failed-runtime cleanup, fresh-owner retry,
-  retained initial plans, busy owners and cancellation before publication or package-write authorization.
-  [Dependency process controls](../src/test/rDependencyProcess.unit.test.ts) own captured terminal execution and
-  settlement, including the distinction between stopping a probe and detaching from an authorized installer.
-  The existing panel and App owners cover the shared Install intent, progress, failure and retry UI. The existing
-  macOS default VS Code and Windows R file journeys replace their healthy CSV open with a private missing-package
-  failure, real confirmation and decline, then same-panel recovery after fixture-only manual repair. This adds two
-  read-only terminal probes, with no network installation. Linux notebook and literate-document selectors exclude
-  that file leg. Verify actual installation separately in a disposable library, never a user's library; source checks
-  and manual-availability recovery alone do not establish successful installation.
-- **Import and export boundaries:** [import detection](../src/test/importDetection.unit.test.ts) and
-  [import options](../src/test/importOptions.unit.test.ts) own bounded samples, dialects and native prompts.
-  The installed file-reconfiguration journey supplies actual keyboard-focus evidence.
-  [Engine switching](../src/test/sessionCoordinator.engineSwitch.unit.test.ts) owns in-place replacement across
-  Python and R runtimes, column translation, restored saved work and kept step prefixes; the panel owner covers the
-  engine picker, its dialogs and the progress bar.
-  [Native reader adaptation](../python/tests/test_empty_delimited_files.py) and the engine owners check native rows,
-  types and source preservation. [Pinned exports](../python/tests/test_configurable_export.py),
-  [safe file export](../src/test/safeFileExport.unit.test.ts) and
-  [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) own separate destinations, identity,
-  cleanup and native readback. Metadata identity does not detect every same-size content change. R substitution and
-  [Windows export-pin](../python/tests/test_export_target.py) cases attempt real symlinks; a recognized Windows setup
-  refusal is a skip, not passing protection evidence.
-  Native R exports belong in the [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
-  [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case. Retain refusal before writer opening,
-  destination/source preservation, bounded conversion and lazy-streaming assertions in these existing owners.
-  Native CSV/TSV loading and generated-code agreement belong to that kernel owner's `csv-import` case. It covers
-  encoding and parser block boundaries, strict/lossy decoding, configured quoting, exact embedded CR/LF/CRLF,
-  blank and quoted-empty records, headerless first-record retention, source preservation and temporary-file cleanup.
-  Parquet, JSONL and Excel remain in `lifecycle-and-structure`.
-  Small synthetic cross-writer fixtures cover reader precision and sheet identity. Tiny DuckDB Parquet fixtures
-  exercise legacy signed/unsigned annotations, exact large integers and nulls through live loading, generated code
-  and export/reopen. Refusals retain logical timestamp precedence, physical/bit-width compatibility, unsigned range
-  and missing-sentinel checks, field diagnostics and unchanged source bytes. Their SQL is recorded in the existing
-  kernel owner; tests do not require DuckDB. The native dependency locks include readxl for this owner.
-  The same lifecycle owner checks exact civil/UTC Parquet timestamps, nulls, signed nanosecond endpoints and adjacent
-  ticks through cleaning in all four libraries, generated R and export/reopen. It also checks restored named-zone admission and
-  refuses disagreement between footer and decoded UTC/civil meaning in live and generated loading.
-  Frame controls own clock storage, query and export
-  behavior; host controls own exact strings and filters after precision/meaning changes. The Windows installed file journey
-  adds two timestamp columns to its existing three-row Parquet fixture and checks one rendered timestamp via End
-  navigation, without adding another session or operation sequence.
-  The [managed process owner](../src/test/rProcessTransport.cross.test.ts) checks actual file loading, editing,
-  cloning, export, close and fresh reopen, including native temporary-file containment and removal on forced disposal.
-  Existing R-document/factory tests check the shared process boundary and
-  exact file/executable admission. File commands, lazy activation, confirmed configuration and panel tests own R
-  selection/defaults, cancellation and separate-session handoff. These source checks do not qualify installed hosts
-  or measure whole-session allocation; retain separate installed evidence for the advertised platforms.
-  DuckDB engine and SessionSource tests own database selection, native WAL/source preservation, query serialization,
-  shared reader lifetime and writer refusal. File-command, PythonBridge and discovery-adapter tests own picker,
-  interpreter and dependency admission, including package-write exclusion through actual child closure.
-  These source checks do not qualify installed cross-platform database behavior. The generic file-input journey
-  exercises the registered command, real pickers, rendered rows and filtering, then closes the reader and checks
-  source bytes. It adds no separate native lock or spill matrix.
-  Import-options tests own the common name representation; file, R document, terminal and notebook picker tests
-  preserve original selections and live-tree labels.
-- **Python engines and generated programs:** [Pandas](../python/tests/test_pandas_engine.py),
-  [Polars](../python/tests/test_polars_engine.py) and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles,
-  queries, captures, exact types, source preservation and evaluation bounds. Keep capture, clone and checkpoint
-  lifetime checks here; ordinary file scans and saved MIME captures retain their separate lazy/bounded contracts.
-  Pandas missing-mask checks keep built-in nullable integer, Boolean and string arrays out of scalar loops, count
-  NaN as a value only in float columns, and cover custom-array fallback and live/generated filter agreement.
-  [Profile consistency](../python/tests/test_profile_consistency.py) checks that every engine's choice labels are
-  grid text and that choices and missing totals agree across engines. Pandas profile checks keep
-  nonmissing object strings out of scalar missing/count-key loops while testing late
-  mixed-value outliers, custom Series behavior and executable generated comparison keys.
-  Notebook command and KernelBridge tests own connection selection; executed-result tests own bounded inline MIME
-  capture without opening a Session.
-  [Session binding](../python/tests/test_session_column_binding.py) owns column and row identities through history,
-  replay and export. [Operation edges](../python/tests/test_operation_edges.py),
-  [Fill Missing](../python/tests/test_fill_missing.py) and operation-specific tests compare complete live and generated
-  results, types and indexes. [Session transactions](../python/tests/test_session_transactions.py) own public
-  Preview/Apply, refusal, recovery and replay. New operations also need shared request/form checks for bounds and
-  engine availability. Supported behavior belongs in [engine boundaries](architecture.md#engine-boundaries-and-capabilities).
-  [Typed cells](../python/tests/test_typed_cells.py) owns bounded pages, profiles and choices against native storage;
-  [filter logic](../python/tests/test_filter_logic.py) owns cross-engine duration comparisons with an independent oracle.
-  Engine-specific precision and lazy-query checks stay with the engine owners.
-  Keep unsafe native fixtures out of these tests: inspect dtype metadata on safe frames instead of constructing
-  unsupported Object-containing Polars lists whose cleanup can panic. Use contiguous slices for expected missing
-  Sparse durations because native fill-aware row taking can corrupt multiplied `NaT` values on supported older NumPy.
-  The Sparse zero-unit refusal fixture uses metadata with native array access forbidden; keep its guard ahead of
-  native conversion.
-- **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
-  [output columns](../python/tests/test_generated_output_columns.py),
-  [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py)
-  own complete executable programs, caller isolation, output binding, native admission and emitted-byte limits.
-  An operation or helper change requires live/generated agreement in every editing engine that supports it;
-  generated-text assertions alone are insufficient.
-- **Notebook and process boundaries:** kernel, bridge and transport owners check bounded correlated framing,
-  cancellation, settlement and cleanup of the original source. Native R
-  [discovery](../src/test/rNotebookVariableDiscovery.unit.test.ts),
-  [kernel transport](../src/test/rKernelTransport.cross.test.ts) and
-  [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts) run with the explicit native kernel phase's
-  selected R executable. Their native cases do not probe for R during ordinary unit runs.
-  [Response framing](../python/tests/test_response_framing.py) owns canonical bytes and size limits;
-  [stdio server](../python/tests/test_server_protocol.py) tests exercise the real fresh process and runtime lifecycle.
-  Synthetic reference-release controls do not measure native allocation or RSS.
-  Live protocol admission and saved-output compatibility are separate contracts; legacy display support does not
-  admit an obsolete live runtime. See [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance)
-  and [bounded transport](architecture.md#schemas-and-bounded-transport).
+- Code Preview readiness observes the published editor and visible code, because virtualized offscreen text need not
+  exist in the DOM.
+- Column menus must be placed without CSS anchor positioning and must change the screenshot pixels beneath them.
+  VS Code 1.139's Chromium 150 lays out anchor-positioned menus without painting them, while the pinned Chromium
+  paints them, so hit tests in the pinned browser cannot detect the problem.
+- Screenshots that show profiles wait for completed profiles in every visible or partially visible column. A
+  virtual-time advance alone does not establish that asynchronous profile batches have rendered. Find screenshots step
+  through the real controls from DOM observation rather than timers.
+- Screenshot verification reports all visual mismatches after capturing the remaining images. Browser, readiness and
+  invalid-image errors still stop the run immediately; any mismatch fails verification before accessibility checks run.
 
-The existing kernel-runtime bootstrap owner executes generated Python to check fresh import, same-source reuse,
-stale or partial imports, private-directory lifetime and refusal of substituted cache content. Bridge tests require
-a bounded acknowledgment from the current attempt before dispatch, including missing, duplicate and mismatched
-responses. Native Windows qualification must establish private-directory behavior; simulated version checks do not.
-Installed restart probes observe the expected bundle's existing lease and package/agent origins without triggering
-bootstrap. The bootstrap owner retains complete module-prefix validation.
-
-The runtime benchmark's three backend smoke checks use nine page samples, enough to exceed the eight-entry cache,
-while retaining five fresh opens per format. Smoke timings are diagnostics: their nine-point p95 is the maximum.
-Ordinary and strict benchmark runs retain 20 page samples. Strict runs require the same-session page to meet the
-500 ms response limit after being sent during an active header-statistics call. The client and profile events use
-Python's [counter shared across processes](https://docs.python.org/3.10/library/time.html#time.perf_counter).
-A response decoded before that call ends provides positive overlap evidence; a later response leaves overlap
-unproven. This observation and response gaps remain diagnostic, separate from the responsiveness gate.
-[Session concurrency tests](../python/tests/test_session_concurrency.py) prove page progress during a held profile;
-[server protocol tests](../python/tests/test_server_protocol.py) retain the interactive executor starvation control.
-The [fixture owner tests](../python/tests/test_installed_editor_fixtures.py) cover complete value validation and
-atomic regeneration directly through the shared benchmark fixture contract.
-
-Qualify changed native engine, reader and generated-code behavior on its minimum and current supported dependencies.
-Keep native controls when versions differ: for example, newline-only Polars schemas may differ while preserving the
-reader's actual rows. Extended-precision cases use the platform's real storage and may skip where it is unavailable.
-Actual Windows local-drive tests do not qualify UNC/network shares; lexical checks or Linux skips are not Windows API
-evidence. Spark Classic and Connect retain their own native bounded-viewing owners and prerequisites; local-engine
-results do not qualify them. Support and release evidence remain governed by [feature parity](feature-parity.md).
-
-The PySpark [lazy-index/close unit](../python/tests/test_pyspark_engine.py) checks reference release and absence of
-Spark actions during cleanup. Native [paging](../python/tests/test_pyspark_paging.py) and
-[session lifecycle](../python/tests/test_pyspark_session_lifecycle.py) retain Classic and Connect session-survival checks;
-profile tests retain their data, serialization and batched action bounds without repeating those post-close Spark jobs.
-The paging/profile integration test checks singleton summary action bounds on its existing numeric request;
-the mixed profile test checks score values in its full summary result.
+### Shared contract fixtures
 
 The shared [`fixtures/view-literal-contract.json`](../fixtures/view-literal-contract.json) owns filter spellings
 supported by Python and native R. Python-specific extreme offsets remain in Python owners because R retains its own
@@ -352,6 +142,103 @@ The shared [`fixtures/replace-portability-contract.json`](../fixtures/replace-po
 Replace steps replay on both Python and R. `src/test/findReplaceStep.unit.test.ts`,
 `python/tests/test_replace_matches.py` and the native-R catalog contract each check every case.
 
+### Test owners
+
+Use these owners to choose a focused source check:
+
+- **Applied-step inspection:** [Python inspection](../python/tests/test_step_inspection.py) and
+  [native R transport](../src/test/rKernelTransport.cross.test.ts).
+- **Value and profile actions:** [filter panel](../src/test/filterPanel.component.test.tsx),
+  [filter summaries](../src/test/filterSummary.component.test.tsx) and the response validator. Native value
+  production belongs in the typed-cell and engine owners.
+- **Publication, recovery and persistence:** [response commitment](../src/test/sessionResponseCommitter.unit.test.ts),
+  [coordinator persistence](../src/test/sessionCoordinator.persistence.unit.test.ts),
+  [runtime restoration](../src/test/sessionRuntimeStateRestorer.unit.test.ts),
+  [panel publication](../src/test/webviewPanel.unit.test.ts),
+  [plan rewrites](../src/test/sessionCoordinator.planRewrite.unit.test.ts),
+  [persistence store](../src/test/sessionPersistenceStore.unit.test.ts) and
+  [file commands](../src/test/fileOpen.unit.test.ts). Native R plan reuse also runs through the real managed-process
+  owner. See [protocol and publication](architecture.md#protocol-and-publication) for the live contract.
+- **UI state and interactions:** [App draft state](../src/test/appDraftState.component.test.tsx),
+  [operation forms](../src/test/operationBuilder.component.test.tsx),
+  [progressive profiling](../src/test/appProgressiveProfiling.component.test.tsx),
+  [profiling lifecycle](../src/test/progressiveProfilingLifecycle.unit.test.tsx),
+  [grid clipboard](../src/test/gridClipboard.unit.test.ts) and
+  [renderer lifecycle](../src/test/rendererPresentationLifecycle.unit.test.tsx). Browser acceptance supplies native
+  layout and interaction evidence.
+- **Python dependency admission:** [native package provenance](../src/test/pythonDependencyPep440.unit.test.ts),
+  [guard checks](../python/tests/test_dependency_guard_exact_version.py),
+  [process ownership](../src/test/dependencyInstaller.unit.test.ts) and
+  [probe caching](../src/test/pythonDependencyState.unit.test.ts).
+- **R file dependency repair:** [kernel dependency checks](../src/test/rKernelTransport.unit.test.ts),
+  [managed process](../src/test/rProcessTransport.cross.test.ts), [bridge](../src/test/rKernelBridge.unit.test.ts),
+  [coordinator](../src/test/sessionCoordinator.unit.test.ts) and
+  [dependency process](../src/test/rDependencyProcess.unit.test.ts) controls. Verify actual installation separately in
+  a disposable library, never a user's library; source checks and manual-availability recovery alone do not establish
+  successful installation.
+- **Import and export:** [import detection](../src/test/importDetection.unit.test.ts),
+  [import options](../src/test/importOptions.unit.test.ts),
+  [engine switching](../src/test/sessionCoordinator.engineSwitch.unit.test.ts),
+  [native reader adaptation](../python/tests/test_empty_delimited_files.py),
+  [pinned exports](../python/tests/test_configurable_export.py),
+  [safe file export](../src/test/safeFileExport.unit.test.ts),
+  [R private artifacts](../src/test/rPrivateArtifactBoundary.unit.test.ts) and
+  [Windows export pins](../python/tests/test_export_target.py). Native R exports belong in the
+  [frame owner's](../r/tests/frame_contract.R) `capture-and-export` case and the
+  [kernel owner's](../r/tests/kernel_agent.R) `group-pivot-and-export` case, CSV and TSV loading in its `csv-import`
+  case, and Parquet, JSONL and Excel in `lifecycle-and-structure`. Metadata identity does not detect every same-size
+  content change. Symlink cases attempt real symlinks; a recognized Windows setup refusal is a skip, not passing
+  protection evidence.
+- **Python engines:** [Pandas](../python/tests/test_pandas_engine.py), [Polars](../python/tests/test_polars_engine.py)
+  and [DuckDB](../python/tests/test_duckdb_engine.py) own native profiles, queries, captures, exact types, source
+  preservation and evaluation bounds. [Profile consistency](../python/tests/test_profile_consistency.py),
+  [session binding](../python/tests/test_session_column_binding.py),
+  [operation edges](../python/tests/test_operation_edges.py), [Fill Missing](../python/tests/test_fill_missing.py),
+  [session transactions](../python/tests/test_session_transactions.py),
+  [typed cells](../python/tests/test_typed_cells.py) and [filter logic](../python/tests/test_filter_logic.py) compare
+  behavior across engines and with generated code. New operations also need shared request and form checks for bounds
+  and engine availability; supported behavior belongs in
+  [engine boundaries](architecture.md#engine-boundaries-and-capabilities). Keep unsafe native fixtures out of these
+  tests: inspect dtype metadata on safe frames instead of constructing unsupported Object-containing Polars lists,
+  whose cleanup can panic, and use contiguous slices for expected missing Sparse durations, because native fill-aware
+  row taking can corrupt multiplied `NaT` values on supported older NumPy.
+- **Generated source and Custom Code:** [helper selection](../python/tests/test_generated_helpers.py),
+  [output columns](../python/tests/test_generated_output_columns.py),
+  [Custom Code scope](../python/tests/test_custom_code_scope.py) and [session plans](../python/tests/test_session_plan.py).
+  An operation or helper change requires live/generated agreement in every editing engine that supports it;
+  generated-text assertions alone are insufficient.
+- **Notebook and process boundaries:** kernel, bridge and transport owners;
+  [R discovery](../src/test/rNotebookVariableDiscovery.unit.test.ts),
+  [response framing](../python/tests/test_response_framing.py) and the real
+  [stdio server](../python/tests/test_server_protocol.py). The native R cases run only in the R runner's kernel phase.
+  The kernel-runtime bootstrap owner executes generated Python for fresh import, reuse and substituted cache content;
+  native Windows qualification must establish private-directory behavior. Live protocol admission and saved-output
+  compatibility are separate contracts; see
+  [notebook provenance](architecture.md#notebook-kernel-terminal-and-document-provenance) and
+  [bounded transport](architecture.md#schemas-and-bounded-transport).
+- **Spark:** the [lazy-index and close unit](../python/tests/test_pyspark_engine.py), native
+  [paging](../python/tests/test_pyspark_paging.py) and
+  [session lifecycle](../python/tests/test_pyspark_session_lifecycle.py) owners keep Classic and Connect checks.
+- **Activation and file selection:** [lazy activation](../src/test/lazyActivationOwners.unit.test.ts) owns
+  registrations, cancellation and shutdown. The file-command, custom-editor, Python resolver, PythonBridge and
+  coordinator owners cover fresh-file Auto selection. The pure acceptance helpers run in
+  [Source](../src/test/acceptanceFixtures.unit.test.ts), not during installed startup.
+
+Qualify changed native engine, reader and generated-code behavior on its minimum and current supported dependencies.
+Keep native controls when versions differ: for example, newline-only Polars schemas may differ while preserving the
+reader's actual rows. Extended-precision cases use the platform's real storage and may skip where it is unavailable.
+Actual Windows local-drive tests do not qualify UNC/network shares; lexical checks or Linux skips are not Windows API
+evidence. Spark Classic and Connect retain their own native bounded-viewing owners and prerequisites; local-engine
+results do not qualify them. Support and release evidence remain governed by [feature parity](feature-parity.md).
+
+The runtime benchmark's three backend smoke checks take nine page samples, enough to exceed the eight-entry cache, and
+five fresh opens per format; their timings are diagnostics. Ordinary and strict runs take 20 page samples. Strict runs
+require a same-session page sent during an active header-statistics call to return within 500 ms.
+[Session concurrency tests](../python/tests/test_session_concurrency.py) prove page progress during a held profile,
+and the [fixture owner tests](../python/tests/test_installed_editor_fixtures.py) cover the shared benchmark fixture.
+
+### Native R
+
 For Native R changes, run the full contract suite or the relevant group:
 
 ```bash
@@ -367,130 +254,40 @@ group runs phases serially in fresh children. The full command first runs native
 Object behavior on the current platform; ordinary Source execution does not require this native owner. Nested Rscript
 contracts fail on unexpected warnings even if they handle a later error. Preserve caller temporary-directory settings.
 
-The Windows supervisor owner also checks preparation deadlines, shared callers and both compiler-settlement windows
-with controlled children and native timers on every platform. These controls preserve process ownership and unsafe-root
-retention; the Windows-only case separately qualifies actual Job Object containment and termination.
-The supervisor is bundled at `r/openwrangler_runtime/windows-job-supervisor.ps1` and shared with native R file sessions.
-Its existing native owner also checks binary requests (including NUL), malformed framing, blocked stdin with host EOF,
-direct target exit, helper death, an unrelated surviving session, and source-based PowerShell startup/cancellation.
-These controls require actual Windows; a skipped Linux run establishes no Windows behavior.
+Prerequisites and limits:
+
+- Linux R phase supervision needs the selected repository Python 3.10 to 3.14 standard library and kernel pidfd
+  support, but no Python dataframe packages.
+- On macOS, the runner compiles one private native helper per invocation using `/usr/bin/xcrun clang`, so the Xcode
+  Command Line Tools must be installed.
+- Windows Job Object containment and termination, and the bundled supervisor's framing checks, need actual Windows; a
+  skipped Linux run establishes no Windows behavior. The supervisor lives at
+  `r/openwrangler_runtime/windows-job-supervisor.ps1` and is shared with native R file sessions.
+- Discovery relies on inherited markers and observed ancestry, so it cannot contain an entirely unobserved,
+  marker-stripped chain. Parent SIGKILL and runner crashes are an accepted source-test limitation, recorded in
+  [#955](https://github.com/Matt17BR/openwrangler/issues/955).
+- Private Spark fixtures use the selected Python temporary directory and refuse comma-containing paths, which Spark
+  treats as multiple roots.
 
 The [complete R catalog](../r/tests/complete_catalog_contract.R) compares native live and complete generated frames,
-including source and metadata preservation. Numeric portability uses independent binary64 references and raw-bit
-comparisons through interpreted and compiled programs. Frame, kernel, decoder and process owners separately check
-primitive values, public mutations and correlated transport. Frame capture checks the factor-level count limit;
-kernel mutation checks use fewer, longer levels to exercise the full response byte limit. Their direct categorical-helper
-budget probes supply the base R context; complete generated programs separately prove that the compiler emits that context.
-Its precise-timestamp cases run Format Datetime, Convert Type, every clock-compatible Fill, Group By, both pivots and
-By Example on a nanosecond column with nulls and one-tick differences in all four libraries, and check the datetime
-aggregate and fill refusals. The frame text owner checks bounded Lowercase/Uppercase conversion, mixed encodings, byte limits, locale behavior
-and ordered input/output refusals. The existing kernel text owner executes the emitted case kernel on multiple batches and failed
-results, checking exact live agreement, source preservation and no publication on failure.
-Existing frame and row-operation owners check text and factor comparisons under the C locale, including source
-encodings, unused levels, missing values and complete generated results. Factor key preparation retains native
-invalid-code refusal; the catalog checks Filter Rows and Conditional Column across all four cleaning libraries.
-The frame interactive text case bounds repeated-string case conversion across a batch boundary and checks exact
-matches, names and source preservation. Existing kernel row cases own Conditional Column contains agreement;
-catalog Filter Rows retains its all-library contains coverage.
-Library selection extends these existing owners: every supported catalog operation needs live/generated agreement
-for base R, dplyr, data.table and collapse, with expected values and unchanged source. Generated programs must resolve
-their own emitted helpers and dependencies. Focused native cases own package equality, grouping order, duplicate
-names, types, row labels and valid keys; one composed lifecycle per library proves replay and history. The catalog also
-checks that every library returns a retained By Example command and replays that changed command in base R. Other
-single-step cases run once per library, preserving their native/generated and source checks. Do not repeat
-unrelated large fixtures or installed catalog journeys once for every library. Measure the added catalog cost against
-the existing phase deadline before accepting the change.
-Host checks own the resource-scoped default, requested/confirmed library, old base saved-plan keys, per-library
-persistence and in-tab switches of live R variables from their captured frame, including Custom Code confirmation,
-cancellation and failed replay. Installed evidence must exercise the visible library choice; source mocks alone do not
-prove that the selected package executes.
-The existing local Linux VS Code Clone lifecycle switches the live tab to dplyr through the library picker, checks its
-applied plan and package code, switches back to base and continues Undo. Before Undo it opens a small CSV with
-Python · Polars and switches that tab to R · base and back, so the installed editor covers each engine-switch
-direction. It runs in the default/core profile, whose Python preflight therefore also requires the Python file engines;
-other editors, platforms and focused operation profiles retain their existing journeys. The native catalog owns the
-complete per-library operation matrix.
-The existing frame profiling owner checks complete numeric bin membership and exact categorical counts, medians,
-duplicate counts and value choices above the direct-profile threshold, including filtered populations, high
-cardinalities, periodic data and sparse columns. It also checks integer64 identity and duration signed zero. Text
-checks cover small and threshold-sized profiles as well as large chunks, including equivalent encodings, exact
-statistics, first-error order, source preservation and bounded conversion width. The R decoder owner requires exact
-distinct counts with their top values and bounds histogram, categorical and duplicate counts by the population. The
-existing kernel transport profile case decodes actual large R integer, double and duration summaries, including
-missing values, signed zero, exact top values and medians, through TypeScript. Its small
-integer64 fixture checks exact typed bounds; large integer64 arithmetic and distinct counts stay with frame profiling.
-The transport owner also checks empty numeric objects for small and large columns whose present values are all infinite.
-Managed file profiling extends these owners with synchronous/continued result equality, fresh native-binding checks
-after a yield, retained-job cleanup and exclusion of mutation or replay from another session.
-The [kernel viewing owner](../r/tests/kernel_agent_viewing.R) checks managed-file membership and sorted-page reuse,
-source-order profiles, stable ties, capture/filter/sort identity, key-inclusive byte bounds, source validation and
-release before execution or cleanup failures. It also checks auxiliary picker retention, empty-view eviction and
-pending membership after replacement.
-The [process transport unit owner](../src/test/rProcessTransport.unit.test.ts) checks page admission, the original deadline,
-stale queued advances, exclusive-request fairness and cleanup of ambiguous begins against the captured child.
-Measure actual queued-page latency, setup, finalization, total work
-and retained memory separately; a chunk budget alone does not prove responsiveness.
-The existing native Custom Code owners execute real dplyr, data.table and collapse calls from file and package-backed
-frames, including admitted class changes, retained metadata, history, failure recovery and executable generated code.
-The bridge owner checks output-flavor publication and inspection; the existing process Custom Code lifecycle changes
-a base frame to a tibble. Generated append coverage includes a later Formula after conversion to data.table.
-The frame capture owner checks flat native Lists and Structs, typed and untyped empties, named children, field
-reordering, later projected pages, source mutation and rejection before copying. Its budget controls charge repeated
-children and expanded siblings before allocation, while retaining metadata-only access to large nested sources.
-The existing lifecycle owner exercises Extract and Explode across base frames, tibbles and keyed data tables, including
-Preview/Discard/Apply, inspection, Undo/Redo, scalar CSV export and exact generated results. Native factor, temporal,
-integer64 and floating-edge leaves use the same owner, including escaped Unicode in factor levels and Struct names.
-The catalog independently checks live/generated agreement.
-Custom Code checks generated helper dependencies and hostile off-page attributes before copying or publication.
-Host codec and mutation tests pass named nested cells through the public response validator and reject mismatched
-metadata or row domains. Installed rendering and entry-path checks remain separate from these native/source controls.
-The [kernel transport owner](../src/test/rKernelTransport.cross.test.ts) checks actual R responses through the
-TypeScript decoder, including session revisions, projected identities, inspection and Undo. The native catalog and
-kernel owners verify operation results and generated-code agreement. Generated programs in the transport suite cover
-row-name modes, by-example null replay, categorical Unicode outputs, and Drop/Select/Clone followed by Rename.
-Formula transport keeps integer and maximum finite double samples; intermediate exact powers and their neighboring
-values belong to the encoder and native numeric-portability owners.
-Min-max scale's adjacent integer64 and missing-value results belong to the native kernel's live and generated-code
-owner. The text-replacement transport chain also checks factor-to-character inspection and Undo restoration.
-The same native transport owner checks row-name modes after row subsetting, including zero-column generated results;
-ordinary R dataframe equality alone does not distinguish automatic from explicit row names.
-Its row-name matrix shares one native bootstrap with separate case frames, sessions and request identities. Generated
-programs run in a second clean process with a fresh environment for each case; runtime helpers cannot satisfy their dependencies.
-Edits confined to `r/tests/kernel_agent.R`, `r/tests/frame_contract.R` and `r/tests/complete_catalog_contract.R`,
-with permitted documentary edits, may omit the hosted macOS and Windows editor steps. Source, package and harness
-checks remain required; see the exact [CI scope](ci.md#pull-requests).
-Linux interactive transport controls use a real PTY;
-portable parser controls retain one-expression and physical-line byte bounds. Operation semantics and arithmetic policy belong in
-[the native R architecture contract](architecture.md#native-r); do not repeat the catalog in installed UI journeys.
-The [interactive transport owner](../src/test/rInteractiveSessionTransport.unit.test.ts) checks plain and bracketed
-dispatch against the same captured terminal, including startup and follow-up requests. These source controls and
-the plain-R installed journey do not by themselves qualify radian's parser or terminal interaction.
+including source and metadata preservation, for base R, dplyr, data.table and collapse. Every supported catalog
+operation needs live/generated agreement in each library, with expected values and unchanged source, and generated
+programs must resolve their own emitted helpers and dependencies. Do not repeat unrelated large fixtures or installed
+catalog journeys once for every library, and measure the added catalog cost against the existing phase deadline.
+Numeric portability uses independent binary64 references and raw-bit comparisons. Installed evidence must exercise
+the visible library choice; source mocks alone do not prove that the selected package executes.
 
-Linux R phase supervision needs the selected repository Python 3.10 to 3.14 standard library and kernel pidfd support,
-but no Python dataframe packages. Capability checks precede phase launch; signaling verifies the exact phase marker
-and process identity. Native controls exercise SIGINT, SIGTERM, deadlines, output limits, closed readers, escalation
-and detached descendants. An unverifiable live target leaves settlement unverified.
-Linux background discovery runs every 100 ms to avoid continuous scanning of unrelated host processes. Launch,
-signaling and settlement still observe immediately, including detached children created since the last background scan.
-Background discovery leaves its configured gap after each completed observation. Settlement takes over fresh polling
-and stops the background timer, while retaining observed identities until final cleanup.
+The [frame](../r/tests/frame_contract.R), [kernel](../r/tests/kernel_agent.R),
+[kernel viewing](../r/tests/kernel_agent_viewing.R), [kernel transport](../src/test/rKernelTransport.cross.test.ts),
+[process transport](../src/test/rProcessTransport.unit.test.ts) and
+[interactive transport](../src/test/rInteractiveSessionTransport.unit.test.ts) owners check primitive values, public
+mutations and correlated transport. Generated programs in the transport suite run in a second clean process, so
+runtime helpers cannot satisfy their dependencies. Measure queued-page latency, setup, finalization, total work and
+retained memory separately; a chunk budget alone does not prove responsiveness. These source controls and the plain-R
+installed journey do not qualify radian's parser or terminal interaction. Operation semantics and arithmetic policy
+belong in [the native R architecture contract](architecture.md#native-r).
 
-On macOS, the runner compiles one private native helper per invocation using `/usr/bin/xcrun clang`, so the Xcode
-Command Line Tools must be installed. Preparation, native capability checks and stale-token refusal precede R launch.
-Compiler output and execution time are bounded; failed or interrupted preparation settles its inherited process group
-or retains the private root as unsafe. The R tracker uses native lifetime identities and fresh execution tokens for
-signaling. It retains observed lifetimes across exec, including signal-time reads, and refuses ambiguous historical-parent
-evidence. The former second-resolution `ps` fallback is removed.
-Discovery relies on inherited markers and observed ancestry; it cannot contain an entirely unobserved, marker-stripped
-chain. Parent SIGKILL and runner crashes are an accepted source-test limitation outside the shutdown guarantee,
-recorded in
-[#955](https://github.com/Matt17BR/openwrangler/issues/955).
-
-Destination errors or cancellation stop later phases through verified cleanup. Successful phases drain output after
-child settlement and before continuing, with normal backpressure. This does not bound exit when a reader remains
-open without consuming output. Private Spark fixtures use the selected Python temporary directory for native Spark
-storage and refuse comma-containing paths, which Spark treats as multiple roots. Keep the editor environment
-allowlist and [failure-artifact rules](#failure-artifact-allowlist) intact.
+### Extension-host and installed journeys
 
 `npm run test:extension-host` builds the development extension and runs persistence seed and verification in separate
 editor processes sharing one private profile. Seed checks same-process close/reopen; verification checks persistence
@@ -500,95 +297,37 @@ fixture Jupyter API backed by real Python through the production bridge. Release
 
 On POSIX, these runners use the inherited system temporary directory when its canonical ancestry satisfies the
 [kernel temporary-directory rules](architecture.md#notebook-kernel-terminal-and-document-provenance), otherwise a
-protected `/tmp`. If neither parent is safe, preparation fails before editor startup. Runner roots remain private and
-independent of checkout permissions.
+protected `/tmp`. If neither parent is safe, preparation fails before editor startup. Windows selects the original
+local user profile's `LOCALAPPDATA/Temp` and places the isolated home, LocalAppData and kernel Temp inside one
+disposable root there; a missing or non-local `LOCALAPPDATA` fails before editor startup. Runner roots remain private
+and independent of checkout permissions. The packaged file-input fixture directory stays under the outer root until
+editor processes and captured output have settled, so a failed verifier cannot remove a source its viewer still uses.
 
-Windows selects the original local user profile's `LOCALAPPDATA/Temp`, then places the isolated home, LocalAppData
-and kernel Temp inside one disposable root there. Missing or non-local `LOCALAPPDATA` fails before editor startup;
-the original profile must retain its normal per-user protections. A private child does not remove the ancestry
-requirement. Existing process-settlement and root-identity checks govern cleanup, including files left by killed
-fixture kernels.
+Installed journeys follow these synchronization rules:
 
-The packaged file-input fixture directory stays under this outer root on every outcome, until editor processes and
-captured output have settled. Per-fixture session and runtime closes and configuration restoration remain explicit;
-deferring directory deletion keeps a failed verifier from removing a source still used by its viewer. These bounded
-fixture files remain on disk through the remaining phases.
+- Installed R actions, file launches, import-option changes and gallery Apply/Undo observe the exact session,
+  revision and committed renderer receipt instead of forcing another panel publication. A missing production publication must fail rather than be repaired by the assertion path.
+- Once acquired, Add and Edit operation dialogs keep their physical node, frame, session and revision, so a
+  replacement dialog or changed revision cannot satisfy the old locator.
+- Page assertions use the read-only request option, so inspecting returned rows does not replace the visible page or
+  retire the renderer's view context.
+- [Picker source tests](../src/test/releasedROperationPicker.unit.test.ts) check the shared ten-second acquisition
+  budget; ordinary session acquisition keeps its thirty-second bound.
+- Released-Jupyter Variables actions check that the manifest routes the variable's type to
+  `openWrangler.launchDataViewer`, then invoke that command with the flat variable object Jupyter passes to
+  contributed viewers. They do not drive Jupyter's own Variables webview.
+
+The generic verification journey composes Formula then Custom Code in each editing engine and checks the plan, schema
+and page after runtime restart; a separate Pandas journey composes Select, Clone, Drop and Rename over duplicate and
+non-string labels. Generic viewing-query verification and dependency recovery each use a private copy of the sample
+CSV, so neither inherits the seeded cleaning history. The local Linux VS Code Clone lifecycle switches a live R tab to
+dplyr and back, and switches a Python · Polars CSV tab to R · base and back, so the installed editor covers each
+engine-switch direction. The daily-core journey also applies a Rename and uses **Open Another File with This Plan**
+through the real file picker. The R value journey keeps Find and Replace, Formula's precision refusal, Format
+Datetime, Capitalize and both dynamic Pivot forms; repeated numeric and text checks belong to native owners.
 
 The `r-jupyter` and `data-wrangler-coexistence` modes skip the generic smoke profile's fixture and extension
-installation. They retain editor-version discovery, the shared harness package and exact installed-version checks
-in the extension directory used by the selected journey.
-
-The first generic Pandas notebook launch observes the unique new panel for its exact notebook and variable,
-independently of focus. A terminal error from that panel's first open attempt fails the wait immediately with bounded
-kind, code and recoverability diagnostics; an older panel or retry cannot satisfy it, and the reader cannot switch away
-from a panel it has observed. Pending opens retain the existing 75-second deadline, and success must match the active
-session to the observed panel's session.
-
-The generic verification journey composes Formula then Custom Code in each editing engine, with Custom Code consuming
-the Formula output. It compares Preview/Apply and complete code, then checks the plan, schema and bounded page after
-runtime restart. It retains each engine's edited clipboard/export path, Pandas Save/cancel, source integrity and cleanup.
-The separate Pandas duplicate/non-string structural journey composes Select, Clone, Drop and Rename, comparing full
-values, physical labels, dtypes and indexes through generated replay and restart. Page replay comparisons exclude only
-session-scoped row IDs. Individual operations and native arithmetic remain in their source/generated-code owners.
-BIFF worksheet names are qualified through the real Polars and Pandas import-options pickers; direct configured-import
-cases retain zero-based worksheet indexes.
-
-Ordinary installed R actions, picker acquisition, Explorer and editor-title file launches, completed import-option
-changes, and public Apply/Undo actions in gallery captures observe the exact session/revision and committed renderer
-receipt without forcing another panel publication.
-Cached Python and R row-click journeys expand Data sources; cleaning captures expand Operations. Both use the existing
-native view providers, and source selections retain their exact notebook or terminal handles.
-Once acquired, Add and Edit operation dialogs retain their physical node, frame, session and revision through an
-opaque test marker. A new publication for the same dialog can continue configuration; a replacement dialog or changed
-revision cannot satisfy the old locator. Mutation-result assertions still require the exact acknowledged publication.
-[Picker source tests](../src/test/releasedROperationPicker.unit.test.ts)
-check passive success, stale-receipt refusal and the shared ten-second acquisition budget; ordinary session acquisition
-retains its existing thirty-second bound. Dedicated recovery injection, media setup and deliberately synthetic view
-setup retain their explicit synchronization. A missing production publication must fail rather than be repaired by
-the ordinary assertion path. Page assertions use the existing read-only request option so inspecting returned rows
-does not replace the visible page or retire the renderer's view context. Requests that deliberately change the view
-or exercise recovery keep their own mutation path.
-Notebook toolbar discovery treats an overflow menu that disappears before action acquisition as transient within its
-existing twenty-second discovery deadline. Duplicate menus and cleanup failures remain terminal; discovery does not
-dispatch the Open Wrangler action, which still requires exact notebook identity and one activation after acquisition.
-Released-Jupyter Variables actions for Pandas, DuckDB and PySpark first check that the manifest routes the variable's
-type to `openWrangler.launchDataViewer`, then invoke that command with the flat variable object Jupyter passes to
-contributed viewers. The journeys do not drive Jupyter's own Variables webview, which is upstream UI.
-The released-Jupyter DuckDB journey waits for the exact panel's committed renderer after inline open and toolbar
-reopen before changing filters. Far-row inspection is read-only; filter persistence and recovery still use committed
-view requests. These page assertions report bounded error codes and recoverability when a request fails.
-
-The R value journey retains Find and Replace, Formula's visible precision refusal and correction, Format Datetime,
-Capitalize and both dynamic Pivot forms. Repeated numeric and text catalog checks belong to native owners; remote
-Lowercase remains a separate transport check. R restart scenarios open the editing session before committing the step
-whose restart behavior they inspect and restore their prior notebook setting. Platform and other focused scenario
-coverage remain described in [Native R editor dependencies](#native-r-editor-dependencies).
-
-Focused value and categorical runs enter their forms after the common setup and mode/view round trip. They retain
-clean-plan checks, same-session Undo chains, final source-binding checks and panel disposal. They omit the
-representative Rename/Custom Code prefix, so they no longer check a focused operation immediately after Custom Code
-Undo. The [representative journey](../src/test/extensionHost/releasedRRepresentativeEditing.ts) remains in Cursor,
-remote and Windows default coverage; [native history tests](../r/tests/kernel_agent_redo.R) retain branching after Undo.
-
-[Lazy activation tests](../src/test/lazyActivationOwners.unit.test.ts) own lifetime custom-editor, native-tree and Code
-Preview registrations, exact resolution cancellation, rollback and once-only shutdown. The environment-gated test API
-is acquired explicitly and refuses acquisition that outlives its activation owner. The existing daily-core journey
-delays full API acquisition until its natural file title action, using a controlled profile without notebook or
-visible-view demand; other journeys acquire the same API normally. This fixture does not assert that all activation
-contexts have no demand-loaded owners.
-The same journey applies a Rename step through the workbench, then uses **Open Another File with This Plan** and
-the real file picker. It checks the target's distinct rows and copied plan, the read-only preview until **Keep plan**,
-both files' unchanged bytes, the original session's retained state and ordinary cleanup. Schema, stale-owner and persistence refusal cases stay in source tests.
-
-The two pure acceptance-helper checks live in [Source](../src/test/acceptanceFixtures.unit.test.ts): bounded mismatch
-diagnostics and direct-child temporary-directory ownership/cleanup. They no longer run during installed startup.
-Source tests and the scenario descriptions above define ownership; actual installed qualification requires the
-specified profile, platform and immutable artifact under the rules below.
-
-Fresh file Auto selection is covered by the existing file-command, custom-editor, Python resolver, PythonBridge and
-coordinator owners. They distinguish absent interpreters/packages from malformed probes, explicit pins, cancellation
-and stale selections. Concurrent opens keep independent cancellation and exact runtime handoffs; confirmed R restores
-keep their selected backend. Installed native R file opening remains with the existing R file journey.
+installation. They retain editor-version discovery, the shared harness package and exact installed-version checks.
 
 ## Pull-request CI
 
@@ -609,39 +348,23 @@ After editor and display ownership and private-root identity are verified, a fai
 R dependency repair may report bounded package-check and installation failures. Do not add complete installer or
 terminal output, private package-library contents or user data to failure uploads.
 
-The R collapse-frame journey records notebook display, toolbar selection submission and session-open completion
-separately. Failure metadata reports the last stage reached when progress is read after shutdown. During the R editor
-phase, the existing progress poll also logs changed, allowlisted fixture milestones with elapsed time from phase
-launch. These include editing, the fixed collapse-frame opening stages, document execution and restart, plus the macOS
-CSV leg's start and completion. Polling may miss quick transitions; these observations are not a complete trace or exact
-operation durations. Windows retains its
-metadata-only live progress reader. Fixed preparation, editor completion or failure, and profile-cleanup messages
-distinguish setup and cleanup cost from editor execution. When needed, VS Code acquisition and private R dependency installation also report
-their start and completion against the same preparation clock. Successful R installer processes also report bounded elapsed
-records for core packages, supplemental packages and the macOS collapse installation. Source-build totals include
-download and compilation; the binary-install total covers only installation of the already acquired local archive.
-Binary acquisition precedes the dependency installation milestone and is included in overall preparation elapsed time.
-Other successful installer output is omitted.
-These diagnostics preserve the existing inactivity and absolute phase deadlines.
+The runner's progress poll logs fixed, allowlisted milestones with elapsed time from phase launch, such as the R
+collapse-frame opening stages, document execution and restart, each generic viewing-query request, and preparation,
+installation and cleanup stages. Failure metadata reports the last collapse-frame stage reached. Polling can miss
+quick transitions, so these are sampled milestones, not exact durations. A new stage resets the 180-second
+inactivity deadline; the 300-second absolute deadline still bounds the phase.
 
-Generic viewing-query verification and dependency recovery each use a private copy of the sample CSV, so neither
-inherits the seeded cleaning history on the original source. Each journey retains its source-byte checks and existing
-cleanup owner; Windows removal waits for editor and Job Object shutdown. Viewing-query verification records entry and
-completion for each Pandas, Polars and DuckDB request and session-idle wait. The same 100 ms progress poll logs only these
-fixed backend and operation labels when live progress is readable,
-including on success. Arrivals are sampled milestones, not exact durations; quick transitions may be missed. A new stage
-resets the unchanged 180-second inactivity deadline; the 300-second absolute deadline still bounds the phase. These
-diagnostics distinguish progress within the viewing-query journey and do not establish or fix the cause of a timeout.
+Failure diagnostics add only these bounded observations:
 
-The damaged-file Import options recovery check observes document focus only during its picker sequence. On failure,
-it appends the last 32 focus-in/out events: relative time, bounded target/related/active tags, Quick Input membership,
-one of five fixed prompt titles or `unknown`, and document focus state. It retains no arbitrary DOM text, values,
-URLs or class names, and removes its scoped observer afterward. These events can show focus acquisition and loss;
-they do not identify an iframe's inner focus owner or establish the cause of the original failure.
-
-If the public R-file command ends before its picker appears, the failed assertion includes up to eight visible
-notifications from the existing bounded collector, each whitespace-normalized and capped at 1,000 characters. An
-unavailable collection yields an empty list; the failure-artifact redaction rules still apply.
+- The damaged-file Import options check appends its last 32 focus events, with fixed fields and no DOM text, values,
+  URLs or class names.
+- If the public R-file command ends before its picker appears, the failure includes up to eight visible
+  notifications, each whitespace-normalized and capped at 1,000 characters.
+- The Mark Duplicates Undo diagnostic records session, scheduler and renderer snapshots, the button's native input,
+  response categories and alert presence, without message payloads or alert text.
+- Returned Apply errors write a known error code or `other`, recoverability, the requested revision and whether the
+  response session matched to the Open Wrangler output channel. The Polars Formula Apply checks add bounded host and
+  renderer state to timeouts, without cell values, generated code or alert text.
 
 Jupyter output logs may be inspected only to derive a fixed failure category and are never copied. Raw profiles,
 settings, workspace storage, databases, arbitrary extension logs, credentials, private keys, and user data are never
@@ -673,79 +396,30 @@ VSCODE_TEST_VERSION=stable \
 node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
 ```
 
-The broader platform smoke identifies the product's gallery row by its exact extension ID. It requires one visible
-row and a loaded icon observed together within ten seconds. Failure details contain only fixed identity, counts and
-image-state fields. The editor may choose its gallery or local icon URL; archive verification separately checks the
-packaged icon. The test harness's similar display name cannot satisfy this check.
-
-The broader platform smoke retains grouped median and linear interpolation as representative dynamic Fill forms,
-including generated-code display, preview diffs, visible Apply/Undo, and source integrity. Uppercase retains visible
-Discard and renderer restoration. Previous-value and most-common Fill variants remain covered by the
-[form](../src/test/fillMissingFields.component.test.tsx) and
-[native/generated-code](../python/tests/test_fill_missing.py) owners.
-
-The broader platform smoke checks trusted-pickle publication, unchanged source bytes, worker cleanup, and opening
-the converted Parquet file through the public command. The optional completion-notification action has a direct
-command test; toast visibility is not the conversion-completion signal.
-Windows CI also selects the two Windows-only cases in `python/tests/test_trusted_pickle_to_parquet.py`: Node/Win32
-source identity agreement and actual helper Job Object containment of a spawned pickle descendant. Qualification
-requires both cases to pass without skips.
-
-Both the daily-core and broader platform smokes finish with the [default-editor
-journey](../src/test/extensionHost/packagedDefaultEditors.ts). With no `workbench.editorAssociations` in any scope, it
-opens generated `.parquet`, `.xlsx` and `.xls` files through `vscode.open` and requires an `openWrangler.viewer` tab and
-a session for each. A `.csv` file must open in the text editor with no session, and so must the Parquet file after the
-journey sets `"*.parquet": "default"`. The file-input journey opens CSV, TSV and JSON Lines through
-`openWrangler.textDataViewer`, and the restricted journey requires a Parquet file to open in the text editor without
-activating the extension. [Manifest tests](../src/test/packageManifest.unit.test.ts) pin each pattern's editor and
-priority.
-
 The smoke catches production-bundle, VSIX-installation, public CSV action, side bar reveal, grid rendering, sort, and
-terminal cleanup failures that source tests cannot observe. It must not rebuild or substitute the VSIX after verification.
+terminal cleanup failures that source tests cannot observe. It must not rebuild or substitute the VSIX after
+verification.
+
+Both the daily-core and broader platform smokes finish with the
+[default-editor journey](../src/test/extensionHost/packagedDefaultEditors.ts). With no `workbench.editorAssociations`
+in any scope, `.parquet`, `.xlsx` and `.xls` files open in an `openWrangler.viewer` tab with a session, while `.csv`
+opens in the text editor, and so does Parquet after the journey sets `"*.parquet": "default"`.
+[Manifest tests](../src/test/packageManifest.unit.test.ts) pin each pattern's editor and priority. The broader platform
+smoke also checks the gallery row by exact extension ID with a loaded icon, representative dynamic Fill forms,
+Uppercase Discard, and trusted-pickle conversion to Parquet. Windows CI also selects the two Windows-only cases in
+`python/tests/test_trusted_pickle_to_parquet.py`, which must pass without skips.
 
 For Linux public file-gallery captures, use the same verified VSIX and compiled harness with
 `OPEN_WRANGLER_PACKAGED_MODE=platform-smoke`, `OPEN_WRANGLER_TEST_SELECTOR=public-media` and
 `OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS` set to an absolute output directory. This runs the existing file-launch
 and gallery journeys without the unrelated functional and dependency-installation journeys. It does not replace
-platform smoke or release qualification. The published high-contrast scene also checks toolbar and status controls
-at 200% native editor zoom in its existing session; it does not create a separate image. Browser acceptance owns
-light-theme rendering.
+platform smoke or release qualification. Browser acceptance owns light-theme rendering.
 
 ## Focused Python notebook checks
-
-Kernel bridge and variable-discovery tests cover notebook preflight byte, output and item limits, malformed UTF-8
-expansion, exact document replacement, fixed errors and execution settlement after cancellation or a host deadline.
-Actual generated Python controls check quiet and noisy notebook-open paths before runtime dispatch.
-
-The existing bridge, bootstrap, discovery and executed-cell tests run emitted Python to check that helpers preserve
-user bindings. Positive discovery and cell-result controls also verify that private execution retains access to the
-original notebook namespace and history.
-
-The notebook formatter's wide-capture case retains a 501-column, 200-row source and uses a local 1,000-cell cap to
-exercise full-width capture and row truncation. Dimension-budget tests retain production-limit checks and smaller
-native boundary cases.
-
-Released Pandas and DuckDB MIME checks inspect one completed cell execution. Missing MIME fails that execution;
-later cell runs cannot satisfy the assertion. The remote readiness poller rejects authentication refusals and completed
-invalid HTTP 200 responses promptly, while retaining bounded startup polling for transport interruptions and server errors.
-Its direct source tests cover both expected kernelspecs, response bounds and cleanup.
-
-DuckDB engine tests verify temporary query-view cleanup after reads, metadata inspection, query failures and source
-deletion, while preserving caller objects, source evaluation counts and primary errors. The engine and notebook
-owners also cover repeated session closes and successful or refused captures on both supported DuckDB cohorts.
 
 For Python notebook changes, the `python-notebooks` profile runs the existing released-Jupyter deny/allow journeys
 against a supplied VSIX. It covers Pandas, Polars, DuckDB, kernel recovery, the Python editor action, and source-cell
 discovery. The profile has been verified in VS Code on Linux.
-Pivot wider Preview, Apply and Undo use the existing exact one-shot activation owner: retain the element and renderer,
-check native readiness, issue one native click and require its trusted-click receipt before waiting for a mutation.
-A missing click fails at activation; it does not consume the separate mutation deadline or trigger another click.
-The two Polars Formula Apply checks retain their original app identity and add bounded host and renderer state
-to timeout diagnostics, without recording cell values, generated code or alert text.
-Returned Apply errors also write a bounded diagnostic to the Open Wrangler output channel: a known error code
-or `other`, recoverability, requested revision and response-session match. Existing allowlisted failure logs retain
-this diagnostic within their privacy and size limits. It records the returned response even when recovery or disposal
-suppresses publication; it does not establish the cause of the historical Polars Apply failure.
 
 ```bash
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
@@ -766,11 +440,9 @@ or coexistence options are rejected. Leave the profile unset to run the complete
 PySpark and generic verification. Qualification coverage is determined by the selected lane, not by a focused pass.
 
 For hosted Python and file-input investigations, manually select `linux-python` in the released-Jupyter workflow.
-It first runs `python-notebooks`, then runs full mode with released Jupyter disabled and the profile unset. The second
-invocation retains restricted-trust, seed and generic verification, including the database picker. Both use the same
-VSIX and their existing private environments; failure in the first stops the second. Spark provisioning and remote
-Jupyter are omitted. Each invocation repeats runner preparation and cleanup, including editor resolution, harness
-packaging and display setup. Their combined elapsed time has not been measured. See
+It first runs `python-notebooks`, then runs full mode with released Jupyter disabled and the profile unset, keeping
+restricted-trust, seed and generic verification, including the database picker. Both use the same VSIX; failure in
+the first stops the second. Spark provisioning and remote Jupyter are omitted. See
 [CI](ci.md#scheduled-and-release-workflows) for selection and qualification boundaries.
 
 ## Native R editor dependencies
@@ -779,136 +451,69 @@ For a hosted R investigation, manually select `linux-r` in the released-Jupyter 
 invocations and skips the generic Python/file-input editor invocation. See [CI](ci.md#scheduled-and-release-workflows)
 for the unchanged setup and qualification requirements.
 
-The `r-jupyter` notebook journeys prepare their reviewed package subset in a fresh private R library. They omit
-`languageserver`, `rmarkdown`, and `knitr`; literate-documents journeys retain all three. The terminal journey disables
-`r.lsp.enabled` in its private profile and omits `languageserver` and `knitr`. It retains the official R extension's
-session watcher and Arrow for real Parquet export. It also omits rmarkdown, IRkernel, collapse and Rcpp because
-the plain-R terminal fixtures do not render documents, start a Jupyter kernel or use collapse. This terminal sequence
-does not exercise incidental language-server coexistence during discovery, replacement, editing and export; other
-profiles retain the default LSP setting. The `value-operations`, `categorical-operations` and `pivot-wider` notebook
-selectors also omit the collapse and Rcpp roots, collapse residents and their discovery assertions. They retain real
-tibble/data.table residents and source-integrity checks. Default/core and other notebook profiles retain collapse,
-including native flavor labels for grouped and indexed collapse frames; literate preparation retains its structural
-probe. Focused operation runs therefore do not repeat collapse coexistence coverage.
-Local Linux VS Code default/core preparation also includes dplyr 1.2.1 for its library-switch check, using the existing
-June 1 supplemental snapshot. Other notebook profiles, terminal/document preparation and remote runs do not add it.
-On macOS, selected collapse fixtures use the exact CRAN 2.1.8 binary when the selected R executable reports R 4.5.2
-and `aarch64-apple-darwin20`. Preparation verifies the archive's pinned size and SHA-256 before local installation,
-with a two-minute aggregate download deadline. An unavailable or changed archive fails preparation.
-Other macOS R versions and platforms retain the pinned 2.1.7
-source snapshot built with two make jobs. Profiles that omit collapse acquire neither artifact.
-Package pins remain in `scripts/jupyter-acceptance-environment.mjs`. Each selected root must resolve from the private
-library at its reviewed version and load successfully before editor launch. Notebook and literate journeys also
-require the exact private IRkernel readiness probe; terminal preparation creates no kernel or bootstrap receipt.
-All editor purposes retain the exact native R executable and private library environment. Notebook setup, restart
-and replacement checks compare the reported collapse version with the version selected by preparation. The remote
-container retains its separate pinned package version. Its image build sends the same R version and platform user
-agent, so the Noble snapshots supply binaries instead of compiling every package within the five-minute build limit.
-Editor libraries include Arrow 23.0.1.1 and clock 0.7.4 from the existing primary snapshot. Windows notebook and core
-preparation also include nanoparquet 0.5.1 from the existing supplemental snapshot for Parquet file inputs. Linux source locks use Arrow 25.0.0
-and clock 0.7.4 from their existing snapshot. These packages are installed in the selected private R library, not bundled
-in the VSIX. CSV-only product use does not require Arrow or clock.
+Every journey prepares its reviewed package subset in a fresh private R library, and each selected root must resolve
+from that library at its reviewed version and load before editor launch. Package pins live in
+`scripts/jupyter-acceptance-environment.mjs` and editor tooling pins in `scripts/r-editor-acceptance-tooling.mjs`.
+Editor libraries include Arrow and clock, and Windows notebook and core preparation add readxl and nanoparquet for
+their file inputs. These are installed in the private library, not bundled in the VSIX; CSV-only product use does
+not require Arrow or clock. The selections differ by journey:
 
-On Ubuntu 24.04 and 26.04, preparation selects the matching Noble or Resolute snapshot and sends the selected R
-version and architecture in its HTTP user agent. This lets the package server supply compatible binaries while
-retaining source installation for packages without one. Other Linux distributions and unrecognized host metadata
-use the dated source repositories. The supported binary distributions and required header are described in
-[Posit's binary configuration guide](https://docs.posit.co/rspm/admin/serving-binaries/).
-Linux source builds allow up to two make jobs per package. Package installation remains sequential.
+- Notebook journeys omit `languageserver`, `rmarkdown` and `knitr`; the literate-documents journey keeps all three,
+  plus the Quarto extension and CLI. Notebook and literate journeys also require the private IRkernel readiness probe.
+- The terminal journey disables `r.lsp.enabled`, installs only the official R and R-syntax extensions, and omits the
+  Jupyter extension, `languageserver`, `knitr`, `rmarkdown`, IRkernel, collapse and Rcpp. It keeps Arrow for real
+  Parquet export. It does not exercise language-server coexistence; other profiles keep the default LSP setting.
+- The `value-operations`, `categorical-operations` and `pivot-wider` selectors omit collapse and Rcpp. Default/core and
+  other notebook profiles keep collapse, including native flavor labels for grouped and indexed collapse frames.
+- Local Linux VS Code default/core preparation also includes dplyr for its library-switch check.
 
-The hosted macOS R job installs Homebrew's current `zeromq` formula before private R preparation. IRkernel's
-`pbdZMQ` dependency discovers that system library during its source build, avoiding bundled ZeroMQ compilation.
-This system dependency follows Homebrew updates; the R package pins stay unchanged. Local preparation keeps
-`pbdZMQ`'s default discovery and bundled fallback when no suitable system ZeroMQ is available.
+Platform preparation:
 
-The focused interactive-terminal journey installs the pinned official R and R-syntax extensions. It neither selects
-a host Python interpreter nor installs the Jupyter extension; an inherited test Python override is cleared. It omits the
-Quarto extension and CLI; the literate-documents journey retains both, including private Pandoc configuration and
-native Quarto media preview checks. Tooling pins remain in `scripts/r-editor-acceptance-tooling.mjs`, and its selected
-extension records drive installation and expected versions. The existing preparer selects dependencies by purpose,
-including those three focused notebook selectors; omitting the purpose retains the full tooling subset.
-Artifact acquisition refuses an existing destination and verifies the file it created. Failed partial archives remain
-under the caller's existing private-root cleanup owner. A replaced file or directory withholds cleanup.
+- On macOS, selected collapse fixtures use the exact CRAN 2.1.8 binary for R 4.5.2 on `aarch64-apple-darwin20`, with
+  its pinned size and SHA-256 verified before installation. Other macOS R versions and platforms build the pinned
+  2.1.7 source. The hosted macOS job installs Homebrew's `zeromq` so IRkernel's `pbdZMQ` build finds a system
+  library.
+- On Ubuntu 24.04 and 26.04, preparation selects the matching Noble or Resolute snapshot and sends the R version and
+  architecture in its HTTP user agent, so the package server supplies binaries where it has them; see
+  [Posit's binary configuration guide](https://docs.posit.co/rspm/admin/serving-binaries/). Other distributions use
+  the dated source repositories. Source builds allow two make jobs per package, and installation stays sequential.
+- Artifact acquisition refuses an existing destination and verifies the file it created. A replaced file or
+  directory withholds cleanup.
 
-The macOS and Windows R jobs first run `kernel:numeric-portability` and `kernel:csv-import`, subject to the
-[renderer source omission](ci.md#pull-requests). Each case also runs once in the canonical Linux kernel suite.
-Numeric portability owns the platform-sensitive mean, decimal parsing, selection and generated-literal assertions
-in `r/tests/kernel_agent_numeric_portability.R`; CSV import checks the platform's actual text conversion and native
-reader using the same CSV cases described above. Broad operation, export, cold-process and dataframe-class matrices
-remain in their existing source cases.
+The macOS and Windows R jobs first run `kernel:numeric-portability` and `kernel:csv-import` serially in separate
+warning-strict R processes, each with a two-minute limit and bounded output, subject to the
+[renderer source omission](ci.md#pull-requests). They share one private library with pinned jsonlite and bit64. Any
+preparation or test failure retains the private root. Broad operation, export, cold-process and dataframe-class
+matrices remain in the Linux source cases.
 
-The two focused cases run serially in separate R processes through the warning-strict wrapper, each with a two-minute
-limit and bounded output. Their synthetic fixtures and operations do not launch subprocesses; ordinary direct-child
-execution is sufficient and does not qualify general process-tree cleanup. Both reuse one preparation by the existing
-private-library owner with pinned jsonlite and bit64 roots, including version and namespace checks. The separate
-export case requires Arrow; source preparation skips the empty supplemental package install. Any preparation
-or test failure retains the private root; successful preparation and both child exits permit its removal.
-The subsequent installed-editor journey keeps its separate environment, Parquet dependencies and lifetime.
-The separate R 4.4 qualification remains unchanged.
+The platform journeys differ in scope:
 
-The macOS default is `platform-lifecycle`. It keeps a paging round trip, the Mark Duplicates form, compact
-column reveal and focus, and Rename inspection, Edit, Undo/Redo, all-row exports, source
-refusal, Save, clipboard and source-bound notebook insertion. Its editing sequence ends after verifying Rename Redo,
-followed by source integrity checks and session disposal. The additional Undo after Redo runs in Linux
-core to prepare for Drop Columns. The macOS profile also retains all three collapse-frame opens,
-direct-document execution and kernel restart/recovery. The macOS managed-document stage and Windows file-only stage open the same existing 240-row,
-four-column CSV through the public file command with temporary R selection, checks default-on header statistics, native cells and Rename
-Preview/Apply, the full rendered generated code's exact file read, all-row CSV export and source-destination refusal.
-It restores the setting, preserves fixture bytes and checks session/private-process-root cleanup. The Windows file branch
-also checks Undo/Redo, persisted reopening, a failed Custom preview that exits only its private R process, and recovery
-of the confirmed plan followed by public grid navigation. A tiny CP1252 CSV uses the public encoding, delimiter,
-header, quote and CR controls after its encoding is automatically detected, retaining quoted CRLF bytes; its saved options/plan restore through the public custom editor and its generated program executes
-in the original R notebook kernel with exact PID equality. The same branch opens the existing Parquet, JSONL, XLSX and BIFF fixtures and selects
-the nonfirst XLSX worksheet through the real picker. Exact native cells, source bytes, an unrelated sentinel and owned
-session/private-root cleanup remain asserted. Windows notebook and core preparation include pinned readxl for Excel and
-nanoparquet for Parquet file inputs. Notebook and core preparation retain bit64 on every platform. Categorical, value and pivot-wider journeys
-skip the separate document and file stages. Other editor preparations omit both file readers; source-only package sets stay unchanged. This adds small file launches and reader
-preparation within the existing profile and phase deadline; hosted checkpoints must establish the actual additional cost. Its original hosted run records phase-relative checkpoints;
-polling can miss quick transitions, so these are not exact per-action timings.
-The Linux core catalog retains the Dense Rank form,
-Preview/Apply/Undo and three direct page samples for exact ranks, missing cells and row identities. The macOS profile
-does not check the Dense Rank form and its native nullable integer result together. Both paths restore the first column
-before Rename. The native kernel owner checks all original Mark Duplicates columns, and the real-process owner checks
-complete page restoration after Undo for both operations. Requested code-insertion screenshots keep the same capture owner.
-The Mark Duplicates Undo diagnostic combines session, scheduler and renderer snapshots with a bounded, passive
-observation of that button's native input, relevant same-origin response categories and alert presence. It retains
-no message payloads or alert text, and its listeners are removed after the action. An observed click establishes
-input delivery, not host admission. The original click and 30-second wait remain unchanged; diagnostic reads and
-cleanup have separate two-second limits.
+- The macOS default, `platform-lifecycle`, keeps a paging round trip, the Mark Duplicates form, compact column reveal
+  and focus, Rename inspection, Edit, Undo/Redo, all-row exports, source refusal, Save, clipboard and source-bound
+  notebook insertion, all three collapse-frame opens, direct-document execution and kernel restart.
+- The macOS managed-document stage and the Windows file stage open the same 240-row CSV through the public file
+  command with temporary R selection. They check header statistics, Rename Preview/Apply, the generated file read,
+  all-row CSV export and source-destination refusal, then restore the setting and check cleanup. The Windows branch
+  also checks Undo/Redo, persisted reopening, a failed Custom preview, a CP1252 CSV through the public import
+  controls, and the Parquet, JSONL, XLSX and BIFF fixtures. The Windows desktop VS Code default also opens the
+  three ordinary collapse fixtures.
+- The ordinary Linux comprehensive journey keeps the broader operation catalog, the final-page and last-column
+  checks, separate native Viewing opens, and a tibble Rename and keyed data.table Drop, each followed by Discard. On
+  Linux VS Code, the optional `native-frames` selector runs both operations on both flavors.
 
-The ordinary Linux comprehensive journey retains the broader operation catalog, final-page/last-column assertion
-and separate native Viewing opens. Its additional editing round keeps tibble Rename and keyed data.table Drop,
-each followed by Discard. It omits the opposite pair of previews: keyed data.table Rename and tibble Drop semantics
-remain covered by the [native kernel](../r/tests/kernel_agent.R) and [frame](../r/tests/frame_contract.R) owners.
-On Linux VS Code, the optional `native-frames` selector still runs both operations on both flavors; hosted and release
-defaults do not select it. The core Rename owns the shared Preview/Discard check; Drop and Clone
-proceed from Preview to Apply, inspection and Undo. Clone also retains Edit. Select keeps its ordered form,
-Preview/Apply, generated code and Undo. Its ordered input/output inspection schemas are checked by the
-[native transport tests](../src/test/rKernelTransport.cross.test.ts). Text Length keeps its form,
-Preview/Apply/Undo and rendered integer output. Its inspection is checked by the
-[host lifecycle](../src/test/rKernelTextLength.unit.test.ts) and [native transport](../src/test/rKernelTransport.cross.test.ts) tests.
-Convert type semantics and generated execution are checked in the [native R transport owner](../src/test/rKernelTransport.cross.test.ts).
-Its [form controls](../src/test/operationBuilder.component.test.tsx) and [host schema dispatch](../src/test/rKernelMutationSchema.unit.test.ts)
-have separate source tests. The installed journey no longer runs the combined Convert type form, Preview/Apply/Undo sequence.
-macOS omits the additional tibble Rename and keyed-data.table
-Drop editing round; those class-specific semantics remain in the native R contracts, Linux comprehensive and Windows
-representative journeys. The Windows desktop VS Code default also opens the three existing ordinary collapse
-fixtures and checks their pages and source binding. Cursor, remote and focused profiles keep their existing scope.
 The editor phase has a 300-second absolute deadline; preparation and cleanup add to total wall time.
 
-`scripts/packaged-r-jupyter.test.mjs` checks actual prepared install/probe/record agreement, private environment
-ownership and rejected inputs through the command seam without starting R. Package selection changes require fresh
-supplied-VSIX execution of each distinct changed preparation and fixture path. Existing selectors may share one
-representative when their package/probe inputs and setup/discovery behavior are identical, and their operation and
-transport paths are unchanged; establish that from the executable owners. Also prove that unaffected profiles'
-prepared install/probe inputs remain unchanged. Changes to shared pins or common notebook/literate selection require
-notebook core and full tooling/literate qualification. Measure setup cost; graph size alone does not establish savings.
+`scripts/packaged-r-jupyter.test.mjs` checks prepared install/probe/record agreement, private environment ownership and
+rejected inputs through the command seam without starting R. Package selection changes require fresh supplied-VSIX
+execution of each distinct changed preparation and fixture path. Existing selectors may share one representative when
+their package/probe inputs, setup and discovery behavior, and operation and transport paths are identical; establish
+that from the executable owners. Also prove that unaffected profiles' prepared install/probe inputs remain unchanged.
+Changes to shared pins or common notebook/literate selection require notebook core and full tooling/literate
+qualification.
 
-`src/test/releasedRTooling.unit.test.ts` checks the actual tooling assertions and focused journey routing, including
-missing or mismatched extensions, commands and CLI configuration, and the Windows default's collapse coverage
-without broadening Cursor, remote or focused profiles. Tooling selection changes require the affected
-terminal or literate journeys against the same supplied VSIX, with both required for shared changes. Fewer selected
-artifacts alone do not establish setup-time savings.
+`src/test/releasedRTooling.unit.test.ts` checks the tooling assertions and focused journey routing. Tooling selection
+changes require the affected terminal or literate journeys against the same supplied VSIX, with both required for
+shared changes. Measure setup cost; fewer selected packages or artifacts alone do not establish savings.
 
 ## Release-candidate checks
 
@@ -921,16 +526,13 @@ provenance triple. It does not repeat protected-main source checks. The candidat
 4. Uploads only the canonical triple for stable promotion.
 
 A dependent three-platform R matrix downloads that same-run triple, verifies it against the exact checkout, builds
-only the test harness and runs default `r-jupyter` in desktop VS Code once per platform. The default profiles retain their existing editing, native-frame, export/insertion and restart checks;
-Windows also opens the three ordinary collapse fixtures. No focused selector replaces the default, and macOS retains
-its coupled direct-document check. Private R packages and editor setup stay with the existing runner. The matrix adds
-no source suite, Java, Spark or development dataframe environment.
-The runner logs the actual validated editor version and prepared R package versions. The matrix requests stable
-VS Code through the existing acquisition owner.
+only the test harness and runs default `r-jupyter` in desktop VS Code once per platform. No focused selector replaces
+the default. The matrix adds no source suite, Java, Spark or development dataframe environment. The runner logs the
+validated editor version and prepared R package versions.
 
 All three results are required. Failure diagnostics use only the runner's exact sealed artifact path; a successful
 workflow still uploads exactly one canonical triple. Stable publication checks the whole first-attempt candidate run
-and uses that VSIX without rebuilding. Existing workflow and artifact owners check this wiring.
+and uses that VSIX without rebuilding.
 
 These candidate checks complement the native/source evidence and reliability review required by
 [Releasing](releasing.md#release-candidate) for the [stable R notebook scope](feature-parity.md#first-stable-r-notebook-scope).
@@ -955,10 +557,9 @@ Run a manual editor scenario only when the change crosses that UI or integration
   themes for the changed control.
 
 The released-Jupyter first-result journey enables Open Wrangler but leaves kernel consent unanswered until the first
-raw dataframe result appears. It then checks that the result gains its action without another execution. Disabled
-previews must not request automatic inspection; the notebook owner unit tests cover that separate behavior.
-Native R notebook journeys keep discovery disabled during kernel probing and enable it before the setup cell whose
-completion requests consent.
+raw dataframe result appears. It then checks that the result gains its action without another execution. Native R
+notebook journeys keep discovery disabled during kernel probing and enable it before the setup cell whose completion
+requests consent.
 
 Do not retain a second end-to-end journey for behavior already covered by the exact-artifact smoke or a direct source
 test. Do not retry deterministic failures; fix the product or remove a check that cannot identify a distinct failure.
