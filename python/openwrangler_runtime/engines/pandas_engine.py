@@ -1896,9 +1896,12 @@ class PandasEngine(DataFrameEngine):
                         _pandas_temporal_cell(values.max(), None)["display"] if not values.empty else None,
                     )
             else:
+                present = None
                 if semantic_type == "string":
-                    summary["text"] = _pandas_text_summary(series)
-                summary["visualization"] = categorical_visualization(top_values, int(series.notna().sum()))
+                    summary["text"], present = _pandas_text_summary(series, value_counts)
+                summary["visualization"] = categorical_visualization(
+                    top_values, int(series.notna().sum()) if present is None else present
+                )
             summaries.append(summary)
         return summaries
 
@@ -5142,9 +5145,10 @@ def _pandas_present_values(series: Any) -> list[Any]:
     return [value for value in series.array if not _pandas_is_missing_scalar(value)]
 
 
-def _pandas_text_summary(series: Any) -> dict[str, int | float]:
-    """Return exact display-text metrics without materializing another dataframe."""
+def _pandas_text_summary(series: Any, value_counts: Any) -> tuple[dict[str, int | float], int | None]:
+    """Return exact display-text metrics and, for text columns, how many values are present."""
 
+    import numpy as np
     import pandas as pd
 
     inferred = pd.api.types.infer_dtype(series, skipna=True) if pd.api.types.is_object_dtype(series.dtype) else None
@@ -5154,16 +5158,20 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
         and all(isinstance(value, str) for value in series.cat.categories)
     )
     if isinstance(series.dtype, pd.StringDtype) or categorical_strings or inferred in {"string", "unicode", "empty"}:
-        text = series if isinstance(series.dtype, pd.StringDtype) else series.astype("string")
-        lengths = text.str.len().dropna()
-        if lengths.empty:
-            return {"emptyCount": 0}
+        # Equal strings have equal lengths, so each distinct value is measured once and weighted by its count.
+        counts = value_counts.to_numpy(dtype=np.int64)
+        counted = counts > 0
+        counts = counts[counted]
+        if not counts.size:
+            return {"emptyCount": 0}, 0
+        lengths = np.asarray(value_counts.index[counted].str.len(), dtype=np.int64)
+        present = int(counts.sum())
         return {
-            "emptyCount": int((lengths == 0).sum()),
+            "emptyCount": int(counts[lengths == 0].sum()),
             "minLength": int(lengths.min()),
             "maxLength": int(lengths.max()),
-            "meanLength": float(lengths.mean()),
-        }
+            "meanLength": int(lengths @ counts) / present,
+        }, present
 
     # Mixed object and non-string categorical columns are exposed as strings by
     # the public schema. Use the same normalized display representation as grid
@@ -5204,13 +5212,13 @@ def _pandas_text_summary(series: Any) -> dict[str, int | float]:
         total_length += length * count
         value_count += count
     if value_count == 0 or minimum_length is None or maximum_length is None:
-        return {"emptyCount": 0}
+        return {"emptyCount": 0}, None
     return {
         "emptyCount": empty_count,
         "minLength": minimum_length,
         "maxLength": maximum_length,
         "meanLength": float(total_length / value_count),
-    }
+    }, None
 
 
 def _pandas_dictionary_value_type(series: Any) -> Any:

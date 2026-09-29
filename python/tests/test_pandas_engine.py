@@ -1621,6 +1621,26 @@ def test_pandas_object_text_value_choices_match_string_columns() -> None:
         assert engine.column_values(objects, "text", search, 3) == engine.column_values(strings, "text", search, 3)
 
 
+@pytest.mark.parametrize("dtype", [None, "object", "string[python]", "string[pyarrow]", "category"])
+def test_pandas_text_summaries_count_repeated_and_missing_values(dtype: str | None) -> None:
+    values = ["abc", None, "", "abc", "é", "abc", "😀x", float("nan"), "", *(f"v{index}" for index in range(8))]
+    series = pd.Series(values, dtype=dtype)
+    if dtype == "category":
+        series = series.cat.add_categories(["unused"])
+
+    summary = PandasEngine().summaries(pd.DataFrame({"text": series}))[0]
+
+    present = [value for value in values if isinstance(value, str)]
+    assert summary["text"] == {
+        "emptyCount": 2,
+        "minLength": 0,
+        "maxLength": 3,
+        "meanLength": sum(map(len, present)) / len(present),
+    }
+    shown = summary["visualization"]["categories"]
+    assert summary["visualization"]["otherCount"] == len(present) - sum(category["count"] for category in shown)
+
+
 def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_display_values():
     frame = pd.DataFrame(
         {
