@@ -865,29 +865,18 @@ including empty or all-missing columns. Omitting the option retains the engine's
 
 Pandas executes viewing, its supported cleaning operations, profiling, generated code and exports in Pandas.
 Viewing filters and sorts compose row positions into a row view. Pages take only their rows and columns, statistics
-that ignore row order read the selected rows in source order, and other reads materialize the view once. Arrow text
-columns are combined into one chunk when a file opens, one column per thread. Text predicates evaluate each distinct
-value once, and text sorts rank the distinct values instead of comparing every row: the Arrow dictionary, or the
-factorized values of an object column that holds only strings. A view sorted by one NumPy numeric, Boolean, datetime
-or duration column finds its first 16,384 rows with a partition, keeping every row tied with the boundary value so
-ties stay in source order. A later page or a read that needs every position sorts the column once with a stable sort.
-At least 1 Mi values are split into up to 16 parts that NumPy sorts on separate threads, and a final stable sort merges
-the sorted parts; Arrow sorts fewer values, and integers whose values span at most 4,096, which it counts faster.
-Multi-column sorts use the same stable sort for each such column. Sort Rows and the sort in Filter Rows order rows
-exactly as a view does: they sort by the last rule first, reorder that result stably by each earlier rule, and move
-the rows once at the end. Taking at least 4 Mi cells in a new order takes one column per thread, because that gather
-waits on memory; rows taken in source order use Pandas' own take.
+that ignore row order read the selected rows in source order, and other reads materialize the view once. Text
+predicates evaluate each distinct value once, and text sorts rank distinct values instead of comparing every row.
+View sorts are stable, and Sort Rows and the sort in Filter Rows order rows exactly as a view does.
 Duplicate and non-string labels are addressed positionally after binding. Object-dtype cells are recursively isolated
 before trusted custom code, preview, rollback, or generated-code execution so nested user objects cannot mutate the
-source. Other Pandas steps never write into their input's arrays. Each starts from a shallow copy, replaces or adds
-whole columns and joins added columns without copying the rest, so a revision shares unchanged columns with the one
-before it. A notebook variable or output and a Custom Code result may share arrays with objects outside the session,
-so without Copy-on-Write each is copied once when it receives private row identities; a file frame the runtime just
-read is not. An object column's semantic type and missing-value flag are kept for the array that owns its values, so a
-schema after a step that leaves the column unchanged doesn't scan it again. Sort Rows, Pivot longer and Look up
-columns give each object column they reorder, repeat or copy its source column's facts, because none of these changes
-them. Without Copy-on-Write, a step that adds columns inserts them, so the columns it keeps retain their arrays and
-facts. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol boundary.
+source. Other Pandas steps never write into their input's arrays: each starts from a shallow copy and replaces or adds
+whole columns, so a revision shares unchanged columns with the one before it. A notebook variable or output and a
+Custom Code result may share arrays with objects outside the session, so without Copy-on-Write each is copied once
+when it receives private row identities; a file frame the runtime just read is not. An object column's semantic type
+and missing-value flag stay with the array that owns its values, so steps that keep, reorder, repeat or copy the
+column do not scan it again. Typed null, NaN, decimal, datetime, and wide-integer behavior is normalized at the protocol
+boundary.
 
 Pandas literal Split limits tokenization to the selected field or requested output count in live and generated code.
 It preserves the selected index, empty fields and null results, discarding one possible remainder.
@@ -977,10 +966,9 @@ selected operands. Live and generated text operations share a guarded string-con
 writer opening; native Clone and Parquet export retain the stored types and ticks without this boxing restriction.
 Other native boxing limits, including timezone-dependent endpoint overflow, retain their errors.
 
-Dataset statistics reuse per-column missing counts for the total, including Sparse columns, without a second
-aggregate scan. Multi-column duplicate counting factorizes columns in order, as `DataFrame.duplicated` does, and stops
-once the leading columns tell every row apart, so a timestamp or ID column spares the rest. Its specific unhashable-value TypeErrors for list,
-dict, set or NumPy-array values leave only the multi-column duplicate count unavailable; other failures propagate.
+Dataset statistics reuse per-column missing counts for the total, including Sparse columns. Multi-column duplicate
+counts match `DataFrame.duplicated`. Its specific unhashable-value TypeErrors for list, dict, set or NumPy-array
+values leave only the multi-column duplicate count unavailable; other failures propagate.
 Ordinary object columns need no additional validation scan. Cleaning operations retain their separate rules.
 
 Native Arrow `bool8` and UUID Parquet fields reopen as logical booleans and canonical strings. Only their canonical
