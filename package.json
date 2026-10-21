@@ -1088,7 +1088,7 @@
     "jsdom": "^29.1.1",
     "json-schema-to-typescript": "^15.0.4",
     "keytar": "file:scripts/npm-shims/keytar",
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "ovsx": "1.2.0",
     "pixelmatch": "^7.2.0",
     "playwright-core": "^1.63.0",
