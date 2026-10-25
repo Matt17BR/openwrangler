@@ -1099,7 +1099,7 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^8.3.1",
-    "vitest": "^5.0.2",
+    "vitest": "^5.0.5",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"
   },
